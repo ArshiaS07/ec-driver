@@ -39,6 +39,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Before "Paths": the Visual Studio environment sets VCPKG_ROOT to its
+      # bundled vcpkg, which would otherwise replace ours.
+      - name: MSVC environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
       - name: Paths
         shell: bash
         run: |
@@ -60,10 +66,6 @@ jobs:
       - name: ASan-compatible address randomisation
         if: matrix.preset == 'linux-debug'
         run: sudo sysctl -w vm.mmap_rnd_bits=28
-
-      - name: MSVC environment
-        if: runner.os == 'Windows'
-        uses: ilammy/msvc-dev-cmd@v1
 
       # Full clone: manifest mode reads the pinned baseline from vcpkg's history.
       - name: vcpkg
