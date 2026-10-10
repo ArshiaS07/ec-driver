@@ -35,3 +35,9 @@ desktop.ini
 
 # Robot recordings: large binary data does not belong in git
 *.h5
+
+# Claude Code files and decision records stay local (also listed in
+# .git/info/exclude, which old commits cannot override)
+/CLAUDE.md
+/.claude/
+/docs/adr/
