@@ -60,9 +60,9 @@ TEST(Commands, GetRobotMode) {
 }
 
 TEST(Commands, EnumsRejectUndefinedValues) {
-    for (const char* line : {R"({"jsonrpc":"2.0","result":"7","id":1})", R"({"jsonrpc":"2.0","result":"-1","id":1})",
-                             R"({"jsonrpc":"2.0","result":"99999999999","id":1})",
-                             R"({"jsonrpc":"2.0","result":"1.5","id":1})"}) {
+    for (const char* line :
+         {R"({"jsonrpc":"2.0","result":"7","id":1})", R"({"jsonrpc":"2.0","result":"-1","id":1})",
+          R"({"jsonrpc":"2.0","result":"99999999999","id":1})", R"({"jsonrpc":"2.0","result":"1.5","id":1})"}) {
         const auto m = decode_line<GetRobotMode>(line);
         ASSERT_FALSE(m) << line;
         EXPECT_EQ(m.error().kind, Error::Kind::BadReply) << line;
@@ -71,9 +71,10 @@ TEST(Commands, EnumsRejectUndefinedValues) {
 
 TEST(Commands, MoveByJointEncodesInManualOrder) {
     const MoveByJoint mv{.target = {0, -90, 0, -90, 90, 0}, .speed_pct = 10, .acc_pct = 50, .dec_pct = std::nullopt};
-    EXPECT_EQ(encode(to_request(mv), 8),
-              R"({"jsonrpc":"2.0","method":"moveByJoint","params":{"targetPos":[0.0,-90.0,0.0,-90.0,90.0,0.0],"speed":10.0,"acc":50},"id":8})"
-              "\n");
+    EXPECT_EQ(
+        encode(to_request(mv), 8),
+        R"({"jsonrpc":"2.0","method":"moveByJoint","params":{"targetPos":[0.0,-90.0,0.0,-90.0,90.0,0.0],"speed":10.0,"acc":50},"id":8})"
+        "\n");
 }
 
 TEST(Commands, TrueIsOkFalseIsRefused) {

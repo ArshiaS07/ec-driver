@@ -16,6 +16,7 @@ std::expected<Frame, DecodeError> decode(std::span<const std::uint8_t, kFrameSiz
     detail::BigEndianReader r(bytes);
     Frame f;
     // Strictly in wire order; the trailing number is the field's byte offset.
+    // clang-format off
     f.message_size           = r.read<std::uint32_t>();                          //   0
     f.timestamp_ms           = r.read<std::uint64_t>();                          //   4
     f.cycle_mode             = static_cast<CycleMode>(r.read<std::uint8_t>());   //  12
@@ -46,6 +47,7 @@ std::expected<Frame, DecodeError> decode(std::span<const std::uint8_t, kFrameSiz
     f.tcp_wrench_ext         = r.read_array<double, 6>();                        // 751
     f.drag_enabled           = r.read<std::uint8_t>() != 0;                      // 799
     f.force_sensor_connected = r.read<std::uint8_t>() != 0;                      // 800
+    // clang-format on
 
     // A wrong field type above shifts everything after it; this catches it.
     assert(r.position() == kValidBytes);

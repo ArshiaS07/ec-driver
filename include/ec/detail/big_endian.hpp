@@ -19,10 +19,22 @@ namespace ec::detail {
 
 template <std::size_t N>
 struct uint_of_size;
-template <> struct uint_of_size<1> { using type = std::uint8_t; };
-template <> struct uint_of_size<2> { using type = std::uint16_t; };
-template <> struct uint_of_size<4> { using type = std::uint32_t; };
-template <> struct uint_of_size<8> { using type = std::uint64_t; };
+template <>
+struct uint_of_size<1> {
+    using type = std::uint8_t;
+};
+template <>
+struct uint_of_size<2> {
+    using type = std::uint16_t;
+};
+template <>
+struct uint_of_size<4> {
+    using type = std::uint32_t;
+};
+template <>
+struct uint_of_size<8> {
+    using type = std::uint64_t;
+};
 
 class BigEndianReader {
 public:

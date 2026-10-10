@@ -10,10 +10,9 @@
 #include <array>
 #include <concepts>
 #include <expected>
+#include <nlohmann/json.hpp>
 #include <string>
 #include <string_view>
-
-#include <nlohmann/json.hpp>
 
 namespace ec::command {
 

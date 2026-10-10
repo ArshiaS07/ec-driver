@@ -152,8 +152,7 @@ std::string NetError::message() const {
     return text;
 }
 
-std::expected<TcpSocket, NetError> TcpSocket::connect(const std::string& host, std::uint16_t port,
-                                                      Timeout timeout) {
+std::expected<TcpSocket, NetError> TcpSocket::connect(const std::string& host, std::uint16_t port, Timeout timeout) {
     if (!ensure_network()) return fail(NetError::Kind::Io);
 
     addrinfo hints{};
@@ -246,8 +245,8 @@ std::expected<void, NetError> TcpSocket::send_all(std::span<const std::uint8_t> 
     const auto deadline = Clock::now() + timeout;
 
     while (!data.empty()) {
-        const auto n = ::send(s, reinterpret_cast<const char*>(data.data()), static_cast<io_size>(data.size()),
-                              kSendFlags);
+        const auto n =
+            ::send(s, reinterpret_cast<const char*>(data.data()), static_cast<io_size>(data.size()), kSendFlags);
         if (n > 0) {
             data = data.subspan(static_cast<std::size_t>(n));
             continue;

@@ -15,12 +15,14 @@ using namespace ec::command;
 // ------------------------------------------------------------------ encode
 
 TEST(CommandCodec, EncodesWithoutParamsLikeTheManual) {
-    EXPECT_EQ(encode(to_request(GetRobotState{}), 4), R"({"jsonrpc":"2.0","method":"getRobotState","id":4})" "\n");
+    EXPECT_EQ(encode(to_request(GetRobotState{}), 4), R"({"jsonrpc":"2.0","method":"getRobotState","id":4})"
+                                                      "\n");
 }
 
 TEST(CommandCodec, EncodesParamsInManualOrder) {
     EXPECT_EQ(encode(to_request(GetDH{.index = 0}), 3),
-              R"({"jsonrpc":"2.0","method":"getDH","params":{"index":0},"id":3})" "\n");
+              R"({"jsonrpc":"2.0","method":"getDH","params":{"index":0},"id":3})"
+              "\n");
 }
 
 TEST(CommandCodec, EncodedLineEndsWithExactlyOneNewline) {
@@ -91,9 +93,9 @@ TEST(CommandCodec, AcceptsTrailingNewline) {
 }
 
 TEST(CommandCodec, RejectsLinesThatAreNotReplies) {
-    for (const char* line : {"", "garbage", "[1,2]", R"({"jsonrpc":"2.0","result":"0"})",
-                             R"({"jsonrpc":"2.0","result":"0","id":"4"})", R"({"jsonrpc":"2.0","id":4})",
-                             R"({"jsonrpc":"2.0","error":"oops","id":4})"}) {
+    for (const char* line :
+         {"", "garbage", "[1,2]", R"({"jsonrpc":"2.0","result":"0"})", R"({"jsonrpc":"2.0","result":"0","id":"4"})",
+          R"({"jsonrpc":"2.0","id":4})", R"({"jsonrpc":"2.0","error":"oops","id":4})"}) {
         const auto r = parse_reply(line);
         ASSERT_FALSE(r) << line;
         EXPECT_EQ(r.error().kind, Error::Kind::BadReply) << line;

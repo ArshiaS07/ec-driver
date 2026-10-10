@@ -11,9 +11,7 @@ bool matching_word_at(const std::vector<std::uint8_t>& buf, std::size_t offset) 
 
 }  // namespace
 
-void Framer::push(std::span<const std::uint8_t> bytes) {
-    buffer_.insert(buffer_.end(), bytes.begin(), bytes.end());
-}
+void Framer::push(std::span<const std::uint8_t> bytes) { buffer_.insert(buffer_.end(), bytes.begin(), bytes.end()); }
 
 std::optional<RawFrame> Framer::pop() {
     while (buffer_.size() >= kFrameSize) {

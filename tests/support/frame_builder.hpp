@@ -34,6 +34,7 @@ public:
 // A valid frame with a distinct value in every field.
 inline feedback::RawFrame make_frame(std::uint64_t timestamp_ms = 1791200688449ull) {
     WireWriter w;
+    // clang-format off
     w.put<std::uint32_t>(1024);              // message size
     w.put<std::uint64_t>(timestamp_ms);      // timestamp
     w.put<std::uint8_t>(2);                  // cycle mode
@@ -66,6 +67,7 @@ inline feedback::RawFrame make_frame(std::uint64_t timestamp_ms = 1791200688449u
     w.put<std::uint8_t>(0);                  // force sensor connected
     w.bytes.resize(feedback::kMatchOffset, 0);         // reserved
     w.put<std::uint32_t>(feedback::kMatchingWord);
+    // clang-format on
 
     feedback::RawFrame out{};
     std::copy(w.bytes.begin(), w.bytes.end(), out.begin());

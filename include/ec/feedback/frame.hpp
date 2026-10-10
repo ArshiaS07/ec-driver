@@ -35,8 +35,8 @@ using RawFrame = std::array<std::uint8_t, kFrameSize>;
 
 using WireJoints = std::array<double, kWireAxes>;  // [0..5] are the arm
 using ArmJoints = std::array<double, kArmAxes>;
-using WirePose = std::array<double, 6>;            // x, y, z [mm]; rx, ry, rz [rad]
-using WireWrench = std::array<double, 6>;          // fx, fy, fz [N]; tx, ty, tz [N*m]
+using WirePose = std::array<double, 6>;    // x, y, z [mm]; rx, ry, rz [rad]
+using WireWrench = std::array<double, 6>;  // fx, fy, fz [N]; tx, ty, tz [N*m]
 
 struct Frame {
     // time
@@ -44,14 +44,14 @@ struct Frame {
     std::uint64_t timestamp_ms = 0;  // controller clock, ms since 1970-01-01
 
     // joint space
-    WireJoints joint_pos_deg{};          // machinePos
-    WireJoints joint_vel_deg_s{};        // jointSpeed
-    WireJoints joint_acc_deg_s2{};       // jointAcc
-    WireJoints joint_torque_permille{};  // torque, per-mille of rated torque
+    WireJoints joint_pos_deg{};                             // machinePos
+    WireJoints joint_vel_deg_s{};                           // jointSpeed
+    WireJoints joint_acc_deg_s2{};                          // jointAcc
+    WireJoints joint_torque_permille{};                     // torque, per-mille of rated torque
     std::array<std::int32_t, kWireAxes> motor_speed_rpm{};  // motor_speed
-    ArmJoints joint_torque_nm{};         // jointTorque (actual output torque)
-    ArmJoints joint_torque_ext_nm{};     // extJointTorques (estimated external)
-    ArmJoints joint_temp_c{};            // jointTemperature
+    ArmJoints joint_torque_nm{};                            // jointTorque (actual output torque)
+    ArmJoints joint_torque_ext_nm{};                        // extJointTorques (estimated external)
+    ArmJoints joint_temp_c{};                               // jointTemperature
 
     // Cartesian space
     WirePose tcp_pose_base{};     // machinePose

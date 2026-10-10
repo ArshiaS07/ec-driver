@@ -52,8 +52,9 @@ void err(std::format_string<Args...> fmt, Args&&... args) {
 class Downsampler {
 public:
     explicit Downsampler(double rate_hz)
-        : period_(rate_hz > 0 ? std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(1.0 / rate_hz))
-                              : Clock::duration::zero()) {}
+        : period_(rate_hz > 0
+                      ? std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(1.0 / rate_hz))
+                      : Clock::duration::zero()) {}
 
     bool accept(Clock::time_point t) {
         if (period_ == Clock::duration::zero()) return true;  // --all
@@ -91,16 +92,22 @@ public:
         have_prev_ = true;
         ++frames_;
         if (t - window_start_ >= 1s) {
-            report_ = std::format("{:.1f} Hz, dt {:.2f}/{:.2f}/{:.2f} ms (min/mean/max)",
-                                  static_cast<double>(frames_) / std::chrono::duration<double>(t - window_start_).count(),
-                                  min_, n_ ? sum_ / static_cast<double>(n_) : 0.0, max_);
+            report_ =
+                std::format("{:.1f} Hz, dt {:.2f}/{:.2f}/{:.2f} ms (min/mean/max)",
+                            static_cast<double>(frames_) / std::chrono::duration<double>(t - window_start_).count(),
+                            min_, n_ ? sum_ / static_cast<double>(n_) : 0.0, max_);
             window_start_ = t;
             frames_ = 0;
             n_ = 0;
             sum_ = 0;
         }
     }
-    void restart() { have_prev_ = false; frames_ = 0; n_ = 0; sum_ = 0; }
+    void restart() {
+        have_prev_ = false;
+        frames_ = 0;
+        n_ = 0;
+        sum_ = 0;
+    }
     [[nodiscard]] const std::string& report() const { return report_; }
 
 private:
@@ -156,8 +163,8 @@ void print_frame(const fb::Frame& f, std::uint64_t seq, const std::string& rate)
     row("temp", f.joint_temp_c, "C");
 
     const auto& b = f.tcp_pose_base;
-    out("TCP base  x {:.2f}  y {:.2f}  z {:.2f} mm | rx {:.4f}  ry {:.4f}  rz {:.4f} rad | v {:.2f} mm/s\n", b[0],
-        b[1], b[2], b[3], b[4], b[5], f.tcp_speed_mm_s);
+    out("TCP base  x {:.2f}  y {:.2f}  z {:.2f} mm | rx {:.4f}  ry {:.4f}  rz {:.4f} rad | v {:.2f} mm/s\n", b[0], b[1],
+        b[2], b[3], b[4], b[5], f.tcp_speed_mm_s);
     const auto& w = f.tcp_wrench_ext;
     out("ext wrench F {:.2f} {:.2f} {:.2f} N | T {:.3f} {:.3f} {:.3f} N*m\n\n", w[0], w[1], w[2], w[3], w[4], w[5]);
     std::fflush(stdout);
