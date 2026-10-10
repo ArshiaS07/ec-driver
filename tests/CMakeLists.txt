@@ -3,9 +3,11 @@ find_package(Threads REQUIRED)
 include(GoogleTest)
 
 add_executable(ec_tests
+    command/client_test.cpp
     command/codec_test.cpp
     command/commands_test.cpp
     command/line_framer_test.cpp
+    command/reply_test.cpp
     feedback/frame_test.cpp
     feedback/framer_test.cpp
     net/tcp_socket_test.cpp

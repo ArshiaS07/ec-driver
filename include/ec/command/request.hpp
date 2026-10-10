@@ -1,71 +1,72 @@
 #pragma once
-// Building blocks of the port-8055 command protocol: the error type, the
-// Command concept every SDK call satisfies, and Request, the type-erased form
-// that gets encoded and sent.
-//
-// A command is a description of one SDK call (method name, parameters, how to
-// read the reply). It performs no I/O; sending is the client's job. That split
-// is what makes every command testable against the manual without a robot.
+/// @file
+/// The Command concept every SDK call satisfies, and Request, the type-erased
+/// form of a call that the codec encodes.
 
 #include <array>
 #include <concepts>
 #include <expected>
-#include <nlohmann/json.hpp>
-#include <string>
 #include <string_view>
+
+#include "ec/command/error.hpp"
+#include "ec/command/json.hpp"
+#include "ec/command/reply.hpp"
 
 namespace ec::command {
 
-// ordered_json keeps object keys in insertion order, so requests go out with
-// their fields in the manual's order. JSON does not require any order, but the
-// controller's parser is undocumented; matching the manual removes one unknown.
-using Json = nlohmann::ordered_json;
+/// Joint positions as the controller sends and expects them: J1..J6 [deg].
+using JointsDeg = std::array<double, 6>;
 
-// Wire value types. Units are the controller's, as in the manual.
-using JointsDeg = std::array<double, 6>;  // J1..J6 [deg]
-
-struct Error {
-    enum class Kind {
-        MethodNotFound,  // -32601: unknown method (typo, or missing in this firmware)
-        Rejected,        // -32693: parameter missing or out of range, or a condition
-                         //         not met (e.g. not in remote mode)
-        Refused,         // the call returned false (the manual's "failure: false")
-        Remote,          // any other JSON-RPC error code
-        BadReply,        // reply not understood: malformed JSON, wrong shape or value
-        // Raised by the client, not by the controller:
-        Timeout,       // no reply within the timeout; the connection stays usable
-        Disconnected,  // connecting failed or the connection was lost
-    };
-    Kind kind;
-    int code = 0;         // JSON-RPC error code, or the OS error code for Disconnected; else 0
-    std::string message;  // the controller's message, or what went wrong
-};
-[[nodiscard]] std::string_view to_string(Error::Kind k) noexcept;
-
-// Reply type of calls that return only success or failure.
-struct Ok {
-    bool operator==(const Ok&) const = default;
-};
-
-// Every SDK call is a type satisfying this concept.
+/// The command has a params() member.
 template <typename C>
-concept Command = requires(const C& c, const Json& result) {
-    { C::method } -> std::convertible_to<std::string_view>;
-    typename C::Reply;
-    { c.params() } -> std::same_as<Json>;  // null: the request has no "params" member
+concept HasParams = requires(const C& c) { c.params(); };
+
+/// The command has its own decode(), with the required signature.
+template <typename C>
+concept HasDecode = requires(const Json& result) {
     { C::decode(result) } -> std::same_as<std::expected<typename C::Reply, Error>>;
 };
 
-// A command with its type erased: what the codec encodes. Motion families
-// return sequences of these for the supervisor to send.
+/// One SDK call, described as a type. Required:
+///   - `static constexpr std::string_view method`: the JSON-RPC method name;
+///   - `using Reply = ...`: what the call returns.
+/// Optional:
+///   - `Json params() const`: the request's "params"; without it, none are sent;
+///   - `static std::expected<Reply, Error> decode(const Json&)`: only when
+///     ReplyDecoder<Reply> does not fit the reply's shape.
+/// A command performs no I/O: it only describes the call.
+template <typename C>
+concept Command =
+    requires {
+        { C::method } -> std::convertible_to<std::string_view>;
+        typename C::Reply;
+    } && (!HasParams<C> || requires(const C& c) {
+        { c.params() } -> std::same_as<Json>;
+    }) && (!requires { &C::decode; } || HasDecode<C>) && (HasDecode<C> || DecodableReply<typename C::Reply>);
+
+/// A call with its type erased: what the codec encodes.
 struct Request {
-    std::string_view method;  // usually a command's static name; must outlive the Request
-    Json params;              // null: no "params" member
+    std::string_view method;  ///< usually a command's static name; must outlive the Request
+    Json params;              ///< null: the request has no "params" member
 };
 
+/// The request for `command`.
 template <Command C>
-[[nodiscard]] Request to_request(const C& c) {
-    return Request{C::method, c.params()};
+[[nodiscard]] Request to_request(const C& command) {
+    if constexpr (HasParams<C>)
+        return Request{C::method, command.params()};
+    else
+        return Request{C::method, nullptr};
+}
+
+/// Decodes the (unwrapped) result of a `C` call into C::Reply, with C::decode if
+/// the command has one and ReplyDecoder<C::Reply> otherwise.
+template <Command C>
+[[nodiscard]] std::expected<typename C::Reply, Error> decode_reply(const Json& result) {
+    if constexpr (HasDecode<C>)
+        return C::decode(result);
+    else
+        return ReplyDecoder<typename C::Reply>::decode(result);
 }
 
 }  // namespace ec::command

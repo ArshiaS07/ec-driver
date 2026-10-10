@@ -1,8 +1,11 @@
-// The first command structs: request encoding against the manual's templates,
-// reply decoding against the EA66's real replies, and rejection of replies
-// with the wrong shape.
+// The command structs: request encoding against the manual's templates, reply
+// decoding against the EA66's real replies, and rejection of replies with the
+// wrong shape.
 
 #include <gtest/gtest.h>
+
+#include <expected>
+#include <string_view>
 
 #include "ec/command/codec.hpp"
 #include "ec/command/movement.hpp"
@@ -13,12 +16,13 @@ namespace {
 
 using namespace ec::command;
 
-// Parse a real reply line and decode it as command C.
+// Parses a real response line and decodes it as the reply of command C.
 template <Command C>
 std::expected<typename C::Reply, Error> decode_line(std::string_view line) {
-    const auto reply = parse_reply(line);
-    if (!reply) return std::unexpected(reply.error());
-    return decode<C>(*reply);
+    const auto response = parse_response(line);
+    if (!response) return std::unexpected(response.error());
+    if (!response->result) return std::unexpected(response->result.error());
+    return decode_reply<C>(*response->result);
 }
 
 TEST(Commands, GetSoftVersion) {
@@ -75,6 +79,13 @@ TEST(Commands, MoveByJointEncodesInManualOrder) {
         encode(to_request(mv), 8),
         R"({"jsonrpc":"2.0","method":"moveByJoint","params":{"targetPos":[0.0,-90.0,0.0,-90.0,90.0,0.0],"speed":10.0,"acc":50},"id":8})"
         "\n");
+}
+
+TEST(Commands, ControllerErrorIsForwarded) {
+    const auto stop = decode_line<Stop>(R"({"jsonrpc":"2.0","error":{"code":-32693,"message":"not remote"},"id":9})");
+    ASSERT_FALSE(stop);
+    EXPECT_EQ(stop.error().kind, Error::Kind::Rejected);
+    EXPECT_EQ(stop.error().message, "not remote");
 }
 
 TEST(Commands, TrueIsOkFalseIsRefused) {

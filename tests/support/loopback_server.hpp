@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -87,6 +88,14 @@ public:
         }
         out.resize(got);
         return out;
+    }
+
+    // Receives one line, without its '\n' (what arrived so far if the client closes first).
+    std::string receive_line() {
+        std::string line;
+        char c = 0;
+        while (::recv(s_, &c, 1, 0) == 1 && c != '\n') line.push_back(c);
+        return line;
     }
 
     // Orderly close: the client reads end of stream.

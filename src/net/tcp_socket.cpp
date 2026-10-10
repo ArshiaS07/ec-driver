@@ -7,6 +7,8 @@
 #include <system_error>
 #include <utility>
 
+#include "detail/deadline.hpp"
+
 namespace {
 
 enum class Direction { Read, Write };
@@ -141,7 +143,8 @@ Wait wait_for(socket_t s, Direction d, int timeout_ms, int& error) {
 namespace ec::net {
 namespace {
 
-using Clock = std::chrono::steady_clock;
+using detail::Clock;
+using detail::deadline_after;
 
 constexpr std::size_t kMaxIo = std::size_t{1} << 30;  // bytes per send/recv call; larger transfers loop
 
@@ -155,19 +158,12 @@ struct FreeAddrinfo {
 
 std::unexpected<NetError> fail(NetError::Kind kind, int code = 0) { return std::unexpected(NetError{kind, code}); }
 
-// now + timeout, saturated instead of overflowing for very long timeouts.
-Clock::time_point deadline_after(TcpSocket::Timeout timeout) {
-    const auto now = Clock::now();
-    const auto room = std::chrono::floor<TcpSocket::Timeout>(Clock::time_point::max() - now);
-    return timeout >= room ? Clock::time_point::max() : now + timeout;
-}
-
 // Waits until the socket is ready or `deadline` passes. Interrupted and early
 // returns are retried, so Timeout means the deadline has passed.
 Wait wait_until(socket_t s, Direction d, Clock::time_point deadline, int& error) {
     for (;;) {
-        const auto left = std::chrono::ceil<std::chrono::milliseconds>(deadline - Clock::now()).count();
-        const int ms = static_cast<int>(std::clamp<decltype(left)>(left, 0, INT_MAX));
+        const auto left = detail::time_left(deadline).count();
+        const int ms = static_cast<int>(std::min<decltype(left)>(left, INT_MAX));
         const Wait w = wait_for(s, d, ms, error);
         if (w == Wait::Ready) return w;
         if (w == Wait::Error && !interrupted(error)) return w;

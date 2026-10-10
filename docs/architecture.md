@@ -56,7 +56,7 @@ plain unit tests.
 | bytes | `command::LineFramer` | 8055 byte stream → newline-terminated lines | yes | **done** |
 | codec | `feedback::Frame`, `feedback::decode` | 1024 bytes → typed frame (wire units) | yes | **done** |
 | codec | `command::*` structs | describe one SDK call: method, params, reply type | yes | **first 7 done** |
-| codec | `command::encode`, `parse_reply` | request → JSON line; reply line → id + result or error | yes | **done** |
+| codec | `command::encode`, `parse_response` | request → JSON line; response line → id + result or error | yes | **done** |
 | endpoint | `command::Client` | send one request, wait for its reply, enforce the timeout | no | **done** |
 | endpoint | `feedback::Receiver` | own the 8056 thread: socket → framer → decode → publish | no | |
 | endpoint | `feedback::Latest` | hold the newest frame; copy-out, `wait_next()`, age | no | |

@@ -12,6 +12,7 @@ habit of wrapping every result in a JSON string. Unknown methods get the real
 
     --delay-ms N   answer every call N ms late (exercises timeouts)
     --stale        send a reply with a wrong id before each real one
+    --garbage      send a line that is not JSON-RPC before each real reply
     --split        send every reply in two TCP pieces
 
 Standard library only; works on Linux and Windows.
@@ -73,6 +74,8 @@ def serve(conn: socket.socket, args: argparse.Namespace) -> None:
             print(f"  <- {request}")
             if args.delay_ms:
                 time.sleep(args.delay_ms / 1000.0)
+            if args.garbage:
+                conn.sendall(b"this is not a JSON-RPC response\n")
             if args.stale:
                 send(conn, {"jsonrpc": "2.0", "result": "0", "id": 999999}, args.split)
             send(conn, reply_for(request), args.split)
@@ -84,6 +87,7 @@ def main() -> None:
     p.add_argument("--port", type=int, default=8055)
     p.add_argument("--delay-ms", type=int, default=0)
     p.add_argument("--stale", action="store_true")
+    p.add_argument("--garbage", action="store_true")
     p.add_argument("--split", action="store_true")
     args = p.parse_args()
 

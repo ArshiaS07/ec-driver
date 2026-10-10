@@ -69,6 +69,23 @@ TEST(LineFramer, DropsOversizedLineAndRecovers) {
     EXPECT_EQ(f.oversized_lines(), 1u);
 }
 
+TEST(LineFramer, OversizedLineDoesNotTakeCompleteLinesWithIt) {
+    LineFramer f;
+    f.push(bytes("before\n"));
+    f.push(bytes(std::string(LineFramer::kMaxLine + 1, 'x')));
+    f.push(bytes("\nafter\n"));
+    EXPECT_EQ(drain(f), (std::vector<std::string>{"before", "after"}));
+    EXPECT_EQ(f.oversized_lines(), 1u);
+}
+
+TEST(LineFramer, LineOfExactlyMaxLengthIsKept) {
+    LineFramer f;
+    const std::string longest(LineFramer::kMaxLine, 'x');
+    f.push(bytes(longest + "\n"));
+    EXPECT_EQ(drain(f), (std::vector<std::string>{longest}));
+    EXPECT_EQ(f.oversized_lines(), 0u);
+}
+
 TEST(LineFramer, ResetDropsPartialLine) {
     LineFramer f;
     f.push(bytes("half"));

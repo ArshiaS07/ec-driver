@@ -16,16 +16,16 @@ add_library(ec_driver
     src/command/client.cpp
     src/command/codec.cpp
     src/command/line_framer.cpp
-    src/command/movement.cpp
-    src/command/param.cpp
-    src/command/system.cpp
     src/feedback/frame.cpp
     src/feedback/framer.cpp
     src/net/tcp_socket.cpp
 )
 
 add_library(ec::driver ALIAS ec_driver)
-target_include_directories(ec_driver PUBLIC ${PROJECT_SOURCE_DIR}/include)
+target_include_directories(ec_driver
+    PUBLIC ${PROJECT_SOURCE_DIR}/include
+    PRIVATE ${PROJECT_SOURCE_DIR}/src  # private headers, e.g. "detail/deadline.hpp"
+)
 target_compile_features(ec_driver PUBLIC cxx_std_23)
 set_target_properties(ec_driver PROPERTIES CXX_EXTENSIONS OFF)
 ec_set_warnings(ec_driver)

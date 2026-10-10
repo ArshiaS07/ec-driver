@@ -71,6 +71,7 @@ bool add_pair(Json& params, std::string_view arg) {
 }  // namespace
 
 int main(int argc, char** argv) {
+    std::string host = "192.168.0.200";  // this tool's default; the library has none
     ec::command::Client::Options options;
     bool allow_write = false;
     std::string method;
@@ -79,7 +80,7 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         const std::string_view a = argv[i];
         if (a == "--host" && i + 1 < argc) {
-            options.host = argv[++i];
+            host = argv[++i];
         } else if (a == "--port" && i + 1 < argc) {
             options.port = static_cast<std::uint16_t>(std::atoi(argv[++i]));
         } else if (a == "--timeout" && i + 1 < argc) {
@@ -113,9 +114,9 @@ int main(int argc, char** argv) {
         return 2;
     }
 
-    auto client = ec::command::Client::connect(options);
+    auto client = ec::command::Client::connect(host, options);
     if (!client) {
-        err("{}:{}: {}\n", options.host, options.port, client.error().message);
+        err("{}:{}: {}\n", host, options.port, client.error().message);
         return 1;
     }
     const auto result = client->call(ec::command::Request{method, params});
