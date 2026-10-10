@@ -52,6 +52,18 @@ TEST(FeedbackFrame, DecodesEveryField) {
     EXPECT_FALSE(f.force_sensor_connected);
 }
 
+TEST(FeedbackFrame, KeepsStatusValuesTheManualDoesNotDefine) {
+    // One unknown status value must not cost the rest of the frame (the joint
+    // positions above all): the frame decodes, and is_valid() flags the field.
+    auto bytes = ec::test::make_frame();
+    bytes[240] = 9;  // robotState: int32 at offset 237, big-endian, so its low byte is at 240
+    const auto r = decode(bytes);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(static_cast<int>(r->robot_state), 9);
+    EXPECT_FALSE(ec::is_valid(r->robot_state));
+    EXPECT_EQ(r->joint_pos_deg[0], 10.0);
+}
+
 TEST(FeedbackFrame, RejectsBadMatchingWord) {
     auto bytes = ec::test::make_frame();
     bytes[kFrameSize - 1] ^= 0xFF;

@@ -1,6 +1,7 @@
 #include "ec/feedback/framer.hpp"
 
 #include <algorithm>
+#include <cstddef>
 
 namespace ec::feedback {
 namespace {
@@ -9,32 +10,34 @@ bool matching_word_at(const std::vector<std::uint8_t>& buf, std::size_t offset) 
     return is_matching_word(std::span<const std::uint8_t, 4>(buf.data() + offset, 4));
 }
 
+std::ptrdiff_t as_offset(std::size_t n) { return static_cast<std::ptrdiff_t>(n); }
+
 }  // namespace
 
 void Framer::push(std::span<const std::uint8_t> bytes) { buffer_.insert(buffer_.end(), bytes.begin(), bytes.end()); }
 
 std::optional<RawFrame> Framer::pop() {
-    while (buffer_.size() >= kFrameSize) {
-        if (matching_word_at(buffer_, kMatchOffset)) {
-            RawFrame frame{};
-            std::copy_n(buffer_.begin(), kFrameSize, frame.begin());
-            buffer_.erase(buffer_.begin(), buffer_.begin() + static_cast<std::ptrdiff_t>(kFrameSize));
-            ++stats_.frames;
-            return frame;
+    // The first matching word at kMatchOffset or later ends a frame.
+    for (std::size_t end = kMatchOffset; end + 4 <= buffer_.size(); ++end) {
+        if (!matching_word_at(buffer_, end)) continue;
+        const std::size_t start = end - kMatchOffset;
+        if (start > 0) {
+            ++stats_.resyncs;
+            stats_.bytes_discarded += start;
         }
+        RawFrame frame{};
+        std::copy_n(buffer_.begin() + as_offset(start), kFrameSize, frame.begin());
+        buffer_.erase(buffer_.begin(), buffer_.begin() + as_offset(start + kFrameSize));
+        ++stats_.frames;
+        return frame;
+    }
 
-        // Misaligned. A matching word marks the end of some frame, so the next
-        // frame starts right after the first one found.
-        std::size_t drop = buffer_.size() - 3;  // none found: keep a possible partial word
-        for (std::size_t i = 0; i + 4 <= buffer_.size(); ++i) {
-            if (matching_word_at(buffer_, i)) {
-                drop = i + 4;
-                ++stats_.resyncs;
-                break;
-            }
-        }
+    // No frame ends in the buffer yet. Only its last kFrameSize - 1 bytes can
+    // still be the start of one; anything before them is dropped.
+    if (buffer_.size() >= kFrameSize) {
+        const std::size_t drop = buffer_.size() - (kFrameSize - 1);
         stats_.bytes_discarded += drop;
-        buffer_.erase(buffer_.begin(), buffer_.begin() + static_cast<std::ptrdiff_t>(drop));
+        buffer_.erase(buffer_.begin(), buffer_.begin() + as_offset(drop));
     }
     return std::nullopt;
 }

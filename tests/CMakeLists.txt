@@ -11,6 +11,7 @@ add_executable(ec_tests
     feedback/frame_test.cpp
     feedback/framer_test.cpp
     net/tcp_socket_test.cpp
+    status_test.cpp
 )
 target_include_directories(ec_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(ec_tests PRIVATE ec::driver GTest::gtest_main Threads::Threads)

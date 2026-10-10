@@ -2,7 +2,7 @@
 
 #include <cassert>
 
-#include "ec/detail/big_endian.hpp"
+#include "detail/big_endian.hpp"
 
 namespace ec::feedback {
 

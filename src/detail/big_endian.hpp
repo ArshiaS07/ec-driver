@@ -1,5 +1,5 @@
 #pragma once
-// Sequential big-endian reader over a byte span.
+// Sequential big-endian reader over a byte span (private to the library).
 //
 // The controller sends every field in network (big-endian) byte order. Each
 // value is copied into an unsigned integer of the same size, byte-swapped on

@@ -129,8 +129,7 @@ working tree, on both systems, regardless of each user's `core.autocrlf`.
       feedback/           port 8056: frame, framer
       command/            port 8055: one type per SDK call, codec, client
       motion/             motion families                                     (later)
-      detail/             internals
-    src/                  mirrors include/ec/
+    src/                  mirrors include/ec/; detail/ holds private headers
     apps/                 command-line tools (ec_monitor, ec_query)
     tests/                GoogleTest; support/ holds shared test helpers
     tools/                development helpers (fake_8056.py, fake_8055.py)

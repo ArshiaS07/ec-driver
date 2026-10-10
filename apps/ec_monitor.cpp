@@ -146,8 +146,8 @@ std::string_view flag(bool on, std::string_view name) { return on ? name : ""; }
 
 void print_frame(const fb::Frame& f, std::uint64_t seq, const std::string& rate) {
     out("---- #{}  ctrl {} ms  | {}\n", seq, f.timestamp_ms, rate);
-    out("mode {}, state {}, cycle {}  {}{}{}{}{}{}\n", ec::to_string(f.robot_mode), ec::to_string(f.robot_state),
-        ec::to_string(f.cycle_mode), flag(f.servo_ready, "[servo] "), flag(f.motors_synced, "[synced] "),
+    out("mode {}, state {}, cycle {}  {}{}{}{}{}{}\n", f.robot_mode, f.robot_state, f.cycle_mode,
+        flag(f.servo_ready, "[brakes released] "), flag(f.motors_synced, "[synced] "),
         flag(f.emergency_stop, "[E-STOP] "), flag(f.collision, "[COLLISION] "), flag(f.drag_enabled, "[drag] "),
         flag(f.force_sensor_connected, "[F/T] "));
 
