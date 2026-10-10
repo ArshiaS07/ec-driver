@@ -52,7 +52,7 @@ vcpkg packages, so Linux and Windows builds of the same checkout never collide.
 
 | Preset | Host | Builds |
 |---|---|---|
-| `linux-debug` | Linux | native, warnings as errors |
+| `linux-debug` | Linux | native, warnings as errors, AddressSanitizer + UBSan |
 | `linux-release` | Linux | native |
 | `linux-aarch64` | Linux | cross, 64-bit ARM Linux |
 | `windows-debug` | Windows | MSVC, warnings as errors |
@@ -73,6 +73,10 @@ Needs GCC 13 or newer (for `<expected>` with C++23).
     ~/vcpkg/bootstrap-vcpkg.sh -disableMetrics
     echo 'export VCPKG_ROOT=$HOME/vcpkg' >> ~/.bashrc && source ~/.bashrc
 
+`vcpkg.json` pins a vcpkg commit (`builtin-baseline`). If configuring fails
+with "... exists on disk, but not in '<commit>'", the vcpkg clone is older than
+that commit; update it with `git -C "$VCPKG_ROOT" pull`.
+
 For `linux-aarch64` also:
 
     sudo apt install -y g++-aarch64-linux-gnu qemu-user   # qemu lets ctest run the ARM tests here
@@ -90,10 +94,28 @@ Run the preset commands from the "Developer PowerShell" of your Visual Studio
 version (it puts the MSVC compiler on the path), or open the folder in Visual
 Studio / VS Code, which read `CMakePresets.json` directly.
 
+### Formatting and static analysis
+
+`.clang-format` defines the style; CI checks it with clang-format 22.1.8. Format
+everything before committing (or let the editor format on save):
+
+    pipx install clang-format==22.1.8      # once
+    git ls-files '*.cpp' '*.hpp' | xargs clang-format -i
+
+`.clang-tidy` enables bug-finding checks only. It reads the compile commands of
+a configured build:
+
+    git ls-files '*.cpp' | xargs clang-tidy -p build/linux-debug --quiet
+
+If it reports standard headers as not found (`'array' file not found`), clang
+picked a GCC directory without C++ headers; name yours, e.g.
+`--extra-arg=--gcc-install-dir=/usr/lib/gcc/x86_64-linux-gnu/15`.
+
 ### Continuous integration
 
-`.github/workflows/ci.yml` builds and tests all five presets on every push to
-`main` and on every pull request, with the same commands as above.
+`.github/workflows/ci.yml` checks formatting, then builds and tests all five
+presets on every push to `master` and on every pull request, with the same
+commands as above.
 
 ### Line endings
 

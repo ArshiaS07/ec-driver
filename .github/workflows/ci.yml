@@ -1,0 +1,93 @@
+# Format check, then build and test every preset with the README's commands.
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  format:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: clang-format (same version as local development)
+        run: |
+          pipx install clang-format==22.1.8
+          git ls-files '*.cpp' '*.hpp' | xargs clang-format --dry-run --Werror
+
+  build:
+    name: ${{ matrix.preset }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { preset: linux-debug, os: ubuntu-24.04 }
+          - { preset: linux-release, os: ubuntu-24.04 }
+          - { preset: linux-aarch64, os: ubuntu-24.04 }
+          - { preset: windows-debug, os: windows-2022 }
+          - { preset: windows-release, os: windows-2022 }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Paths
+        shell: bash
+        run: |
+          echo "VCPKG_ROOT=$RUNNER_TEMP/vcpkg" >> "$GITHUB_ENV"
+          echo "VCPKG_BINARY_SOURCES=clear;files,$RUNNER_TEMP/vcpkg-cache,readwrite" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/vcpkg-cache"
+
+      - name: Linux packages
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build
+          if [ "${{ matrix.preset }}" = linux-aarch64 ]; then
+            sudo apt-get install -y g++-aarch64-linux-gnu qemu-user
+          fi
+
+      # AddressSanitizer in GCC 13 can crash at start-up with the kernel's
+      # 32-bit mmap randomisation; 28 bits is the long-standing default.
+      - name: ASan-compatible address randomisation
+        if: matrix.preset == 'linux-debug'
+        run: sudo sysctl -w vm.mmap_rnd_bits=28
+
+      - name: MSVC environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      # Full clone: manifest mode reads the pinned baseline from vcpkg's history.
+      - name: vcpkg
+        shell: bash
+        run: git clone --quiet https://github.com/microsoft/vcpkg "$VCPKG_ROOT"
+      - name: Bootstrap vcpkg (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          "$VCPKG_ROOT/bootstrap-vcpkg.sh" -disableMetrics
+      - name: Bootstrap vcpkg (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
+
+      - name: vcpkg binary cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/vcpkg-cache
+          key: vcpkg-${{ matrix.os }}-${{ matrix.preset }}-${{ hashFiles('vcpkg.json') }}
+
+      - name: Configure
+        run: cmake --preset ${{ matrix.preset }}
+      - name: Build
+        run: cmake --build --preset ${{ matrix.preset }}
+      - name: Test
+        run: ctest --preset ${{ matrix.preset }}

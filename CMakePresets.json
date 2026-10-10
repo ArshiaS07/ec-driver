@@ -11,7 +11,6 @@
       "hidden": true,
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/${presetName}",
-      "installDir": "${sourceDir}/build/install/${presetName}",
       "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
       "cacheVariables": {
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
@@ -50,11 +49,12 @@
     },
     {
       "name": "linux-debug",
-      "displayName": "Linux debug",
+      "displayName": "Linux debug (ASan + UBSan)",
       "inherits": "linux",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
-        "EC_WARNINGS_AS_ERRORS": "ON"
+        "EC_WARNINGS_AS_ERRORS": "ON",
+        "EC_SANITIZE": "ON"
       }
     },
     {
@@ -149,6 +149,9 @@
       },
       "output": {
         "outputOnFailure": true
+      },
+      "execution": {
+        "noTestsAction": "error"
       }
     },
     {
@@ -161,6 +164,9 @@
       },
       "output": {
         "outputOnFailure": true
+      },
+      "execution": {
+        "noTestsAction": "error"
       }
     },
     {

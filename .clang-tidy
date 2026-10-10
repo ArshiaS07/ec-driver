@@ -1,0 +1,14 @@
+# Bug-finding checks only. Style belongs to clang-format; readability and
+# modernize checks are left out on purpose, so the tool reports likely defects
+# rather than opinions.
+Checks: >
+  -*,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  clang-analyzer-*,
+  concurrency-*,
+  performance-*,
+  -performance-enum-size
+# Our code only, never dependency headers from the vcpkg trees under build/.
+HeaderFilterRegex: '/(include/ec|src|apps|tests)/'
+ExcludeHeaderFilterRegex: '/build/'

@@ -13,3 +13,4 @@
 *.jpg  binary
 *.h5   binary
 *.zip  binary
+*.bin  binary

@@ -4,10 +4,9 @@
 # Visual Studio "Open Folder" default build location
 /out/
 
-# vcpkg: manifest mode installs into each build tree; these catch installs run
-# from the source root by hand and the CI binary cache
+# vcpkg: manifest mode installs into each build tree; this catches an install
+# run from the source root by hand
 /vcpkg_installed/
-/.vcpkg-cache/
 
 # Personal CMake presets (local paths, compilers); shared presets live in CMakePresets.json
 CMakeUserPresets.json

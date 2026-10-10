@@ -4,8 +4,10 @@ project(ec_driver VERSION 0.1.0 DESCRIPTION "Driver for Elite EC-series robot co
 option(EC_BUILD_TESTS "Build unit tests" ${PROJECT_IS_TOP_LEVEL})
 option(EC_BUILD_APPS "Build command-line tools" ${PROJECT_IS_TOP_LEVEL})
 option(EC_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
+option(EC_SANITIZE "Build with AddressSanitizer and UndefinedBehaviorSanitizer (GCC/Clang)" OFF)
 
 include(cmake/CompilerWarnings.cmake)
+include(cmake/Sanitizers.cmake)
 
 # One library for now. It splits into per-layer targets (feedback, command,
 # motion) only when something needs one layer without the others.

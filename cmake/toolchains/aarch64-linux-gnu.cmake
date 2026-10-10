@@ -1,7 +1,8 @@
 # Cross-compile for 64-bit ARM Linux with the GNU toolchain
 # (Ubuntu: sudo apt install g++-aarch64-linux-gnu).
-# Used by the "aarch64-linux" preset; vcpkg builds dependencies for the
-# matching arm64-linux triplet.
+# Used by the linux-aarch64 preset, which also selects vcpkg's arm64-linux
+# triplet. vcpkg chainloads this file for its own builds too; the C compiler is
+# set for those, since this project itself is C++ only.
 set(CMAKE_SYSTEM_NAME Linux)
 set(CMAKE_SYSTEM_PROCESSOR aarch64)
 
@@ -15,6 +16,8 @@ if(EC_QEMU)
     set(CMAKE_CROSSCOMPILING_EMULATOR ${EC_QEMU} -L /usr/aarch64-linux-gnu)
 endif()
 
+# Libraries, headers and packages come from the target side only; build tools
+# from the host.
 set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
 set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)

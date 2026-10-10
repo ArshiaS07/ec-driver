@@ -1,0 +1,6 @@
+# Tests: as the root config, minus checks that misread GoogleTest. ASSERT_*
+# returns from the test on failure, which unchecked-optional-access does not
+# model, so every optional checked with ASSERT_TRUE is reported.
+InheritParentConfig: true
+Checks: >
+  -bugprone-unchecked-optional-access
