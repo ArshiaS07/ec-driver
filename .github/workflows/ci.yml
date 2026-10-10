@@ -18,7 +18,7 @@ jobs:
   format:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: clang-format (same version as local development)
         run: |
           pipx install clang-format==22.1.8
@@ -37,13 +37,22 @@ jobs:
           - { preset: windows-debug, os: windows-2022 }
           - { preset: windows-release, os: windows-2022 }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      # Before "Paths": the Visual Studio environment sets VCPKG_ROOT to its
-      # bundled vcpkg, which would otherwise replace ours.
+      # Visual Studio's developer environment (cl, link, ninja) for the steps
+      # below: run VsDevCmd and export the variables it changes. Before
+      # "Paths", because it sets VCPKG_ROOT to Visual Studio's bundled vcpkg.
       - name: MSVC environment
         if: runner.os == 'Windows'
-        uses: ilammy/msvc-dev-cmd@v1
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath
+          $before = @{}
+          Get-ChildItem env: | ForEach-Object { $before[$_.Name] = $_.Value }
+          & $env:COMSPEC /s /c "`"$vs\Common7\Tools\VsDevCmd.bat`" -arch=x64 -host_arch=x64 -no_logo && set" | ForEach-Object {
+            $name, $value = $_ -split '=', 2
+            if ($value -and $before[$name] -ne $value) { "$name=$value" >> $env:GITHUB_ENV }
+          }
 
       - name: Paths
         shell: bash
@@ -82,7 +91,7 @@ jobs:
           & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
 
       - name: vcpkg binary cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ runner.temp }}/vcpkg-cache
           key: vcpkg-${{ matrix.os }}-${{ matrix.preset }}-${{ hashFiles('vcpkg.json') }}
