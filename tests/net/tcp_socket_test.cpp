@@ -169,8 +169,11 @@ TEST(TcpSocket, SendTimesOutWhenThePeerDoesNotRead) {
     TcpSocket sock = connect_to(server);
     auto peer = server.accept();
 
-    const std::vector<std::uint8_t> data(std::size_t{64} << 20);  // more than both socket buffers hold
-    const auto sent = sock.send_all(data, 200ms);
+    // Send until the socket buffers are full. One call is not enough: Windows
+    // accepts any single send whole while its buffer has room left.
+    const std::vector<std::uint8_t> chunk(std::size_t{1} << 20);
+    std::expected<void, NetError> sent;
+    for (int i = 0; i < 1024 && sent; ++i) sent = sock.send_all(chunk, 200ms);
     ASSERT_FALSE(sent);
     EXPECT_EQ(sent.error().kind, NetError::Kind::Timeout);
 }

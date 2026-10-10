@@ -63,8 +63,9 @@ public:
     /// empty (Kind::Io otherwise).
     [[nodiscard]] std::expected<std::size_t, NetError> receive(std::span<std::uint8_t> buffer, Timeout timeout);
 
-    /// Sends all of `data` within `timeout`, or fails. After a failure, an unknown
-    /// prefix of `data` may have been sent.
+    /// Sends all of `data` within `timeout`, or fails. Success means the operating
+    /// system accepted the bytes, not that the peer has received them. After a
+    /// failure, an unknown prefix of `data` may have been sent.
     [[nodiscard]] std::expected<void, NetError> send_all(std::span<const std::uint8_t> data, Timeout timeout);
 
     /// True while this object owns a socket. It stays true after the peer closes;
