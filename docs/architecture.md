@@ -53,11 +53,11 @@ plain unit tests.
 | bytes | `detail::BigEndianReader` | read big-endian scalars from a span | yes | **done** |
 | bytes | `net::TcpSocket` | RAII TCP socket, Linux + Windows: connect, send, receive, all with timeouts | no | **done** |
 | bytes | `feedback::Framer` | 8056 byte stream → aligned 1024-byte frames, with resync | yes | **done** |
-| bytes | `command::LineFramer` | 8055 byte stream → newline-terminated lines | yes | next |
+| bytes | `command::LineFramer` | 8055 byte stream → newline-terminated lines | yes | **done** |
 | codec | `feedback::Frame`, `feedback::decode` | 1024 bytes → typed frame (wire units) | yes | **done** |
 | codec | `command::*` structs | describe one SDK call: method, params, reply type | yes | **first 7 done** |
 | codec | `command::encode`, `parse_reply` | request → JSON line; reply line → id + result or error | yes | **done** |
-| endpoint | `command::Client` | send one request, wait for its reply, enforce the timeout | no | |
+| endpoint | `command::Client` | send one request, wait for its reply, enforce the timeout | no | **done** |
 | endpoint | `feedback::Receiver` | own the 8056 thread: socket → framer → decode → publish | no | |
 | endpoint | `feedback::Latest` | hold the newest frame; copy-out, `wait_next()`, age | no | |
 | motion | `motion::PointToPoint`, `Waypoints`, `Jog`, `Velocity`, `ServoStream`, `TimedTrajectory`, `Program` | one controller motion protocol each (see `sdk_calls.md`) | yes | |
@@ -230,7 +230,8 @@ Mapped to the PLCopen motion state diagram, the de facto standard:
 2. **done:** `command::*` structs for 5 queries + `MoveByJoint` + `Stop`, and the
    codec (nlohmann-json). Tested against the manual's templates and real EA66
    replies; every result arrives wrapped in a JSON string and is unwrapped.
-3. `command::LineFramer` + `command::Client` + `apps/ec_query` (replaces `nc`).
+3. **done:** `command::LineFramer` + `command::Client` + `apps/ec_query` (replaces
+   `nc`) + `tools/fake_8055.py`.
 4. `feedback::Receiver` + `feedback::Latest`; `ec_monitor` moves onto them; SI
    boundary.
 5. `supervisor::step` with tests; then the shell in observe-only mode.

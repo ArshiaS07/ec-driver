@@ -15,7 +15,9 @@ and cross-compiles for 64-bit ARM Linux.
 | `ec::feedback` (port 8056: framing + decoding) | done, tested |
 | `apps/ec_monitor` (console monitor) | done |
 | `ec::command` codec + first 7 calls (port 8055) | done, tested against real replies |
-| `ec::command::Client` (sending over TCP) | next |
+| `ec::command::Client` (send a call, wait for its reply) | done |
+| `apps/ec_query` (one SDK call from the command line) | done |
+| supervisor (state machine, motion gate) | next |
 | everything else | see `docs/architecture.md` §9 |
 
 ## Try it
@@ -24,11 +26,20 @@ and cross-compiles for 64-bit ARM Linux.
     ./build/linux-debug/apps/ec_monitor --rate 10
     ./build/linux-debug/apps/ec_monitor --all > run.txt    # every frame (~125/s) into a file
 
-Without the robot, run the fake server (Python 3, standard library only) in a
-second terminal and point the monitor at it:
+One SDK call from the command line (read-only by default; `--write` for
+anything else):
+
+    ./build/linux-debug/apps/ec_query getRobotMode
+    ./build/linux-debug/apps/ec_query getDH index=0
+
+Without the robot, run the fake servers (Python 3, standard library only) in a
+second terminal and point the tools at them:
 
     python3 tools/fake_8056.py --chop --garbage
     ./build/linux-debug/apps/ec_monitor 127.0.0.1
+
+    python3 tools/fake_8055.py --split --stale
+    ./build/linux-debug/apps/ec_query --host 127.0.0.1 getRobotMode
 
 On Windows the binary is `build\windows-debug\apps\ec_monitor.exe`.
 
@@ -94,13 +105,13 @@ working tree, on both systems, regardless of each user's `core.autocrlf`.
     include/ec/           public headers, one directory per namespace
       net/                TCP transport (both ports)
       feedback/           port 8056: frame, framer
-      command/            port 8055: one type per SDK call, codec           (client next)
+      command/            port 8055: one type per SDK call, codec, client
       motion/             motion families                                     (later)
       detail/             internals
     src/                  mirrors include/ec/
-    apps/                 command-line tools (ec_monitor)
+    apps/                 command-line tools (ec_monitor, ec_query)
     tests/                GoogleTest; support/ holds shared test helpers
-    tools/                development helpers (fake_8056.py)
+    tools/                development helpers (fake_8056.py, fake_8055.py)
     docs/
     cmake/                warnings, cross toolchains
 

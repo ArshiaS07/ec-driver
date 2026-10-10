@@ -4,6 +4,7 @@ include(GoogleTest)
 add_executable(ec_tests
     command/codec_test.cpp
     command/commands_test.cpp
+    command/line_framer_test.cpp
     feedback/frame_test.cpp
     feedback/framer_test.cpp
 )

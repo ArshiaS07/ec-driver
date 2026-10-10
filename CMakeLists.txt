@@ -11,7 +11,9 @@ include(cmake/CompilerWarnings.cmake)
 # motion) only when something needs one layer without the others.
 add_library(ec_driver
     src/status.cpp
+    src/command/client.cpp
     src/command/codec.cpp
+    src/command/line_framer.cpp
     src/command/movement.cpp
     src/command/param.cpp
     src/command/system.cpp
@@ -19,6 +21,7 @@ add_library(ec_driver
     src/feedback/framer.cpp
     src/net/tcp_socket.cpp
 )
+
 add_library(ec::driver ALIAS ec_driver)
 target_include_directories(ec_driver PUBLIC ${PROJECT_SOURCE_DIR}/include)
 target_compile_features(ec_driver PUBLIC cxx_std_23)

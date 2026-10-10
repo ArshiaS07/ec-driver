@@ -33,10 +33,13 @@ struct Error {
         Refused,         // the call returned false (the manual's "failure: false")
         Remote,          // any other JSON-RPC error code
         BadReply,        // reply not understood: malformed JSON, wrong shape or value
+        // Raised by the client, not by the controller:
+        Timeout,       // no reply within the timeout; the connection stays usable
+        Disconnected,  // connecting failed or the connection was lost
     };
     Kind kind;
-    int code = 0;         // JSON-RPC error code; 0 for Refused and BadReply
-    std::string message;  // the controller's message, or what was wrong with the reply
+    int code = 0;         // JSON-RPC error code, or the OS error code for Disconnected; else 0
+    std::string message;  // the controller's message, or what went wrong
 };
 [[nodiscard]] std::string_view to_string(Error::Kind k) noexcept;
 
@@ -57,7 +60,7 @@ concept Command = requires(const C& c, const Json& result) {
 // A command with its type erased: what the codec encodes. Motion families
 // return sequences of these for the supervisor to send.
 struct Request {
-    std::string_view method;  // always one of the commands' static method names
+    std::string_view method;  // usually a command's static name; must outlive the Request
     Json params;              // null: no "params" member
 };
 

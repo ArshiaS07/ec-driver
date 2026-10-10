@@ -35,6 +35,8 @@ std::string_view to_string(Error::Kind k) noexcept {
         case Error::Kind::Refused: return "controller returned false";
         case Error::Kind::Remote: return "controller error";
         case Error::Kind::BadReply: return "bad reply";
+        case Error::Kind::Timeout: return "timeout";
+        case Error::Kind::Disconnected: return "disconnected";
     }
     return "unknown";
 }
