@@ -10,6 +10,11 @@ include(cmake/CompilerWarnings.cmake)
 # One library for now. It splits into per-layer targets (feedback, command,
 # motion) only when something needs one layer without the others.
 add_library(ec_driver
+    src/status.cpp
+    src/command/codec.cpp
+    src/command/movement.cpp
+    src/command/param.cpp
+    src/command/system.cpp
     src/feedback/frame.cpp
     src/feedback/framer.cpp
     src/net/tcp_socket.cpp
@@ -19,6 +24,10 @@ target_include_directories(ec_driver PUBLIC ${PROJECT_SOURCE_DIR}/include)
 target_compile_features(ec_driver PUBLIC cxx_std_23)
 set_target_properties(ec_driver PROPERTIES CXX_EXTENSIONS OFF)
 ec_set_warnings(ec_driver)
+
+# PUBLIC: command parameters are nlohmann::ordered_json in the public headers.
+find_package(nlohmann_json CONFIG REQUIRED)
+target_link_libraries(ec_driver PUBLIC nlohmann_json::nlohmann_json)
 if(WIN32)
     target_link_libraries(ec_driver PRIVATE ws2_32)
 endif()

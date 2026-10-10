@@ -35,6 +35,7 @@ interfaces versus command interfaces):
 | `ec::motion` | motion families: the controller's motion protocols, built from commands | `ec::command` |
 | `ec::supervisor` | controller state mirror, gate, faults | all of the above |
 | `ec::net` | TCP transport shared by both ports | the network |
+| `ec` | status enums both ports report (`RobotState`, `RobotMode`, `CycleMode`) | |
 | `ec::detail` | internals (byte readers) | |
 
 A query such as `getRobotMode` is still a `command`: it is a request sent on
@@ -54,8 +55,8 @@ plain unit tests.
 | bytes | `feedback::Framer` | 8056 byte stream → aligned 1024-byte frames, with resync | yes | **done** |
 | bytes | `command::LineFramer` | 8055 byte stream → newline-terminated lines | yes | next |
 | codec | `feedback::Frame`, `feedback::decode` | 1024 bytes → typed frame (wire units) | yes | **done** |
-| codec | `command::*` structs | describe one SDK call: method, params, reply type | yes | next |
-| codec | `command::Codec` | request → JSON line; reply line → id + result or error | yes | next |
+| codec | `command::*` structs | describe one SDK call: method, params, reply type | yes | **first 7 done** |
+| codec | `command::encode`, `parse_reply` | request → JSON line; reply line → id + result or error | yes | **done** |
 | endpoint | `command::Client` | send one request, wait for its reply, enforce the timeout | no | |
 | endpoint | `feedback::Receiver` | own the 8056 thread: socket → framer → decode → publish | no | |
 | endpoint | `feedback::Latest` | hold the newest frame; copy-out, `wait_next()`, age | no | |
@@ -226,9 +227,9 @@ Mapped to the PLCopen motion state diagram, the de facto standard:
 
 1. **done:** repository, build system, CI; `net::TcpSocket`, `feedback::Framer`,
    `feedback::decode`, `apps/ec_monitor`, `tools/fake_8056.py`.
-2. `command::*` structs for 5 queries + `MoveByJoint` + `Stop`, and
-   `command::Codec` (adds nlohmann-json to `vcpkg.json`). Pure; tests against
-   the manual's JSON and the captured reply `{"jsonrpc":"2.0","result":"2","id":1}`.
+2. **done:** `command::*` structs for 5 queries + `MoveByJoint` + `Stop`, and the
+   codec (nlohmann-json). Tested against the manual's templates and real EA66
+   replies; every result arrives wrapped in a JSON string and is unwrapped.
 3. `command::LineFramer` + `command::Client` + `apps/ec_query` (replaces `nc`).
 4. `feedback::Receiver` + `feedback::Latest`; `ec_monitor` moves onto them; SI
    boundary.

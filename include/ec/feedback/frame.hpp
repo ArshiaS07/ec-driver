@@ -20,6 +20,8 @@
 #include <span>
 #include <string_view>
 
+#include "ec/status.hpp"
+
 namespace ec::feedback {
 
 inline constexpr std::size_t kFrameSize = 1024;
@@ -30,14 +32,6 @@ inline constexpr std::size_t kWireAxes = 8;  // AXIS_COUNT
 inline constexpr std::size_t kArmAxes = 6;
 
 using RawFrame = std::array<std::uint8_t, kFrameSize>;
-
-enum class RobotState : std::int32_t { Stop = 0, Pause = 1, EmergencyStop = 2, Running = 3, Alarm = 4, Collision = 5 };
-enum class RobotMode : std::int32_t { Teach = 0, Auto = 1, Remote = 2 };
-enum class CycleMode : std::uint8_t { Step = 0, Cycle = 1, Continuous = 2 };
-
-[[nodiscard]] std::string_view to_string(RobotState s) noexcept;
-[[nodiscard]] std::string_view to_string(RobotMode m) noexcept;
-[[nodiscard]] std::string_view to_string(CycleMode c) noexcept;
 
 using WireJoints = std::array<double, kWireAxes>;  // [0..5] are the arm
 using ArmJoints = std::array<double, kArmAxes>;

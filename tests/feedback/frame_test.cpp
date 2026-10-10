@@ -20,18 +20,18 @@ TEST(FeedbackFrame, DecodesEveryField) {
 
     EXPECT_EQ(f.message_size, 1024u);
     EXPECT_EQ(f.timestamp_ms, 1791200688449ull);
-    EXPECT_EQ(f.cycle_mode, CycleMode::Continuous);
+    EXPECT_EQ(f.cycle_mode, ec::CycleMode::Continuous);
     EXPECT_EQ(f.joint_pos_deg[0], 10.0);
     EXPECT_EQ(f.joint_pos_deg[7], 17.0);
     EXPECT_EQ(f.tcp_pose_base[5], 105.0);
     EXPECT_EQ(f.tcp_pose_user[0], 200.0);
     EXPECT_EQ(f.joint_torque_permille[7], 307.0);
-    EXPECT_EQ(f.robot_state, RobotState::Running);
+    EXPECT_EQ(f.robot_state, ec::RobotState::Running);
     EXPECT_TRUE(f.servo_ready);
     EXPECT_TRUE(f.motors_synced);
     EXPECT_EQ(f.motor_speed_rpm[0], -4);
     EXPECT_EQ(f.motor_speed_rpm[7], 3);
-    EXPECT_EQ(f.robot_mode, RobotMode::Remote);
+    EXPECT_EQ(f.robot_mode, ec::RobotMode::Remote);
     EXPECT_EQ(f.analog_in_v[2], 3.0);
     EXPECT_EQ(f.analog_out_v[4], 9.0);
     EXPECT_EQ(f.digital_in, 0x8001ull);

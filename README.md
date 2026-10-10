@@ -14,7 +14,8 @@ and cross-compiles for 64-bit ARM Linux.
 | `ec::net::TcpSocket` (Linux + Windows) | done |
 | `ec::feedback` (port 8056: framing + decoding) | done, tested |
 | `apps/ec_monitor` (console monitor) | done |
-| `ec::command` (port 8055 calls) | next |
+| `ec::command` codec + first 7 calls (port 8055) | done, tested against real replies |
+| `ec::command::Client` (sending over TCP) | next |
 | everything else | see `docs/architecture.md` §9 |
 
 ## Try it
@@ -93,7 +94,7 @@ working tree, on both systems, regardless of each user's `core.autocrlf`.
     include/ec/           public headers, one directory per namespace
       net/                TCP transport (both ports)
       feedback/           port 8056: frame, framer
-      command/            port 8055: one type per SDK call, codec, client   (next)
+      command/            port 8055: one type per SDK call, codec           (client next)
       motion/             motion families                                     (later)
       detail/             internals
     src/                  mirrors include/ec/

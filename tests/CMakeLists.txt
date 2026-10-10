@@ -2,6 +2,8 @@ find_package(GTest CONFIG REQUIRED)
 include(GoogleTest)
 
 add_executable(ec_tests
+    command/codec_test.cpp
+    command/commands_test.cpp
     feedback/frame_test.cpp
     feedback/framer_test.cpp
 )
