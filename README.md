@@ -1,0 +1,109 @@
+# ec-driver
+
+C++23 driver for Elite EC-series robot controllers (target robot: Annuo EA66,
+a rebranded EC66; controller firmware V3.15.3). Builds on Linux and Windows,
+and cross-compiles for 64-bit ARM Linux.
+
+- `docs/architecture.md`: design, components, build order
+- `docs/sdk_calls.md`: every SDK call, classified
+
+## Status
+
+| Part | State |
+|---|---|
+| `ec::net::TcpSocket` (Linux + Windows) | done |
+| `ec::feedback` (port 8056: framing + decoding) | done, tested |
+| `apps/ec_monitor` (console monitor) | done |
+| `ec::command` (port 8055 calls) | next |
+| everything else | see `docs/architecture.md` §9 |
+
+## Try it
+
+    ./build/linux-debug/apps/ec_monitor                    # robot at 192.168.0.200, 2 samples/s
+    ./build/linux-debug/apps/ec_monitor --rate 10
+    ./build/linux-debug/apps/ec_monitor --all > run.txt    # every frame (~125/s) into a file
+
+Without the robot, run the fake server (Python 3, standard library only) in a
+second terminal and point the monitor at it:
+
+    python3 tools/fake_8056.py --chop --garbage
+    ./build/linux-debug/apps/ec_monitor 127.0.0.1
+
+On Windows the binary is `build\windows-debug\apps\ec_monitor.exe`.
+
+## Build
+
+Dependencies come from vcpkg in manifest mode (`vcpkg.json`, pinned baseline).
+Every preset builds into its own directory, `build/<preset>/`, including its
+vcpkg packages, so Linux and Windows builds of the same checkout never collide.
+`cmake --list-presets` shows only the presets for the current OS.
+
+| Preset | Host | Builds |
+|---|---|---|
+| `linux-debug` | Linux | native, warnings as errors |
+| `linux-release` | Linux | native |
+| `linux-aarch64` | Linux | cross, 64-bit ARM Linux |
+| `windows-debug` | Windows | MSVC, warnings as errors |
+| `windows-release` | Windows | MSVC |
+
+The same three commands work for every preset:
+
+    cmake --preset linux-debug
+    cmake --build --preset linux-debug
+    ctest --preset linux-debug
+
+### Linux setup (once)
+
+Needs GCC 13 or newer (for `<expected>` with C++23).
+
+    sudo apt install -y build-essential cmake ninja-build curl zip unzip tar pkg-config git
+    git clone https://github.com/microsoft/vcpkg ~/vcpkg
+    ~/vcpkg/bootstrap-vcpkg.sh -disableMetrics
+    echo 'export VCPKG_ROOT=$HOME/vcpkg' >> ~/.bashrc && source ~/.bashrc
+
+For `linux-aarch64` also:
+
+    sudo apt install -y g++-aarch64-linux-gnu qemu-user   # qemu lets ctest run the ARM tests here
+
+### Windows setup (once)
+
+Install Visual Studio (2022 17.3 or newer, or 2026) with "Desktop development
+with C++"; it includes CMake and Ninja. Then, in PowerShell:
+
+    git clone https://github.com/microsoft/vcpkg $HOME\vcpkg
+    & $HOME\vcpkg\bootstrap-vcpkg.bat -disableMetrics
+    [Environment]::SetEnvironmentVariable("VCPKG_ROOT", "$HOME\vcpkg", "User")
+
+Run the preset commands from the "Developer PowerShell" of your Visual Studio
+version (it puts the MSVC compiler on the path), or open the folder in Visual
+Studio / VS Code, which read `CMakePresets.json` directly.
+
+### Continuous integration
+
+`.github/workflows/ci.yml` builds and tests all five presets on every push to
+`main` and on every pull request, with the same commands as above.
+
+### Line endings
+
+`.gitattributes` keeps every text file LF in the repository and in every
+working tree, on both systems, regardless of each user's `core.autocrlf`.
+
+## Layout
+
+    include/ec/           public headers, one directory per namespace
+      net/                TCP transport (both ports)
+      feedback/           port 8056: frame, framer
+      command/            port 8055: one type per SDK call, codec, client   (next)
+      motion/             motion families                                     (later)
+      detail/             internals
+    src/                  mirrors include/ec/
+    apps/                 command-line tools (ec_monitor)
+    tests/                GoogleTest; support/ holds shared test helpers
+    tools/                development helpers (fake_8056.py)
+    docs/
+    cmake/                warnings, cross toolchains
+
+New API shapes (a facade, Python bindings, a ROS 2 wrapper) go in their own
+top-level directory with their own CMake target, depending on `ec::driver`.
+Other cross targets: add a toolchain file in `cmake/toolchains/` and a preset
+that pairs it with the matching vcpkg triplet.

@@ -1,0 +1,15 @@
+# Normalize line endings: LF in the repository and in every working tree,
+# on Linux and Windows alike. Overrides each user's core.autocrlf setting.
+* text=auto eol=lf
+
+# Windows-only scripts must stay CRLF to run correctly
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+*.ps1  text eol=crlf
+
+# Binary files: never touch line endings, never diff as text
+*.pdf  binary
+*.png  binary
+*.jpg  binary
+*.h5   binary
+*.zip  binary

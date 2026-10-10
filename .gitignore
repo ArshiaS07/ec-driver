@@ -1,0 +1,37 @@
+# Build trees: one per preset under build/<preset>/ (linux-debug, windows-debug, ...),
+# so Linux and Windows builds of the same checkout never share a directory.
+/build/
+# Visual Studio "Open Folder" default build location
+/out/
+
+# vcpkg: manifest mode installs into each build tree; these catch installs run
+# from the source root by hand and the CI binary cache
+/vcpkg_installed/
+/.vcpkg-cache/
+
+# Personal CMake presets (local paths, compilers); shared presets live in CMakePresets.json
+CMakeUserPresets.json
+
+# Tooling output
+.cache/
+compile_commands.json
+__pycache__/
+
+# IDEs
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+
+# Editors
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Robot recordings: large binary data does not belong in git
+*.h5

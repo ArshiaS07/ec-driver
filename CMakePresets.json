@@ -1,0 +1,192 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 25,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "installDir": "${sourceDir}/build/install/${presetName}",
+      "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      }
+    },
+    {
+      "name": "linux",
+      "hidden": true,
+      "inherits": "base",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      }
+    },
+    {
+      "name": "windows",
+      "hidden": true,
+      "inherits": "base",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+      "architecture": {
+        "value": "x64",
+        "strategy": "external"
+      },
+      "toolset": {
+        "value": "host=x64",
+        "strategy": "external"
+      },
+      "cacheVariables": {
+        "CMAKE_CXX_COMPILER": "cl"
+      }
+    },
+    {
+      "name": "linux-debug",
+      "displayName": "Linux debug",
+      "inherits": "linux",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "EC_WARNINGS_AS_ERRORS": "ON"
+      }
+    },
+    {
+      "name": "linux-release",
+      "displayName": "Linux release",
+      "inherits": "linux",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "linux-aarch64",
+      "displayName": "Linux host, cross-compile for 64-bit ARM Linux (release)",
+      "inherits": "linux",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "VCPKG_TARGET_TRIPLET": "arm64-linux",
+        "VCPKG_CHAINLOAD_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/aarch64-linux-gnu.cmake"
+      }
+    },
+    {
+      "name": "windows-debug",
+      "displayName": "Windows MSVC debug",
+      "inherits": "windows",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "EC_WARNINGS_AS_ERRORS": "ON"
+      }
+    },
+    {
+      "name": "windows-release",
+      "displayName": "Windows MSVC release",
+      "inherits": "windows",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "build-linux",
+      "hidden": true,
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      }
+    },
+    {
+      "name": "build-windows",
+      "hidden": true,
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    },
+    {
+      "name": "linux-debug",
+      "configurePreset": "linux-debug",
+      "inherits": "build-linux"
+    },
+    {
+      "name": "linux-release",
+      "configurePreset": "linux-release",
+      "inherits": "build-linux"
+    },
+    {
+      "name": "linux-aarch64",
+      "configurePreset": "linux-aarch64",
+      "inherits": "build-linux"
+    },
+    {
+      "name": "windows-debug",
+      "configurePreset": "windows-debug",
+      "inherits": "build-windows"
+    },
+    {
+      "name": "windows-release",
+      "configurePreset": "windows-release",
+      "inherits": "build-windows"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "test-linux",
+      "hidden": true,
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      },
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "test-windows",
+      "hidden": true,
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "linux-debug",
+      "inherits": "test-linux",
+      "configurePreset": "linux-debug"
+    },
+    {
+      "name": "linux-release",
+      "inherits": "test-linux",
+      "configurePreset": "linux-release"
+    },
+    {
+      "name": "linux-aarch64",
+      "inherits": "test-linux",
+      "configurePreset": "linux-aarch64"
+    },
+    {
+      "name": "windows-debug",
+      "inherits": "test-windows",
+      "configurePreset": "windows-debug"
+    },
+    {
+      "name": "windows-release",
+      "inherits": "test-windows",
+      "configurePreset": "windows-release"
+    }
+  ]
+}
