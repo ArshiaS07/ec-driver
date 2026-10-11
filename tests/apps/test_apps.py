@@ -3,7 +3,7 @@
 
 Run by ctest (tests/CMakeLists.txt) on native builds:
 
-    test_apps.py --ec-query PATH --ec-monitor PATH --tools DIR
+    test_apps.py --ec-query PATH --ec-monitor PATH --ec-record PATH --tools DIR
 
 Every invocation names 127.0.0.1 explicitly, so not even a command line that
 parses by mistake can reach the robot's default address. Standard library only.
@@ -14,6 +14,7 @@ import re
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import unittest
@@ -154,10 +155,57 @@ class EcMonitor(unittest.TestCase):
                 self.assertEqual(r.returncode, 2, r.stderr)
 
 
+class EcRecord(unittest.TestCase):
+    FRAMES = 30
+    RAW_HEADER, RAW_RECORD = 24, 8 + 1024
+
+    def setUp(self):
+        # Inside the build tree, next to the tool, never in the source tree.
+        self.tmp = tempfile.TemporaryDirectory(dir=PATHS.ec_record.parent)
+        self.dir = Path(self.tmp.name)
+        self.has_h5 = "--h5" in run(PATHS.ec_record, "--help").stdout
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_records_live_then_replays_into_hdf5(self):
+        raw = self.dir / "run.ecraw"
+        h5_options = ["--h5", str(self.dir / "live.h5")] if self.has_h5 else []
+        fake = FakeServer("fake_8056.py", "--chop")
+        try:
+            r = run(PATHS.ec_record, LOCAL, "--port", str(fake.port), "--raw", str(raw), *h5_options,
+                    "--frames", str(self.FRAMES))
+        finally:
+            fake.stop()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(f"stopped: {self.FRAMES} frames", r.stderr)
+        self.assertEqual(raw.stat().st_size, self.RAW_HEADER + self.FRAMES * self.RAW_RECORD)
+
+        if not self.has_h5:
+            self.skipTest("built without HDF5")
+        self.assertGreater((self.dir / "live.h5").stat().st_size, 0)
+        r = run(PATHS.ec_record, "--replay", str(raw), "--h5", str(self.dir / "replayed.h5"))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(f"stopped: {self.FRAMES} frames", r.stderr)
+
+    def test_bad_command_lines(self):
+        out = str(self.dir / "x.ecraw")
+        for args in (
+            [LOCAL],  # nothing to write
+            [LOCAL, "--raw", out, "--seconds", "-1"],
+            ["--replay", str(self.dir / "missing.ecraw"), "--raw", out],
+            [LOCAL, "--port", "0", "--raw", out],
+        ):
+            with self.subTest(args=args):
+                r = run(PATHS.ec_record, *args)
+                self.assertEqual(r.returncode, 2, r.stderr)
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--ec-query", type=Path, required=True)
     p.add_argument("--ec-monitor", type=Path, required=True)
+    p.add_argument("--ec-record", type=Path, required=True)
     p.add_argument("--tools", type=Path, required=True)
     args, rest = p.parse_known_args()
     vars(PATHS).update(vars(args))

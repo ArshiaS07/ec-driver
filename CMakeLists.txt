@@ -5,6 +5,7 @@ option(EC_BUILD_TESTS "Build unit tests" ${PROJECT_IS_TOP_LEVEL})
 option(EC_BUILD_APPS "Build command-line tools" ${PROJECT_IS_TOP_LEVEL})
 option(EC_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
 option(EC_SANITIZE "Build with AddressSanitizer and UndefinedBehaviorSanitizer (GCC/Clang)" OFF)
+option(EC_WITH_HDF5 "Build the HDF5 log writer, ec::hdf5 (needs vcpkg feature hdf5)" OFF)
 
 include(cmake/CompilerWarnings.cmake)
 include(cmake/Sanitizers.cmake)
@@ -18,6 +19,9 @@ add_library(ec_driver
     src/command/line_framer.cpp
     src/feedback/frame.cpp
     src/feedback/framer.cpp
+    src/feedback/reader.cpp
+    src/feedback/state.cpp
+    src/log/raw.cpp
     src/net/tcp_socket.cpp
 )
 
@@ -35,6 +39,18 @@ find_package(nlohmann_json CONFIG REQUIRED)
 target_link_libraries(ec_driver PUBLIC nlohmann_json::nlohmann_json)
 if(WIN32)
     target_link_libraries(ec_driver PRIVATE ws2_32)
+endif()
+
+# Optional and separate, so that code which does not log never needs HDF5.
+# HighFive stays private: it never reaches a public header.
+if(EC_WITH_HDF5)
+    find_package(HighFive CONFIG REQUIRED)
+    add_library(ec_hdf5 src/log/hdf5.cpp)
+    add_library(ec::hdf5 ALIAS ec_hdf5)
+    target_link_libraries(ec_hdf5 PUBLIC ec::driver PRIVATE HighFive::HighFive)
+    target_include_directories(ec_hdf5 PRIVATE ${PROJECT_SOURCE_DIR}/src)
+    set_target_properties(ec_hdf5 PROPERTIES CXX_EXTENSIONS OFF)
+    ec_set_warnings(ec_hdf5)
 endif()
 
 if(EC_BUILD_APPS)

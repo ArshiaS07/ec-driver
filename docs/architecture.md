@@ -31,14 +31,21 @@ by the layers above; a lower layer knows nothing of the layers above it.
 | `ec::net` | `TcpSocket` | TCP client, Linux and Windows; every call bounded by a timeout | no |
 | `ec::feedback` | `Framer` | 8056 byte stream → whole 1024-byte frames, realigning after junk | yes |
 | `ec::feedback` | `Frame`, `decode` | 1024 bytes → typed frame, in the controller's units | yes |
+| `ec::feedback` | `State`, `to_si` | a frame in SI units: the one place where 8056's units are converted | yes |
+| `ec::feedback` | `Reader` | monitoring port → `Sample`s (each frame as received, with its arrival time) | no |
+| `ec::log` | `Sink<Record>` | the interface every recorder implements: `write(record)` | yes |
+| `ec::log` | `RawWriter`, `RawReader` | raw recordings: every frame as received, with its arrival time | no |
+| `ec::log` (target `ec::hdf5`, optional) | `H5File`, `H5FeedbackWriter` | HDF5 logs: one dataset per field, SI units | no |
 | `ec::command` | `LineFramer` | 8055 byte stream → lines | yes |
 | `ec::command` | `encode`, `parse_response` | request → JSON-RPC line; response line → id, and result or error | yes |
 | `ec::command` | command structs, `ReplyDecoder` | one type per SDK call: method, parameters, reply type and its decoding | yes |
 | `ec::command` | `Client` | one call at a time: send, wait for the response with its id, decode | no |
 | `ec` | `RobotState`, `RobotMode`, `CycleMode` | status values both ports report | yes |
 
-Command-line tools (`apps/`): `ec_monitor` prints the 8056 stream; `ec_query`
-sends one SDK call (read-only methods only, unless `--write`).
+Command-line tools (`apps/`): `ec_monitor` prints the 8056 stream; `ec_record`
+records it (raw and/or HDF5) or converts a raw recording; `ec_query` sends one
+SDK call (read-only methods only, unless `--write`). File formats:
+`docs/log-format.md`.
 
 ---
 
@@ -47,8 +54,10 @@ sends one SDK call (read-only methods only, unless `--write`).
 - Failures are values (`std::expected`), not exceptions, throughout the library.
 - The wire layer (`feedback::Frame`, the command structs) uses the controller's
   units (deg, mm, rad, %), with the unit in each member's name, so values can be
-  checked against the manual and the teach pendant. Conversion to SI is planned
-  at one boundary above it.
+  checked against the manual and the teach pendant. Above it, values are SI,
+  converted at one boundary (`feedback::to_si` for the 8056 stream).
+- Records are kept as they arrive (a frame's bytes and its arrival time); sinks
+  derive what they need. Nothing derivable is computed while recording.
 - Every socket call waits at most its timeout, and reports a timeout only once
   it has fully elapsed.
 - A command describes a call and does no I/O: a method name and a reply type,
@@ -83,7 +92,7 @@ step ends with something testable.
 
 | # | Step | Test |
 |---|---|---|
-| 4 | `feedback::Receiver` (8056 thread), `feedback::Latest` (newest frame and its age), SI conversion | the monitor on the new pieces; pull the cable: staleness detected |
+| 4 | `feedback::Receiver` (8056 thread), `feedback::Latest` (newest frame and its age). Done already: `Reader`, `to_si`, and the recording of step 15 | pull the cable: staleness detected |
 | 5 | Typed commands for supervision: servo, sync, alarm, tool and user frame, payload, safety limits | typed queries |
 | 6 | `supervisor::step`: the pure state machine with its condition tables | unit tests |
 | 7 | The supervisor, observe-only | pendant mode change, E-stop, pushing the arm: each detected and named |
@@ -94,7 +103,7 @@ step ends with something testable.
 | 12 | Trajectory type and validator | bad trajectories rejected |
 | 13 | Kinematics checked against the controller's `positiveKinematic` | forward-kinematics error statistics |
 | 14 | Timestamped trajectories with a tracking monitor | a planned trajectory on the robot |
-| 15 | Logging (HDF5) | commanded against actual |
+| 15 | Logging of commands, setpoints and events (the feedback stream is done: raw and HDF5) | commanded against actual |
 | 16 | Transparent-transmission latency experiments | numbers for the loop design |
 | 17 | Streamed setpoints with a real-time loop | a streamed sine, one joint, then all |
 | 18 | Velocity control (speedj / speedl) | velocity commands that stop on timeout |
@@ -103,11 +112,8 @@ step ends with something testable.
 
 Proposed changes to this draft, not decided either:
 
-- Step 4 as three components: Receiver, Latest, and the SI conversion as a pure
-  function. Orientation stays the controller's rx/ry/rz until its convention is
-  checked on the robot, so a math library (Eigen) waits for kinematics.
-- A raw 8056 recorder right after step 4 (frames and their receive times,
-  replayable); HDF5 logging later.
+- Orientation stays the controller's rx/ry/rz until its convention is checked
+  on the robot, so a math library (Eigen) waits for kinematics.
 - The motion lease enforced by a sender above the command client, not inside
   the command layer.
 - The supervisor's states built step by step; observe-only needs only a few.

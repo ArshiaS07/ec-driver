@@ -5,6 +5,7 @@ a rebranded EC66; controller firmware V3.15.3). Builds on Linux and Windows,
 and cross-compiles for 64-bit ARM Linux.
 
 - `docs/architecture.md`: what exists, the rules it follows, a draft roadmap
+- `docs/log-format.md`: the raw recording and HDF5 log formats
 - `docs/sdk_calls.md`: every SDK call, classified
 
 ## Status
@@ -12,10 +13,11 @@ and cross-compiles for 64-bit ARM Linux.
 | Part | State |
 |---|---|
 | `ec::net::TcpSocket` (Linux + Windows) | done, tested against a loopback server |
-| `ec::feedback` (port 8056: framing + decoding) | done, tested |
+| `ec::feedback` (port 8056: framing, decoding, reader, SI values) | done, tested |
 | `ec::command` (port 8055: codec, typed calls, client) | done, tested against real replies; 7 of 184 calls typed |
-| `apps/ec_monitor`, `apps/ec_query` | done, tested end to end against the fake servers |
-| live state: 8056 receiver thread, latest frame, SI values | next (roadmap step 4) |
+| `ec::log` (raw recordings; HDF5 logs in the optional `ec::hdf5`) | done, tested |
+| `apps/ec_monitor`, `apps/ec_record`, `apps/ec_query` | done, tested end to end against the fake servers |
+| live state: 8056 receiver thread, latest frame | next (roadmap step 4) |
 | everything else | the draft roadmap in `docs/architecture.md` §5 |
 
 ## Try it
@@ -25,6 +27,12 @@ and cross-compiles for 64-bit ARM Linux.
     ./build/linux-debug/apps/ec_monitor --all > run.txt    # every frame (~125/s) into a file
     ./build/linux-debug/apps/ec_monitor --frames 500       # stop after 500 frames
     ./build/linux-debug/apps/ec_monitor --help
+
+Recording the stream (formats in `docs/log-format.md`):
+
+    ./build/linux-debug/apps/ec_record --raw run.ecraw --h5 run.h5          # until Ctrl+C
+    ./build/linux-debug/apps/ec_record --h5 run.h5 --seconds 60
+    ./build/linux-debug/apps/ec_record --replay run.ecraw --h5 run.h5       # a raw recording, converted later
 
 One SDK call from the command line (read-only by default; `--write` for
 anything else):
@@ -46,6 +54,8 @@ On Windows the binary is `build\windows-debug\apps\ec_monitor.exe`.
 ## Build
 
 Dependencies come from vcpkg in manifest mode (`vcpkg.json`, pinned baseline).
+The HDF5 log writer is optional: the presets enable it (vcpkg feature `hdf5`,
+CMake option `EC_WITH_HDF5`); without it, everything else still builds.
 Every preset builds into its own directory, `build/<preset>/`, including its
 vcpkg packages, so Linux and Windows builds of the same checkout never collide.
 `cmake --list-presets` shows only the presets for the current OS.
@@ -129,11 +139,12 @@ working tree, on both systems, regardless of each user's `core.autocrlf`.
 
     include/ec/           public headers, one directory per namespace
       net/                TCP transport (both ports)
-      feedback/           port 8056: frame, framer
+      feedback/           port 8056: frame, framer, reader, SI state
       command/            port 8055: one type per SDK call, codec, client
+      log/                sinks: raw recordings, HDF5 logs (optional)
       motion/             motion families                                     (later)
     src/                  mirrors include/ec/; detail/ holds private headers
-    apps/                 command-line tools (ec_monitor, ec_query), on CLI11
+    apps/                 command-line tools (ec_monitor, ec_record, ec_query), on CLI11
     tests/                GoogleTest; support/ shared helpers; apps/ end-to-end tool tests
     tools/                development helpers (fake_8056.py, fake_8055.py)
     docs/

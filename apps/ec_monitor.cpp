@@ -9,7 +9,6 @@
 // data. Read-only: it never sends anything to the robot. Runs until Ctrl+C, or
 // until --frames frames have arrived. Exit codes: 0 stopped; 2 bad command line.
 
-#include <array>
 #include <chrono>
 #include <csignal>
 #include <cstdint>
@@ -22,6 +21,7 @@
 #include "cli.hpp"
 #include "ec/feedback/frame.hpp"
 #include "ec/feedback/framer.hpp"
+#include "ec/feedback/reader.hpp"
 #include "ec/net/tcp_socket.hpp"
 
 namespace {
@@ -159,57 +159,51 @@ int run(int argc, char** argv) {
     else
         err("monitoring {}:{}, printing {:.2f} frames/s (Ctrl+C to quit)\n", host, port, rate_hz);
 
-    fb::Framer framer;
     Downsampler printer(all ? 0.0 : rate_hz);
     RateMeter meter;
+    std::uint64_t frames = 0;
     std::uint64_t decode_errors = 0;
-    std::array<std::uint8_t, 4096> chunk{};
-    const auto done = [&] { return g_stop != 0 || (max_frames != 0 && framer.stats().frames >= max_frames); };
+    fb::Framer::Stats framing;  // summed over connections
+    const auto done = [&] { return g_stop != 0 || (max_frames != 0 && frames >= max_frames); };
 
     while (!done()) {
-        auto sock = ec::net::TcpSocket::connect(host, port, 2000ms);
-        if (!sock) {
-            err("{}, retrying in 1 s\n", sock.error().message());
+        auto reader = fb::Reader::connect(host, port, 2000ms);
+        if (!reader) {
+            err("{}, retrying in 1 s\n", reader.error().message());
             std::this_thread::sleep_for(1s);
             continue;
         }
         err("connected\n");
-        framer.reset();
         meter.restart();
 
         bool silent = false;  // "no data" reported once per silence, not every 200 ms
         while (!done()) {
-            const auto n = sock->receive(chunk, 200ms);
-            if (!n) {
-                if (n.error().kind == ec::net::NetError::Kind::Timeout) {
-                    if (!silent && !done()) err("no data for 200 ms\n");
+            const auto sample = reader->next(200ms);
+            if (!sample) {
+                if (sample.error().kind == ec::net::NetError::Kind::Timeout) {
+                    if (!silent) err("no data for 200 ms\n");
                     silent = true;
                     continue;
                 }
-                err("{}, reconnecting\n", n.error().message());
+                err("{}, reconnecting\n", sample.error().message());
                 break;
             }
             silent = false;
-            const auto t_rx = Clock::now();
-            framer.push(std::span(chunk.data(), *n));
-
-            while (!done()) {
-                const auto raw = framer.pop();
-                if (!raw) break;
-                const auto frame = fb::decode(*raw);
-                if (!frame) {
-                    err("decode error #{}: {}\n", ++decode_errors, fb::to_string(frame.error()));
-                    continue;
-                }
-                meter.add(t_rx);
-                if (printer.accept(t_rx)) print_frame(*frame, framer.stats().frames, meter.report());
+            ++frames;
+            const auto frame = fb::decode(sample->raw);
+            if (!frame) {
+                err("decode error #{}: {}\n", ++decode_errors, fb::to_string(frame.error()));
+                continue;
             }
+            meter.add(sample->arrival);
+            if (printer.accept(sample->arrival)) print_frame(*frame, frames, meter.report());
         }
+        framing.resyncs += reader->stats().resyncs;
+        framing.bytes_discarded += reader->stats().bytes_discarded;
     }
 
-    const auto& st = framer.stats();
-    err("stopped: {} frames, {} resyncs, {} bytes discarded, {} decode errors\n", st.frames, st.resyncs,
-        st.bytes_discarded, decode_errors);
+    err("stopped: {} frames, {} resyncs, {} bytes discarded, {} decode errors\n", frames, framing.resyncs,
+        framing.bytes_discarded, decode_errors);
     return cli::kOk;
 }
 

@@ -1,11 +1,16 @@
 # Bug-finding checks only. Style belongs to clang-format; readability and
 # modernize checks are left out on purpose, so the tool reports likely defects
 # rather than opinions.
+#
+# Also left out: the status enums have fixed underlying types and hold values
+# the manual does not define on purpose (frames keep them; is_valid() flags
+# them), which EnumCastOutOfRange reports as mistakes.
 Checks: >
   -*,
   bugprone-*,
   -bugprone-easily-swappable-parameters,
   clang-analyzer-*,
+  -clang-analyzer-optin.core.EnumCastOutOfRange,
   concurrency-*,
   performance-*,
   -performance-enum-size
