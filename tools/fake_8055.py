@@ -15,6 +15,11 @@ habit of wrapping every result in a JSON string. Unknown methods get the real
     --garbage      send a line that is not JSON-RPC before each real reply
     --split        send every reply in two TCP pieces
 
+poseMul and poseInv are computed, with a rotation convention chosen by
+--convention (the matrix product order of rx, ry, rz, default ZYX) and
+--product (12: poseMul is T1.T2, 21: T2.T1), so tools that probe the
+convention can be tested.
+
 Standard library only; works on Linux and Windows.
 """
 
@@ -22,6 +27,8 @@ import argparse
 import json
 import socket
 import time
+
+import poses
 
 # method -> result exactly as the controller encodes it (a JSON string holding JSON text)
 RESULTS = {
@@ -38,11 +45,31 @@ RESULTS = {
 }
 
 
-def reply_for(request: dict) -> dict:
+def computed(method: str, params: dict, args: argparse.Namespace):
+    """The result of a pose computation, or None if `method` is not one."""
+    if method not in ("poseMul", "poseInv"):
+        return None
+    degrees = params.get("unit_type", 1) == 0  # the manual's default is radians
+    to_internal = poses.to_radians if degrees else (lambda p: p)
+    to_external = poses.to_degrees if degrees else (lambda p: p)
+    if method == "poseInv":
+        result = poses.invert(args.convention, to_internal(params["pose"]))
+    else:
+        p1, p2 = to_internal(params["pose1"]), to_internal(params["pose2"])
+        if args.product == "21":
+            p1, p2 = p2, p1
+        result = poses.compose(args.convention, p1, p2)
+    return json.dumps(to_external(result))
+
+
+def reply_for(request: dict, args: argparse.Namespace) -> dict:
     rid = request.get("id")
     method = request.get("method")
-    if method in RESULTS:
-        return {"jsonrpc": "2.0", "result": RESULTS[method], "id": rid}
+    result = computed(method, request.get("params") or {}, args)
+    if result is None and method in RESULTS:
+        result = RESULTS[method]
+    if result is not None:
+        return {"jsonrpc": "2.0", "result": result, "id": rid}
     return {"jsonrpc": "2.0", "error": {"code": -32601, "message": "Method not found."}, "id": rid}
 
 
@@ -78,7 +105,7 @@ def serve(conn: socket.socket, args: argparse.Namespace) -> None:
                 conn.sendall(b"this is not a JSON-RPC response\n")
             if args.stale:
                 send(conn, {"jsonrpc": "2.0", "result": "0", "id": 999999}, args.split)
-            send(conn, reply_for(request), args.split)
+            send(conn, reply_for(request, args), args.split)
 
 
 def main() -> None:
@@ -89,6 +116,8 @@ def main() -> None:
     p.add_argument("--stale", action="store_true")
     p.add_argument("--garbage", action="store_true")
     p.add_argument("--split", action="store_true")
+    p.add_argument("--convention", choices=poses.ORDERS, default="ZYX")
+    p.add_argument("--product", choices=("12", "21"), default="12")
     args = p.parse_args()
 
     with socket.create_server((args.host, args.port)) as srv:

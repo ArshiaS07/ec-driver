@@ -11,13 +11,17 @@
 //   ec_query getDH index=0
 //   ec_query get_tcp_pose coordinate_num=-1 tool_num=-1 unit_type=1
 //
-// Read-only methods (names starting with "get" or "check") are sent as they are.
-// Anything else may move the robot or change its configuration, and this tool
-// bypasses every check the driver will have: it needs --write.
+// Read-only methods are sent as they are: queries (names starting with "get" or
+// "check") and the pure computations (kinematics, pose arithmetic; the
+// "compute" calls in docs/sdk_calls.md). Anything else may move the robot or
+// change its configuration, and this tool bypasses every check the driver will
+// have: it needs --write.
 //
 // Prints the result as JSON on stdout. Exit codes: 0 success; 1 the call failed
 // (the error goes to stderr); 2 bad command line.
 
+#include <algorithm>
+#include <array>
 #include <cctype>
 #include <chrono>
 #include <cstdint>
@@ -32,6 +36,11 @@ namespace {
 
 using ec::command::Json;
 
+// The calls that only compute, from docs/sdk_calls.md (kind "compute").
+constexpr std::array<std::string_view, 7> kComputations{
+    "positiveKinematic", "inverseKinematic",          "inverseKinematicAll",      "poseMul",
+    "poseInv",           "convertPoseFromCartToUser", "convertPoseFromUserToCart"};
+
 bool is_read_only(std::string_view method) {
     auto starts_with = [&](std::string_view prefix) {
         if (method.size() < prefix.size()) return false;
@@ -39,7 +48,8 @@ bool is_read_only(std::string_view method) {
             if (std::tolower(static_cast<unsigned char>(method[i])) != prefix[i]) return false;
         return true;
     };
-    return starts_with("get") || starts_with("check");
+    return starts_with("get") || starts_with("check") ||
+           std::find(kComputations.begin(), kComputations.end(), method) != kComputations.end();
 }
 
 // "key=value": params[key] = value, as JSON if it parses, otherwise as text.

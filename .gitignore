@@ -32,8 +32,12 @@ __pycache__/
 Thumbs.db
 desktop.ini
 
-# Robot recordings: large binary data does not belong in git
+# Robot recordings: large binary data does not belong in git. Sessions go in
+# recordings/; small recordings meant as test fixtures live in tests/data/.
+/recordings/
 *.h5
+*.ecraw
+!/tests/data/*.ecraw
 
 # Claude Code files and decision records stay local (also listed in
 # .git/info/exclude, which old commits cannot override)

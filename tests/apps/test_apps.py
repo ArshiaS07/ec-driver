@@ -10,6 +10,7 @@ parses by mistake can reach the robot's default address. Standard library only.
 """
 
 import argparse
+import json
 import re
 import socket
 import subprocess
@@ -90,6 +91,11 @@ class EcQuery(unittest.TestCase):
         r = self.query("getNothing")
         self.assertEqual(r.returncode, 1)
         self.assertIn("method not found", r.stderr)
+
+    def test_computations_are_read_only(self):
+        r = self.query("poseMul", "pose1=[100,0,0,0,0,90]", "pose2=[10,0,0,0,0,0]", "unit_type=0")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual([round(v, 6) for v in json.loads(r.stdout)], [100, 10, 0, 0, 0, 90])
 
     def test_writes_need_the_flag(self):
         r = self.query("stop")
@@ -199,6 +205,32 @@ class EcRecord(unittest.TestCase):
             with self.subTest(args=args):
                 r = run(PATHS.ec_record, *args)
                 self.assertEqual(r.returncode, 2, r.stderr)
+
+
+class RotationConvention(unittest.TestCase):
+    """tools/rotation_convention.py names the convention the fake computes with."""
+
+    def find(self, convention: str, product: str) -> subprocess.CompletedProcess:
+        fake = FakeServer("fake_8055.py", "--convention", convention, "--product", product)
+        try:
+            return subprocess.run(
+                [sys.executable, str(PATHS.tools / "rotation_convention.py"), "--ec-query", str(PATHS.ec_query),
+                 "--host", LOCAL, "--port", str(fake.port)],
+                capture_output=True, text=True, timeout=60)
+        finally:
+            fake.stop()
+
+    def test_finds_fixed_xyz_with_t1_t2(self):
+        r = self.find("ZYX", "12")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("R = Rz(rz).Ry(ry).Rx(rx)", r.stdout)
+        self.assertIn("poseMul(pose1, pose2) = T1.T2", r.stdout)
+
+    def test_finds_another_convention(self):
+        r = self.find("XYZ", "21")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("R = Rx(rx).Ry(ry).Rz(rz)", r.stdout)
+        self.assertIn("poseMul(pose1, pose2) = T2.T1", r.stdout)
 
 
 def main() -> None:
