@@ -1,27 +1,25 @@
-// ec_monitor: connect to port 8056 and print the decoded robot state.
+// ec_monitor: connect to the controller's monitoring port (8056) and print the
+// decoded robot state.
 //
-//   usage: ec_monitor [host] [--port N] [--rate HZ | --all]
-//
-//     host        controller address              (default 192.168.0.200)
-//     --port N    feedback port                   (default 8056)
-//     --rate HZ   print at most HZ samples/second (default 2, readable by eye)
-//     --all       print every frame (~125/s), e.g. to redirect into a file
+//   ec_monitor [host] [--port N] [--rate HZ | --all] [--frames N]
 //
 // Every frame is received and decoded, so nothing piles up in the socket
-// buffer; the downsampler only decides which ones are printed. Data goes to
-// stdout, status and errors to stderr, so `ec_monitor --all > run.txt` captures
-// only data. Read-only: it never sends anything to the robot.
+// buffer; the rate only decides which frames are printed. Data goes to stdout,
+// status and errors to stderr, so `ec_monitor --all > run.txt` captures only
+// data. Read-only: it never sends anything to the robot. Runs until Ctrl+C, or
+// until --frames frames have arrived. Exit codes: 0 stopped; 2 bad command line.
 
 #include <array>
 #include <chrono>
 #include <csignal>
+#include <cstdint>
 #include <cstdio>
-#include <cstdlib>
 #include <format>
 #include <string>
 #include <string_view>
 #include <thread>
 
+#include "cli.hpp"
 #include "ec/feedback/frame.hpp"
 #include "ec/feedback/framer.hpp"
 #include "ec/net/tcp_socket.hpp"
@@ -30,21 +28,12 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 using namespace std::chrono_literals;
+using cli::err;
+using cli::out;
 namespace fb = ec::feedback;
 
 volatile std::sig_atomic_t g_stop = 0;
 extern "C" void on_signal(int) { g_stop = 1; }
-
-template <typename... Args>
-void out(std::format_string<Args...> fmt, Args&&... args) {
-    const std::string s = std::format(fmt, std::forward<Args>(args)...);
-    std::fwrite(s.data(), 1, s.size(), stdout);
-}
-template <typename... Args>
-void err(std::format_string<Args...> fmt, Args&&... args) {
-    const std::string s = std::format(fmt, std::forward<Args>(args)...);
-    std::fwrite(s.data(), 1, s.size(), stderr);
-}
 
 // Lets a sample through once per period on a fixed time grid, so the printed
 // rate is what was asked for even if the frame rate changes. It picks samples;
@@ -118,30 +107,6 @@ private:
     std::string report_ = "measuring...";
 };
 
-struct Options {
-    std::string host = "192.168.0.200";
-    std::uint16_t port = 8056;
-    double rate_hz = 2.0;
-};
-
-bool parse_args(int argc, char** argv, Options& o) {
-    for (int i = 1; i < argc; ++i) {
-        const std::string_view a = argv[i];
-        if (a == "--all") {
-            o.rate_hz = 0;
-        } else if (a == "--rate" && i + 1 < argc) {
-            o.rate_hz = std::atof(argv[++i]);
-        } else if (a == "--port" && i + 1 < argc) {
-            o.port = static_cast<std::uint16_t>(std::atoi(argv[++i]));
-        } else if (!a.empty() && a[0] != '-') {
-            o.host = a;
-        } else {
-            return false;  // --help or anything unknown
-        }
-    }
-    return o.rate_hz >= 0;
-}
-
 std::string_view flag(bool on, std::string_view name) { return on ? name : ""; }
 
 void print_frame(const fb::Frame& f, std::uint64_t seq, const std::string& rate) {
@@ -170,30 +135,39 @@ void print_frame(const fb::Frame& f, std::uint64_t seq, const std::string& rate)
     std::fflush(stdout);
 }
 
-}  // namespace
+int run(int argc, char** argv) {
+    std::string host = "192.168.0.200";  // this tool's default; the library has none
+    std::uint16_t port = 8056;
+    double rate_hz = 2.0;
+    bool all = false;
+    std::uint64_t max_frames = 0;  // 0: no limit
 
-int main(int argc, char** argv) {
-    Options opt;
-    if (!parse_args(argc, argv, opt)) {
-        err("usage: ec_monitor [host] [--port N] [--rate HZ | --all]\n");
-        return 2;
-    }
+    CLI::App app{"Print the robot state streamed on the controller's monitoring port (8056)."};
+    app.add_option("host", host, "Controller address")->capture_default_str();
+    app.add_option("--port", port, "Monitoring port")->capture_default_str()->check(CLI::Range(1, 65535));
+    auto* rate = app.add_option("--rate", rate_hz, "Frames printed per second")
+                     ->capture_default_str()
+                     ->check(CLI::PositiveNumber);
+    app.add_flag("--all", all, "Print every frame (about 125 per second)")->excludes(rate);
+    app.add_option("--frames", max_frames, "Stop after this many frames (0: run until Ctrl+C)")->capture_default_str();
+    if (const auto code = cli::parse(app, argc, argv)) return *code;
+
     std::signal(SIGINT, on_signal);
     std::signal(SIGTERM, on_signal);
-
-    if (opt.rate_hz > 0)
-        err("monitoring {}:{}, printing {:.2f} samples/s (Ctrl+C to quit)\n", opt.host, opt.port, opt.rate_hz);
+    if (all)
+        err("monitoring {}:{}, printing every frame (Ctrl+C to quit)\n", host, port);
     else
-        err("monitoring {}:{}, printing every frame (Ctrl+C to quit)\n", opt.host, opt.port);
+        err("monitoring {}:{}, printing {:.2f} frames/s (Ctrl+C to quit)\n", host, port, rate_hz);
 
     fb::Framer framer;
-    Downsampler printer(opt.rate_hz);
+    Downsampler printer(all ? 0.0 : rate_hz);
     RateMeter meter;
     std::uint64_t decode_errors = 0;
     std::array<std::uint8_t, 4096> chunk{};
+    const auto done = [&] { return g_stop != 0 || (max_frames != 0 && framer.stats().frames >= max_frames); };
 
-    while (!g_stop) {
-        auto sock = ec::net::TcpSocket::connect(opt.host, opt.port, 2000ms);
+    while (!done()) {
+        auto sock = ec::net::TcpSocket::connect(host, port, 2000ms);
         if (!sock) {
             err("{}, retrying in 1 s\n", sock.error().message());
             std::this_thread::sleep_for(1s);
@@ -203,20 +177,25 @@ int main(int argc, char** argv) {
         framer.reset();
         meter.restart();
 
-        while (!g_stop) {
+        bool silent = false;  // "no data" reported once per silence, not every 200 ms
+        while (!done()) {
             const auto n = sock->receive(chunk, 200ms);
             if (!n) {
                 if (n.error().kind == ec::net::NetError::Kind::Timeout) {
-                    if (!g_stop) err("no data for 200 ms\n");
+                    if (!silent && !done()) err("no data for 200 ms\n");
+                    silent = true;
                     continue;
                 }
                 err("{}, reconnecting\n", n.error().message());
                 break;
             }
+            silent = false;
             const auto t_rx = Clock::now();
             framer.push(std::span(chunk.data(), *n));
 
-            while (const auto raw = framer.pop()) {
+            while (!done()) {
+                const auto raw = framer.pop();
+                if (!raw) break;
                 const auto frame = fb::decode(*raw);
                 if (!frame) {
                     err("decode error #{}: {}\n", ++decode_errors, fb::to_string(frame.error()));
@@ -231,5 +210,11 @@ int main(int argc, char** argv) {
     const auto& st = framer.stats();
     err("stopped: {} frames, {} resyncs, {} bytes discarded, {} decode errors\n", st.frames, st.resyncs,
         st.bytes_discarded, decode_errors);
-    return 0;
+    return cli::kOk;
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+    return cli::guarded("ec_monitor", [&] { return run(argc, argv); });
 }

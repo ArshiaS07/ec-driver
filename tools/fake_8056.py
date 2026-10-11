@@ -79,7 +79,7 @@ def main() -> None:
     args = p.parse_args()
 
     with socket.create_server((args.host, args.port)) as srv:
-        print(f"fake 8056 on {args.host}:{args.port}, Ctrl+C to quit")
+        print(f"fake 8056 on {args.host}:{srv.getsockname()[1]}, Ctrl+C to quit", flush=True)
         while True:
             conn, addr = srv.accept()
             print(f"client {addr[0]}:{addr[1]} connected")

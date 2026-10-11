@@ -102,3 +102,11 @@ jobs:
         run: cmake --build --preset ${{ matrix.preset }}
       - name: Test
         run: ctest --preset ${{ matrix.preset }}
+
+      # Bug-finding static analysis (.clang-tidy), on the debug build's compile
+      # commands; the same version as local development.
+      - name: clang-tidy
+        if: matrix.preset == 'linux-debug'
+        run: |
+          pipx install clang-tidy==22.1.8
+          git ls-files '*.cpp' | xargs clang-tidy -p build/linux-debug --quiet --warnings-as-errors='*'

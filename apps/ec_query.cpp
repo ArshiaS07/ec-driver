@@ -1,51 +1,36 @@
-// ec_query: send one SDK call to port 8055 and print the reply.
+// ec_query: send one SDK call to the controller's command port (8055) and print
+// the reply.
 //
-//   usage: ec_query [--host H] [--port N] [--timeout MS] [--write] <method> [params]
+//   ec_query [--host H] [--port N] [--timeout MS] [--write] <method> [params...]
 //
-//     --host H       controller address (default 192.168.0.200)
-//     --port N       command port (default 8055)
-//     --timeout MS   reply timeout (default 1000)
-//     --write        allow methods that change the robot (see below)
-//     params         either one JSON object:   '{"index":0}'
-//                    or key=value pairs:        index=0  targetPos=[0,-90,0,-90,90,0]
-//                    (values are parsed as JSON when possible, else taken as text)
+// params: one JSON object ('{"index":0}') or key=value pairs (index=0
+// targetPos=[0,-90,0,-90,90,0]); a value is parsed as JSON when it is valid
+// JSON, otherwise taken as text. Examples:
 //
-// Examples:
 //   ec_query getRobotMode
 //   ec_query getDH index=0
 //   ec_query get_tcp_pose coordinate_num=-1 tool_num=-1 unit_type=1
 //
-// Safety: only read-only methods (names starting with "get" or "check") are
-// sent by default. Anything else can move the robot or change its
-// configuration, and this tool bypasses every safety check the driver will
-// have; it needs --write.
+// Read-only methods (names starting with "get" or "check") are sent as they are.
+// Anything else may move the robot or change its configuration, and this tool
+// bypasses every check the driver will have: it needs --write.
 //
-// Prints the unwrapped result as JSON on stdout. On error, prints the error on
-// stderr and exits with code 1.
+// Prints the result as JSON on stdout. Exit codes: 0 success; 1 the call failed
+// (the error goes to stderr); 2 bad command line.
 
 #include <cctype>
 #include <chrono>
-#include <cstdio>
-#include <cstdlib>
-#include <format>
+#include <cstdint>
 #include <string>
 #include <string_view>
+#include <vector>
 
+#include "cli.hpp"
 #include "ec/command/client.hpp"
 
 namespace {
 
 using ec::command::Json;
-
-template <typename... Args>
-void err(std::format_string<Args...> fmt, Args&&... args) {
-    const std::string s = std::format(fmt, std::forward<Args>(args)...);
-    std::fwrite(s.data(), 1, s.size(), stderr);
-}
-
-constexpr std::string_view kUsage =
-    "usage: ec_query [--host H] [--port N] [--timeout MS] [--write] <method> [params]\n"
-    "  params: one JSON object, or key=value pairs (e.g. index=0)\n";
 
 bool is_read_only(std::string_view method) {
     auto starts_with = [&](std::string_view prefix) {
@@ -57,7 +42,7 @@ bool is_read_only(std::string_view method) {
     return starts_with("get") || starts_with("check");
 }
 
-// "key=value" → params[key] = value (JSON if it parses, else a string).
+// "key=value": params[key] = value, as JSON if it parses, otherwise as text.
 bool add_pair(Json& params, std::string_view arg) {
     const auto eq = arg.find('=');
     if (eq == std::string_view::npos || eq == 0) return false;
@@ -68,64 +53,63 @@ bool add_pair(Json& params, std::string_view arg) {
     return true;
 }
 
-}  // namespace
-
-int main(int argc, char** argv) {
+int run(int argc, char** argv) {
     std::string host = "192.168.0.200";  // this tool's default; the library has none
     ec::command::Client::Options options;
+    std::int64_t timeout_ms = options.reply_timeout.count();
     bool allow_write = false;
     std::string method;
-    Json params;  // stays null if no parameters are given
+    std::vector<std::string> param_args;
 
-    for (int i = 1; i < argc; ++i) {
-        const std::string_view a = argv[i];
-        if (a == "--host" && i + 1 < argc) {
-            host = argv[++i];
-        } else if (a == "--port" && i + 1 < argc) {
-            options.port = static_cast<std::uint16_t>(std::atoi(argv[++i]));
-        } else if (a == "--timeout" && i + 1 < argc) {
-            options.reply_timeout = std::chrono::milliseconds(std::atoi(argv[++i]));
-        } else if (a == "--write") {
-            allow_write = true;
-        } else if (!a.empty() && a[0] == '-') {
-            err("{}", kUsage);
-            return 2;
-        } else if (method.empty()) {
-            method = a;
-        } else if (a.starts_with('{')) {
+    CLI::App app{"Send one SDK call to the controller's command port (8055) and print the reply."};
+    app.add_option("--host", host, "Controller address")->capture_default_str();
+    app.add_option("--port", options.port, "Command port")->capture_default_str()->check(CLI::Range(1, 65535));
+    app.add_option("--timeout", timeout_ms, "Reply timeout [ms]")->capture_default_str()->check(CLI::PositiveNumber);
+    app.add_flag("--write", allow_write, "Allow methods that may move the robot or change its configuration");
+    app.add_option("method", method, "SDK method, e.g. getRobotMode")->required();
+    app.add_option("params", param_args, "One JSON object, or key=value pairs");
+    if (const auto code = cli::parse(app, argc, argv)) return *code;
+    options.reply_timeout = std::chrono::milliseconds(timeout_ms);
+
+    Json params;  // stays null without parameters: the request then has no "params"
+    for (const std::string& a : param_args) {
+        if (a.starts_with('{')) {
             params = Json::parse(a, nullptr, /*allow_exceptions=*/false);
             if (params.is_discarded() || !params.is_object()) {
-                err("params is not a valid JSON object: {}\n", a);
-                return 2;
+                cli::err("params is not a JSON object: {}\n", a);
+                return cli::kUsage;
             }
         } else if (!add_pair(params, a)) {
-            err("expected key=value, got: {}\n{}", a, kUsage);
-            return 2;
+            cli::err("expected key=value, got: {}\n", a);
+            return cli::kUsage;
         }
     }
-    if (method.empty()) {
-        err("{}", kUsage);
-        return 2;
-    }
     if (!is_read_only(method) && !allow_write) {
-        err("'{}' is not a read-only method; it may move the robot or change its configuration.\n"
+        cli::err(
+            "'{}' is not a read-only method; it may move the robot or change its configuration.\n"
             "Pass --write if you really mean to send it.\n",
             method);
-        return 2;
+        return cli::kUsage;
     }
 
     auto client = ec::command::Client::connect(host, options);
     if (!client) {
-        err("{}:{}: {}\n", host, options.port, client.error().message);
-        return 1;
+        cli::err("{}:{}: {}\n", host, options.port, client.error().message);
+        return cli::kFailed;
     }
     const auto result = client->call(ec::command::Request{method, params});
     if (!result) {
         const auto& e = result.error();
-        err("{}{}{}\n", ec::command::to_string(e.kind), e.message.empty() ? "" : ": ", e.message);
-        return 1;
+        cli::err("{}{}{}\n", ec::command::to_string(e.kind), e.message.empty() ? "" : ": ", e.message);
+        return cli::kFailed;
     }
-    const std::string out = result->dump() + "\n";
-    std::fwrite(out.data(), 1, out.size(), stdout);
-    return 0;
+    // Invalid UTF-8 from the controller is printed as U+FFFD instead of throwing.
+    cli::out("{}\n", result->dump(-1, ' ', false, Json::error_handler_t::replace));
+    return cli::kOk;
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+    return cli::guarded("ec_query", [&] { return run(argc, argv); });
 }

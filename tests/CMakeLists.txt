@@ -10,6 +10,8 @@ add_executable(ec_tests
     command/reply_test.cpp
     feedback/frame_test.cpp
     feedback/framer_test.cpp
+    feedback/reader_test.cpp
+    feedback/state_test.cpp
     net/tcp_socket_test.cpp
     status_test.cpp
 )
@@ -23,3 +25,13 @@ ec_set_warnings(ec_tests)
 # PRE_TEST: tests are listed when ctest runs, not at build time, so a
 # cross-compiled test binary does not have to run on the build machine.
 gtest_discover_tests(ec_tests DISCOVERY_MODE PRE_TEST)
+
+# The command-line tools, end to end against the fake servers (Python 3,
+# standard library only). Native builds only: cross-compiled tools do not run here.
+find_package(Python3 COMPONENTS Interpreter)
+if(Python3_FOUND AND TARGET ec_query AND TARGET ec_monitor AND NOT CMAKE_CROSSCOMPILING)
+    add_test(NAME apps
+             COMMAND Python3::Interpreter ${CMAKE_CURRENT_SOURCE_DIR}/apps/test_apps.py
+                     --ec-query $<TARGET_FILE:ec_query> --ec-monitor $<TARGET_FILE:ec_monitor>
+                     --tools ${PROJECT_SOURCE_DIR}/tools)
+endif()
