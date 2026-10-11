@@ -1,251 +1,130 @@
 # Architecture
 
 Controller: Elite EC series (Annuo EA66 = EC66), firmware V3.15.3, SDK manual
-Ver3.11.2 (`docs/sdk_calls.md` lists every call). Language: C++23
-(`std::expected` for every fallible call, `std::byteswap`, `std::format`). One robot,
+Ver3.11.2 (`docs/sdk_calls.md` lists every call). Language: C++23. One robot,
 one host.
 
-Rule for this document: every abstraction states why it exists. If the reason
-is missing, the abstraction should be.
+This document describes what exists. Section 5 is a draft roadmap, open to
+change.
 
 ---
 
-## 1. What the controller exposes
+## 1. The controller's interface
 
 | Port | Direction | Protocol | Who initiates |
 |---|---|---|---|
-| 8055 | PC → robot → PC | JSON-RPC 2.0, one request per line, one reply per request | always the PC |
-| 8056 | robot → PC | 1024-byte big-endian frames, ~every 8 ms | always the robot |
+| 8055 | PC → robot → PC | JSON-RPC 2.0, one request per line, one response per request | always the PC |
+| 8056 | robot → PC | 1024-byte big-endian frames, about every 8 ms | always the robot |
 
-That is the whole hardware interface for this driver (Modbus 502, EtherNet/IP
-44818 and the log ports are out of scope). Everything below is built on these
-two endpoints.
+Modbus (502), EtherNet/IP (44818) and the log ports are out of scope.
 
 ---
 
-## 2. Namespaces
+## 2. Components
 
-Named by direction of data, the same split ros2_control uses (state
-interfaces versus command interfaces):
+Small components with one job each, generic where the job allows, and composed
+by the layers above; a lower layer knows nothing of the layers above it.
+"Pure" means no I/O, no threads and no clocks: testable without a robot.
 
-| Namespace | Contains | Talks to |
-|---|---|---|
-| `ec::feedback` | everything flowing robot → PC on 8056 | port 8056 |
-| `ec::command` | one type per 8055 call (all 184, queries included) | port 8055 |
-| `ec::motion` | motion families: the controller's motion protocols, built from commands | `ec::command` |
-| `ec::supervisor` | controller state mirror, gate, faults | all of the above |
-| `ec::net` | TCP transport shared by both ports | the network |
-| `ec` | status enums both ports report (`RobotState`, `RobotMode`, `CycleMode`) | |
-| `ec::detail` | internals (byte readers) | |
-
-A query such as `getRobotMode` is still a `command`: it is a request sent on
-the command port. Its reply is data, but the call is a command.
-
----
-
-## 3. Components, one job each
-
-Bottom-up, from the wire. "Pure" means no I/O and no threads: testable with
-plain unit tests.
-
-| Layer | Component | Its one job | Pure | Status |
-|---|---|---|---|---|
-| bytes | `detail::BigEndianReader` | read big-endian scalars from a span | yes | **done** |
-| bytes | `net::TcpSocket` | RAII TCP socket, Linux + Windows: connect, send, receive, all with timeouts | no | **done** |
-| bytes | `feedback::Framer` | 8056 byte stream → aligned 1024-byte frames, with resync | yes | **done** |
-| bytes | `command::LineFramer` | 8055 byte stream → newline-terminated lines | yes | **done** |
-| codec | `feedback::Frame`, `feedback::decode` | 1024 bytes → typed frame (wire units) | yes | **done** |
-| codec | `command::*` structs | describe one SDK call: method, params, reply type | yes | **first 7 done** |
-| codec | `command::encode`, `parse_response` | request → JSON line; response line → id + result or error | yes | **done** |
-| endpoint | `command::Client` | send one request, wait for its reply, enforce the timeout | no | **done** |
-| endpoint | `feedback::Receiver` | own the 8056 thread: socket → framer → decode → publish | no | |
-| endpoint | `feedback::Latest` | hold the newest frame; copy-out, `wait_next()`, age | no | |
-| motion | `motion::PointToPoint`, `Waypoints`, `Jog`, `Velocity`, `ServoStream`, `TimedTrajectory`, `Program` | one controller motion protocol each (see `sdk_calls.md`) | yes | |
-| motion | `motion::ServoLoop` | own the clock for ServoStream: each tick, pull a setpoint and send it | no | |
-| gate | `supervisor::step` | (state, event) → (next state, actions) | yes | |
-| gate | `supervisor::Supervisor` | run `step` on one thread; execute its actions | no | |
-
-Validation (`TrajectoryValidator`) and monitoring (`TrackingMonitor`) are pure
-functions that sit next to the motion layer. A convenience facade that wires
-everything for applications comes last, once there is something worth wrapping.
-
----
-
-## 4. Who initiates a call: push versus pull
-
-The wire is fixed: the robot never asks the PC for anything on 8055. So "does
-the robot request values from my code" is a host-side design choice, and the
-answer differs by family.
-
-**Push (your code drives).** Calling a method sends the command now, through the
-supervisor's gate. Right for everything with no timing requirement:
-PointToPoint, Waypoints, TimedTrajectory (one upload, then the controller owns
-timing), Program, settings, queries.
-
-**Pull (a loop drives).** ServoStream needs a setpoint every `t` ms, on time.
-If arbitrary application code called `send()` whenever it felt like it, the
-controller buffer would starve or flood. So `motion::ServoLoop` owns a
-real-time clock and, every tick, *pulls* the next setpoint from a source you
-give it:
-
-```cpp
-// Your source: any callable. Return nullopt when there is no new setpoint.
-auto source = [&](std::chrono::nanoseconds t) -> std::optional<JointPosition> { ... };
-```
-
-`ServoStream` itself stays a pure protocol (`setpoint(q)` returns the request;
-one job: the protocol). `ServoLoop` is the pull side (one job: timing). Keeping them apart means the
-protocol is testable without a clock, and the timing is testable without a
-robot. A nullopt (or a late source) triggers the starvation policy: decelerate,
-hold, report.
-
-Velocity used for visual servoing is the same pull pattern and reuses
-`ServoLoop` with a velocity source.
-
----
-
-## 5. Shape of a motion family
-
-The manual's protocols are lifecycles: an **open** sequence, **data** calls,
-**start/control** calls, a **close** sequence, plus queries. A family is a small
-**pure protocol state machine**: its methods take what you want and return the
-commands to send, advancing its own phase. It performs no I/O.
-
-```cpp
-class TimedTrajectory {
-public:
-    expected<Requests, ProtocolError> open(const TrajectorySpec&);   // start_push_pos
-    expected<Requests, ProtocolError> push(const TimedPoint&);       // push_pos
-    expected<Requests, ProtocolError> seal();                        // stop_push_pos, check_trajectory
-    expected<Requests, ProtocolError> start(SpeedFraction);          // start_trajectory
-    Requests close();                                                // stop_trajectory, flush_trajectory
-};
-```
-
-Why commands are returned rather than sent:
-
-- The supervisor executes every command, so it can reject any of them; the
-  family cannot bypass the gate even by mistake.
-- Calling in the wrong order (start before seal) is a `ProtocolError` from a pure
-  function, caught in unit tests, never on the robot.
-
-Why `open`/`close` methods and not constructor/destructor: closing needs RPC
-calls, waiting for the robot to stop, and error reporting. Destructors can do
-none of that safely.
-
-The supervisor holds the open family as
-`std::variant<std::monostate, PointToPoint, Waypoints, ..., TimedTrajectory>`.
-A variant rather than a virtual base: the set of families is closed and known
-at compile time.
-
-The exception is the real-time path: `ServoLoop` sends `tt_put_servo_joint_to_buf`
-directly through a lease-checked sender, because a round trip through the
-supervisor's queue each cycle would add latency and jitter. The lease (section
-7) keeps that path gated.
-
----
-
-## 6. Units
-
-- **Wire layer** (`feedback::Frame`, `command::*`): controller units (deg, mm,
-  rad, %). Mirrors the manual; checkable against the pendant.
-- **Everything above**: SI (m, rad, s, N, N·m, kg), the ROS / ur_rtde /
-  libfranka convention.
-- **One conversion boundary**, nowhere else converts.
-- Percentages and per-mille have no SI equivalent: fractions in [0, 1] with
-  named types (`SpeedFraction`), never bare `double`.
-- Orientation above the wire is a rotation type (e.g. Eigen), converted to the
-  vendor's rx/ry/rz at the boundary once its convention is verified.
-- Commands always send `unit_type` explicitly: the manual's defaults differ per
-  method (`getTcpPos` defaults to degrees, most others to radians).
-
----
-
-## 7. Supervisor
-
-The top of the hardware side: it **mirrors the controller's operating state**
-and **gates every command against it**. Applications never bypass it.
-
-### States
-
-Mapped to the PLCopen motion state diagram, the de facto standard:
-
-| State | PLCopen | Invariants on every frame | Leaves on |
+| Namespace | Component | Its job | Pure |
 |---|---|---|---|
-| Disconnected | | none | both ports up + fresh frame → Preflight |
-| Preflight | | fresh | identity + config verified → Standby; mismatch → Fault |
-| Standby | Disabled | fresh | bring-up requested → BringUp |
-| BringUp | Power on | fresh, remote, no E-stop | each step observed → Ready; timeout → Fault |
-| Ready | Standstill | fresh, remote, servo on, synced, no alarm/collision, expected tool/frame, stopped | family opened → Executing |
-| Executing | Motion | Ready's set minus "stopped", plus family monitors | done → Stopping; violation → Fault |
-| Stopping | Stopping | fresh | stopped observed + family closed → Ready; timeout → Fault |
-| Fault | ErrorStop | none | acknowledge → Standby (never directly Ready) |
+| `ec::net` | `TcpSocket` | TCP client, Linux and Windows; every call bounded by a timeout | no |
+| `ec::feedback` | `Framer` | 8056 byte stream → whole 1024-byte frames, realigning after junk | yes |
+| `ec::feedback` | `Frame`, `decode` | 1024 bytes → typed frame, in the controller's units | yes |
+| `ec::command` | `LineFramer` | 8055 byte stream → lines | yes |
+| `ec::command` | `encode`, `parse_response` | request → JSON-RPC line; response line → id, and result or error | yes |
+| `ec::command` | command structs, `ReplyDecoder` | one type per SDK call: method, parameters, reply type and its decoding | yes |
+| `ec::command` | `Client` | one call at a time: send, wait for the response with its id, decode | no |
+| `ec` | `RobotState`, `RobotMode`, `CycleMode` | status values both ports report | yes |
 
-### Rules
-
-1. **Stop is always allowed.** First check in `step`, before dispatching on the
-   state. `stop()` is callable from any thread and jumps the event queue. It is
-   an IEC 60204-1 category 2 software stop, not a safety function; E-stop and
-   S_STOP are.
-2. **Any failed invariant goes straight to Fault.** Conditions are named
-   `constexpr` entries in one table per state, evaluated centrally on every
-   frame; the first failed name becomes the fault reason.
-3. **Precondition versus invariant.** The same conditions checked on a request
-   reject the request (no state change, not a fault); checked on a frame they
-   fault.
-4. **Observed, not assumed.** A reply means "accepted". "Done" is when the
-   frame shows it.
-5. **Every waiting state has a timeout.**
-6. **Families switch only from rest.** Requesting a different family while
-   moving is rejected with a reason, never answered with a surprise stop.
-
-### Implementation
-
-- Core: `Step step(const State&, const Event&)`, pure. States are a
-  `std::variant` because most carry data that must not outlive them
-  (`Executing{lease, family}`, `Fault{record}`, `Stopping{deadline}`).
-- Shell: one thread, one event queue; executes the returned actions; logs every
-  transition with its cause. A logged event sequence replays exactly.
-- Motion lease: only the supervisor mints one, at most one at a time, only in
-  Ready. Motion sends require it; revoking it is the first action of every
-  fault.
+Command-line tools (`apps/`): `ec_monitor` prints the 8056 stream; `ec_query`
+sends one SDK call (read-only methods only, unless `--write`).
 
 ---
 
-## 8. Threads
+## 3. Rules the code follows
 
-| Thread | Does | Must never |
+- Failures are values (`std::expected`), not exceptions, throughout the library.
+- The wire layer (`feedback::Frame`, the command structs) uses the controller's
+  units (deg, mm, rad, %), with the unit in each member's name, so values can be
+  checked against the manual and the teach pendant. Conversion to SI is planned
+  at one boundary above it.
+- Every socket call waits at most its timeout, and reports a timeout only once
+  it has fully elapsed.
+- A command describes a call and does no I/O: a method name and a reply type,
+  plus `params()` or `decode()` only when needed. Decoding checks type and range
+  and never throws.
+- The controller wraps every result in a JSON string; the codec unwraps it.
+- The client has one call in flight. It discards, and counts, late responses
+  to timed-out calls and lines that are not responses; a failed send or a lost
+  connection closes the connection for good.
+- A status value the manual does not define fails a reply that carries it; in a
+  frame it is kept, and `is_valid()` reports it.
+
+---
+
+## 4. Testing
+
+- GoogleTest unit tests for every pure component, and real-socket tests against
+  a loopback server (`tests/support/loopback_server.hpp`).
+- Both tools end to end against the fake servers (`tests/apps/test_apps.py`,
+  run by ctest).
+- Fake servers (`tools/`): replay the EA66's recorded replies and stream
+  synthetic frames, with fault injection.
+- CI: format check; all five presets built and tested; AddressSanitizer and
+  UndefinedBehaviorSanitizer in `linux-debug`; clang-tidy.
+
+---
+
+## 5. Roadmap (draft)
+
+Not reviewed in depth; expected to change with experience on the robot. Each
+step ends with something testable.
+
+| # | Step | Test |
 |---|---|---|
-| feedback receiver | 8056 recv, decode, publish, post event | block on anything else |
-| supervisor | event loop, command client, family open/close | be skipped by stop |
-| servo loop (online only) | pull setpoint, safety-filter, send | allocate, lock, log, wait for replies |
-| application | plan, request, `stop()` | touch sockets |
+| 4 | `feedback::Receiver` (8056 thread), `feedback::Latest` (newest frame and its age), SI conversion | the monitor on the new pieces; pull the cable: staleness detected |
+| 5 | Typed commands for supervision: servo, sync, alarm, tool and user frame, payload, safety limits | typed queries |
+| 6 | `supervisor::step`: the pure state machine with its condition tables | unit tests |
+| 7 | The supervisor, observe-only | pendant mode change, E-stop, pushing the arm: each detected and named |
+| 8 | Preflight: identity and configuration checked against a config file | a changed tool: refuses to start |
+| 9 | Bring-up: clear alarm → sync → servo on, each step confirmed from feedback | servos on and off from code |
+| 10 | Motion lease and point-to-point motion through the supervisor | first move at 10 % speed; a stop mid-move |
+| 11 | Experiments: stop latency, two 8055 connections, close sequences | numbers for timeouts |
+| 12 | Trajectory type and validator | bad trajectories rejected |
+| 13 | Kinematics checked against the controller's `positiveKinematic` | forward-kinematics error statistics |
+| 14 | Timestamped trajectories with a tracking monitor | a planned trajectory on the robot |
+| 15 | Logging (HDF5) | commanded against actual |
+| 16 | Transparent-transmission latency experiments | numbers for the loop design |
+| 17 | Streamed setpoints with a real-time loop | a streamed sine, one joint, then all |
+| 18 | Velocity control (speedj / speedl) | velocity commands that stop on timeout |
+| 19 | `ec::Robot`, one object for applications; examples and a guide | |
+| 20 | Extras as needed: force control, Python bindings, ROS 2 | |
+
+Proposed changes to this draft, not decided either:
+
+- Step 4 as three components: Receiver, Latest, and the SI conversion as a pure
+  function. Orientation stays the controller's rx/ry/rz until its convention is
+  checked on the robot, so a math library (Eigen) waits for kinematics.
+- A raw 8056 recorder right after step 4 (frames and their receive times,
+  replayable); HDF5 logging later.
+- The motion lease enforced by a sender above the command client, not inside
+  the command layer.
+- The supervisor's states built step by step; observe-only needs only a few.
+- A ThreadSanitizer build in CI once threads arrive (step 4).
 
 ---
 
-## 9. Build order
+## 6. Open questions for the robot
 
-1. **done:** repository, build system, CI; `net::TcpSocket`, `feedback::Framer`,
-   `feedback::decode`, `apps/ec_monitor`, `tools/fake_8056.py`.
-2. **done:** `command::*` structs for 5 queries + `MoveByJoint` + `Stop`, and the
-   codec (nlohmann-json). Tested against the manual's templates and real EA66
-   replies; every result arrives wrapped in a JSON string and is unwrapped.
-3. **done:** `command::LineFramer` + `command::Client` + `apps/ec_query` (replaces
-   `nc`) + `tools/fake_8055.py`.
-4. `feedback::Receiver` + `feedback::Latest`; `ec_monitor` moves onto them; SI
-   boundary.
-5. `supervisor::step` with tests; then the shell in observe-only mode.
-6. `motion::PointToPoint` behind the supervisor, 10 % speed.
-7. `motion::TimedTrajectory` + validator + tracking monitor.
-8. `motion::ServoStream` + `motion::ServoLoop`.
-
----
-
-## 10. Open questions for the robot
-
+- What does the controller send back for a malformed request line?
+- A recorded stream of frames, checked against the pendant, as a test fixture.
+- `tools/fake_8055.py` lists a reply to `moveByJoint` as recorded from the
+  controller: confirm it on the robot.
 - Does the controller accept two simultaneous 8055 connections?
-- What does ServoStream do when starved? What does a TimedTrajectory do if the
-  host dies mid-run?
+- What does streaming (transparent transmission) do when starved? What does a
+  timestamped trajectory do if the host dies mid-run?
 - Do the close sequences in `sdk_calls.md` leave the controller ready for every
   other family?
 - Which tool does `machinePose` refer to; what convention are rx/ry/rz?
+- Frame period: about 8 ms per the manual; 120–122 Hz observed on the EA66.

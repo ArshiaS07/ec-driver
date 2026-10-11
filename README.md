@@ -4,27 +4,27 @@ C++23 driver for Elite EC-series robot controllers (target robot: Annuo EA66,
 a rebranded EC66; controller firmware V3.15.3). Builds on Linux and Windows,
 and cross-compiles for 64-bit ARM Linux.
 
-- `docs/architecture.md`: design, components, build order
+- `docs/architecture.md`: what exists, the rules it follows, a draft roadmap
 - `docs/sdk_calls.md`: every SDK call, classified
 
 ## Status
 
 | Part | State |
 |---|---|
-| `ec::net::TcpSocket` (Linux + Windows) | done |
+| `ec::net::TcpSocket` (Linux + Windows) | done, tested against a loopback server |
 | `ec::feedback` (port 8056: framing + decoding) | done, tested |
-| `apps/ec_monitor` (console monitor) | done |
-| `ec::command` codec + first 7 calls (port 8055) | done, tested against real replies |
-| `ec::command::Client` (send a call, wait for its reply) | done |
-| `apps/ec_query` (one SDK call from the command line) | done |
-| supervisor (state machine, motion gate) | next |
-| everything else | see `docs/architecture.md` §9 |
+| `ec::command` (port 8055: codec, typed calls, client) | done, tested against real replies; 7 of 184 calls typed |
+| `apps/ec_monitor`, `apps/ec_query` | done, tested end to end against the fake servers |
+| live state: 8056 receiver thread, latest frame, SI values | next (roadmap step 4) |
+| everything else | the draft roadmap in `docs/architecture.md` §5 |
 
 ## Try it
 
-    ./build/linux-debug/apps/ec_monitor                    # robot at 192.168.0.200, 2 samples/s
+    ./build/linux-debug/apps/ec_monitor                    # robot at 192.168.0.200, 2 frames/s
     ./build/linux-debug/apps/ec_monitor --rate 10
     ./build/linux-debug/apps/ec_monitor --all > run.txt    # every frame (~125/s) into a file
+    ./build/linux-debug/apps/ec_monitor --frames 500       # stop after 500 frames
+    ./build/linux-debug/apps/ec_monitor --help
 
 One SDK call from the command line (read-only by default; `--write` for
 anything else):
@@ -102,9 +102,10 @@ everything before committing (or let the editor format on save):
     pipx install clang-format==22.1.8      # once
     git ls-files '*.cpp' '*.hpp' | xargs clang-format -i
 
-`.clang-tidy` enables bug-finding checks only. It reads the compile commands of
-a configured build:
+`.clang-tidy` enables bug-finding checks only; CI runs it with clang-tidy 22.1.8
+and fails on any finding. It reads the compile commands of a configured build:
 
+    pipx install clang-tidy==22.1.8        # once
     git ls-files '*.cpp' | xargs clang-tidy -p build/linux-debug --quiet
 
 If it reports standard headers as not found (`'array' file not found`), clang
@@ -115,7 +116,9 @@ picked a GCC directory without C++ headers; name yours, e.g.
 
 `.github/workflows/ci.yml` checks formatting, then builds and tests all five
 presets on every push to `master` and on every pull request, with the same
-commands as above.
+commands as above, and runs clang-tidy on the `linux-debug` build. The tests
+include both tools, end to end against the fake servers (`tests/apps/`, Python
+3 standard library; native builds only).
 
 ### Line endings
 
@@ -130,8 +133,8 @@ working tree, on both systems, regardless of each user's `core.autocrlf`.
       command/            port 8055: one type per SDK call, codec, client
       motion/             motion families                                     (later)
     src/                  mirrors include/ec/; detail/ holds private headers
-    apps/                 command-line tools (ec_monitor, ec_query)
-    tests/                GoogleTest; support/ holds shared test helpers
+    apps/                 command-line tools (ec_monitor, ec_query), on CLI11
+    tests/                GoogleTest; support/ shared helpers; apps/ end-to-end tool tests
     tools/                development helpers (fake_8056.py, fake_8055.py)
     docs/
     cmake/                warnings, cross toolchains
