@@ -83,7 +83,7 @@ ForceControl is not a motion family of its own: it modifies how the other famili
 | 2.2.2.28 | `getRobotType` | Get Robot Type | query |  |  |
 | 2.2.2.29 | `getDH` | Get Robot DH Parameters | query |  |  |
 | 2.2.2.30 | `setCollisionEnable` | Set Collision Enable | setting |  | **deprecated** (use setSafetyParams) |
-| 2.2.2.31 | `setCollisionSensitivity` | Set Collision Sensitivity | setting | ✓ | **deprecated** (use setSafetyParams) |
+| 2.2.2.31 | `setCollisionSensitivity` | Set Collision Sensitivity | setting | ✓ | **deprecated** (use setSafetyParams); lower = more sensitive (10 % triggers with the smallest force, per the EC66 pendant) |
 | 2.2.2.32 | `get_remote_sys_password` | Get Auto-Generated Encrypted String | query |  | for setSafetyParams password |
 | 2.2.2.33 | `setSafetyParams` | Set Safety Parameters | setting | ✓ |  |
 | 2.2.2.34 | `getSpeed` | Get Robot Running Speed | query |  |  |
@@ -106,7 +106,7 @@ ForceControl is not a motion family of its own: it modifies how the other famili
 | 2.2.2.51 | `setFlangeButton` | Set End-Effector Button State | setting | ✓ | ≥ v2.16.2 |
 | 2.2.2.52 | `checkFlangeButton` | Get End-Effector Button State | query |  | ≥ v2.16.2 |
 | 2.2.2.53 | `get_collision_enable_status` | Get Collision Detection Enable State | query |  |  |
-| 2.2.2.54 | `getCollisionSensitivity` | Get Collision Sensitivity | query |  |  |
+| 2.2.2.54 | `getCollisionSensitivity` | Get Collision Sensitivity | query |  | lower = more sensitive (EC66 pendant) |
 | 2.2.2.55 | `getTcpPoseInUser` | Get Current TCP Pose in the Current User Frame | query |  | 8056: `machineUserPose` |
 | 2.2.2.56 | `getAlarmNum` | Get Robot Alarm Serial Numbers | query |  |  |
 | 2.2.2.57 | `get_joint_speed` | Get Joint Velocities | query |  | 8056: `jointSpeed` |

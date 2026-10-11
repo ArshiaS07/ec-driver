@@ -132,5 +132,6 @@ Proposed changes to this draft, not decided either:
   timestamped trajectory do if the host dies mid-run?
 - Do the close sequences in `sdk_calls.md` leave the controller ready for every
   other family?
-- Which tool does `machinePose` refer to; what convention are rx/ry/rz?
+- Which tool does `machinePose` refer to? (Answered: rx, ry, rz compose as
+  R = Rz·Ry·Rx, and `poseMul` is T1·T2; `tools/rotation_convention.py`.)
 - Frame period: about 8 ms per the manual; 120–122 Hz observed on the EA66.

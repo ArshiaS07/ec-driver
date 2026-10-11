@@ -16,9 +16,10 @@ using Vec3 = std::array<double, 3>;
 
 /// A frame's contents for the six arm joints, in SI units (m, rad, s, N, N m, V).
 /// Kept as the controller sends them: its timestamp (ms) and temperatures (degC).
-/// Rotations are the controller's rx, ry, rz [rad], whose convention is not yet
-/// verified. Left out: the wire's external axes 7 and 8, and its constant size
-/// field. Each comment names the manual's field.
+/// Rotations are the controller's rx, ry, rz [rad], composed as
+/// R = Rz(rz) * Ry(ry) * Rx(rx) (measured on the EA66). Left out: the wire's
+/// external axes 7 and 8, and its constant size field. Each comment names the
+/// manual's field.
 struct State {
     std::int64_t controller_time_ms = 0;  ///< timestamp: controller clock, ms since 1970-01-01
 

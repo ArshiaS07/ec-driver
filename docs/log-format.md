@@ -72,8 +72,9 @@ joints_deg = records["frame"][:, 13 : 13 + 8 * 8].copy().view(">f8")  # machineP
 ### The feedback stream
 
 Units are SI, except the controller's timestamp (ms) and temperatures (degC),
-kept as sent. Rotations are the controller's rx, ry, rz as sent; their
-convention is not yet verified.
+kept as sent. Rotations are the controller's rx, ry, rz as sent, composed as
+R = Rz(rz) · Ry(ry) · Rx(rx): about the fixed X axis, then Y, then Z (measured
+on the EA66 with `tools/rotation_convention.py`).
 
 | Dataset | Shape | Unit | Content (manual field) |
 |---|---|---|---|
