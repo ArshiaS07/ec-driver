@@ -11,7 +11,9 @@ add_executable(ec_tests
     feedback/frame_test.cpp
     feedback/framer_test.cpp
     feedback/reader_test.cpp
+    feedback/receiver_test.cpp
     feedback/state_test.cpp
+    latest_test.cpp
     log/raw_test.cpp
     net/tcp_socket_test.cpp
     status_test.cpp

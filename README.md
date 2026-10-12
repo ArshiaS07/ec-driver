@@ -17,7 +17,7 @@ and cross-compiles for 64-bit ARM Linux.
 | `ec::command` (port 8055: codec, typed calls, client) | done, tested against real replies; 7 of 184 calls typed |
 | `ec::log` (raw recordings; HDF5 logs in the optional `ec::hdf5`) | done, tested |
 | `apps/ec_monitor`, `apps/ec_record`, `apps/ec_query` | done, tested end to end against the fake servers |
-| live state: 8056 receiver thread, latest frame | next (roadmap step 4) |
+| live state: `feedback::Receiver` (8056 thread, reconnects), `ec::Latest` (newest value) | done, tested; not yet on the robot |
 | everything else | the draft roadmap in `docs/architecture.md` §5 |
 
 ## Try it
@@ -63,6 +63,7 @@ vcpkg packages, so Linux and Windows builds of the same checkout never collide.
 | Preset | Host | Builds |
 |---|---|---|
 | `linux-debug` | Linux | native, warnings as errors, AddressSanitizer + UBSan |
+| `linux-tsan` | Linux | native, warnings as errors, ThreadSanitizer; without HDF5 |
 | `linux-release` | Linux | native |
 | `linux-aarch64` | Linux | cross, 64-bit ARM Linux |
 | `windows-debug` | Windows | MSVC, warnings as errors |
@@ -124,7 +125,7 @@ picked a GCC directory without C++ headers; name yours, e.g.
 
 ### Continuous integration
 
-`.github/workflows/ci.yml` checks formatting, then builds and tests all five
+`.github/workflows/ci.yml` checks formatting, then builds and tests all six
 presets on every push to `master` and on every pull request, with the same
 commands as above, and runs clang-tidy on the `linux-debug` build. The tests
 include both tools, end to end against the fake servers (`tests/apps/`, Python
@@ -139,7 +140,7 @@ working tree, on both systems, regardless of each user's `core.autocrlf`.
 
     include/ec/           public headers, one directory per namespace
       net/                TCP transport (both ports)
-      feedback/           port 8056: frame, framer, reader, SI state
+      feedback/           port 8056: frame, framer, reader, receiver thread, SI state
       command/            port 8055: one type per SDK call, codec, client
       log/                sinks: raw recordings, HDF5 logs (optional)
       motion/             motion families                                     (later)

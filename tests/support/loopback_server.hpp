@@ -5,6 +5,7 @@
 // GoogleTest reports an exception as a failed test.
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <stdexcept>
@@ -25,6 +26,7 @@
 #else
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
 #endif
@@ -145,6 +147,28 @@ public:
         const auto s = ::accept(s_, nullptr, nullptr);
         if (s == detail::kNoSocket) throw std::runtime_error("server: accept failed");
         return Peer(s);
+    }
+
+    // Accepts the next connection once one arrives, for clients that connect
+    // on a thread of their own. Throws if none arrives within `timeout`.
+    Peer accept(std::chrono::milliseconds timeout) {
+        const int ms = static_cast<int>(timeout.count());
+#if defined(_WIN32)
+        fd_set ready;
+        FD_ZERO(&ready);
+        FD_SET(s_, &ready);
+        timeval tv{};
+        tv.tv_sec = ms / 1000;
+        tv.tv_usec = (ms % 1000) * 1000;
+        const int n = ::select(0, &ready, nullptr, nullptr, &tv);
+#else
+        pollfd p{};
+        p.fd = s_;
+        p.events = POLLIN;
+        const int n = ::poll(&p, 1, ms);
+#endif
+        if (n <= 0) throw std::runtime_error("server: no connection within the timeout");
+        return accept();
     }
 
 private:

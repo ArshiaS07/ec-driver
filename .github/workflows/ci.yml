@@ -32,6 +32,7 @@ jobs:
       matrix:
         include:
           - { preset: linux-debug, os: ubuntu-24.04 }
+          - { preset: linux-tsan, os: ubuntu-24.04 }
           - { preset: linux-release, os: ubuntu-24.04 }
           - { preset: linux-aarch64, os: ubuntu-24.04 }
           - { preset: windows-debug, os: windows-2022 }
@@ -70,10 +71,10 @@ jobs:
             sudo apt-get install -y g++-aarch64-linux-gnu qemu-user
           fi
 
-      # AddressSanitizer in GCC 13 can crash at start-up with the kernel's
-      # 32-bit mmap randomisation; 28 bits is the long-standing default.
-      - name: ASan-compatible address randomisation
-        if: matrix.preset == 'linux-debug'
+      # The sanitizers in GCC 13 can crash at start-up with the kernel's 32-bit
+      # mmap randomisation; 28 bits is the long-standing default.
+      - name: Sanitizer-compatible address randomisation
+        if: matrix.preset == 'linux-debug' || matrix.preset == 'linux-tsan'
         run: sudo sysctl -w vm.mmap_rnd_bits=28
 
       # Full clone: manifest mode reads the pinned baseline from vcpkg's history.

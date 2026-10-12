@@ -4,7 +4,8 @@ project(ec_driver VERSION 0.1.0 DESCRIPTION "Driver for Elite EC-series robot co
 option(EC_BUILD_TESTS "Build unit tests" ${PROJECT_IS_TOP_LEVEL})
 option(EC_BUILD_APPS "Build command-line tools" ${PROJECT_IS_TOP_LEVEL})
 option(EC_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
-option(EC_SANITIZE "Build with AddressSanitizer and UndefinedBehaviorSanitizer (GCC/Clang)" OFF)
+set(EC_SANITIZE "" CACHE STRING "Sanitizers (GCC/Clang): address (ASan + UBSan), thread (TSan), or empty for none")
+set_property(CACHE EC_SANITIZE PROPERTY STRINGS "" address thread)
 option(EC_WITH_HDF5 "Build the HDF5 log writer, ec::hdf5 (needs vcpkg feature hdf5)" OFF)
 
 include(cmake/CompilerWarnings.cmake)
@@ -20,6 +21,7 @@ add_library(ec_driver
     src/feedback/frame.cpp
     src/feedback/framer.cpp
     src/feedback/reader.cpp
+    src/feedback/receiver.cpp
     src/feedback/state.cpp
     src/log/raw.cpp
     src/net/tcp_socket.cpp
@@ -36,7 +38,8 @@ ec_set_warnings(ec_driver)
 
 # PUBLIC: command parameters are nlohmann::ordered_json in the public headers.
 find_package(nlohmann_json CONFIG REQUIRED)
-target_link_libraries(ec_driver PUBLIC nlohmann_json::nlohmann_json)
+find_package(Threads REQUIRED)
+target_link_libraries(ec_driver PUBLIC nlohmann_json::nlohmann_json Threads::Threads)
 if(WIN32)
     target_link_libraries(ec_driver PRIVATE ws2_32)
 endif()

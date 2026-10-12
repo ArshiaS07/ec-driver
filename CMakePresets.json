@@ -56,7 +56,19 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
         "EC_WARNINGS_AS_ERRORS": "ON",
-        "EC_SANITIZE": "ON"
+        "EC_SANITIZE": "address"
+      }
+    },
+    {
+      "name": "linux-tsan",
+      "displayName": "Linux debug (TSan), without HDF5",
+      "inherits": "linux",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "EC_WARNINGS_AS_ERRORS": "ON",
+        "EC_SANITIZE": "thread",
+        "VCPKG_MANIFEST_FEATURES": "",
+        "EC_WITH_HDF5": "OFF"
       }
     },
     {
@@ -120,6 +132,11 @@
       "inherits": "build-linux"
     },
     {
+      "name": "linux-tsan",
+      "configurePreset": "linux-tsan",
+      "inherits": "build-linux"
+    },
+    {
       "name": "linux-release",
       "configurePreset": "linux-release",
       "inherits": "build-linux"
@@ -175,6 +192,11 @@
       "name": "linux-debug",
       "inherits": "test-linux",
       "configurePreset": "linux-debug"
+    },
+    {
+      "name": "linux-tsan",
+      "inherits": "test-linux",
+      "configurePreset": "linux-tsan"
     },
     {
       "name": "linux-release",

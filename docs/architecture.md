@@ -33,6 +33,8 @@ by the layers above; a lower layer knows nothing of the layers above it.
 | `ec::feedback` | `Frame`, `decode` | 1024 bytes → typed frame, in the controller's units | yes |
 | `ec::feedback` | `State`, `to_si` | a frame in SI units: the one place where 8056's units are converted | yes |
 | `ec::feedback` | `Reader` | monitoring port → `Sample`s (each frame as received, with its arrival time) | no |
+| `ec::feedback` | `Receiver` | a thread that keeps the monitoring port connected and hands every `Sample` to a callback | no |
+| `ec` | `Latest<T>` | the newest value and its sequence number, shared between threads; wait for the next one | no (a mutex) |
 | `ec::log` | `Sink<Record>` | the interface every recorder implements: `write(record)` | yes |
 | `ec::log` | `RawWriter`, `RawReader` | raw recordings: every frame as received, with its arrival time | no |
 | `ec::log` (target `ec::hdf5`, optional) | `H5File`, `H5FeedbackWriter` | HDF5 logs: one dataset per field, SI units | no |
@@ -80,8 +82,9 @@ SDK call (read-only methods only, unless `--write`). File formats:
   run by ctest).
 - Fake servers (`tools/`): replay the EA66's recorded replies and stream
   synthetic frames, with fault injection.
-- CI: format check; all five presets built and tested; AddressSanitizer and
-  UndefinedBehaviorSanitizer in `linux-debug`; clang-tidy.
+- CI: format check; all six presets built and tested; AddressSanitizer and
+  UndefinedBehaviorSanitizer in `linux-debug`, ThreadSanitizer in `linux-tsan`;
+  clang-tidy.
 
 ---
 
@@ -92,7 +95,7 @@ step ends with something testable.
 
 | # | Step | Test |
 |---|---|---|
-| 4 | `feedback::Receiver` (8056 thread), `feedback::Latest` (newest frame and its age). Done already: `Reader`, `to_si`, and the recording of step 15 | pull the cable: staleness detected |
+| 4 | Done: `feedback::Receiver` (8056 thread), `ec::Latest` (newest value); also `Reader`, `to_si`, and the recording of step 15 | on the robot: pull the cable, staleness detected and the stream back after plugging in |
 | 5 | Typed commands for supervision: servo, sync, alarm, tool and user frame, payload, safety limits | typed queries |
 | 6 | `supervisor::step`: the pure state machine with its condition tables | unit tests |
 | 7 | The supervisor, observe-only | pendant mode change, E-stop, pushing the arm: each detected and named |
@@ -117,7 +120,6 @@ Proposed changes to this draft, not decided either:
 - The motion lease enforced by a sender above the command client, not inside
   the command layer.
 - The supervisor's states built step by step; observe-only needs only a few.
-- A ThreadSanitizer build in CI once threads arrive (step 4).
 
 ---
 
