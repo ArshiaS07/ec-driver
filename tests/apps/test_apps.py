@@ -233,6 +233,94 @@ class RotationConvention(unittest.TestCase):
         self.assertIn("poseMul(pose1, pose2) = T2.T1", r.stdout)
 
 
+class RobotChecks(unittest.TestCase):
+    """tools/robot_checks.py: the read-only measurements, against the fakes."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(dir=PATHS.ec_record.parent)  # in the build tree
+        self.dir = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def check(self, *args: str) -> subprocess.CompletedProcess:
+        return subprocess.run([sys.executable, str(PATHS.tools / "robot_checks.py"), *args],
+                              capture_output=True, text=True, timeout=60)
+
+    def fake(self, *options: str) -> FakeServer:
+        fake = FakeServer("fake_8055.py", *options)
+        self.addCleanup(fake.stop)
+        return fake
+
+    def test_round_trip(self):
+        port = str(self.fake().port)
+        r = self.check("rtt", "--host", LOCAL, "--port", port, "--count", "20", "--period-ms", "0")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("controller V3.15.3, robot mode 2", r.stdout)
+        self.assertIn("round trip of getRobotState, 20 calls", r.stdout)
+
+    def test_pipelined_requests(self):
+        port = str(self.fake("--split").port)
+        r = self.check("pipeline", "--host", LOCAL, "--port", port)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("all 20 replies, in order", r.stdout)
+
+    def test_two_connections_at_once(self):
+        port = str(self.fake().port)
+        r = self.check("connections", "--host", LOCAL, "--port", port, "--rounds", "5")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("both answered through 5 rounds", r.stdout)
+
+    def test_one_connection_at_a_time(self):
+        port = str(self.fake("--one-client").port)
+        r = self.check("connections", "--host", LOCAL, "--port", port)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("serves one connection at a time", r.stdout)
+
+    def test_drift_of_a_recording_from_ec_record(self):
+        raw = self.dir / "live.ecraw"
+        fake = FakeServer("fake_8056.py")
+        try:
+            r = run(PATHS.ec_record, LOCAL, "--port", str(fake.port), "--raw", str(raw), "--frames", "120")
+        finally:
+            fake.stop()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        r = self.check("drift", str(raw))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("120 frames over", r.stdout)
+
+    def test_drift_finds_a_known_skew(self):
+        # Frames every 8.25 ms with up to 0.6 ms of arrival jitter; the controller's
+        # clock runs 100 ppm fast and stamps whole milliseconds.
+        raw = self.dir / "skewed.ecraw"
+        with raw.open("wb") as f:
+            f.write(b"ECRAW001" + bytes(16))
+            for k in range(20000):
+                ideal = k * 8.25e-3
+                arrival = int((ideal + (k * 7919 % 600) * 1e-6) * 1e9)
+                controller = 1_791_200_688_449 + int(ideal * (1 + 100e-6) * 1000)
+                f.write(arrival.to_bytes(8, "little", signed=True) + bytes(4)
+                        + controller.to_bytes(8, "big") + bytes(1024 - 12))
+        r = self.check("drift", str(raw))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        ppm = float(re.search(r"([+-][0-9.]+) ppm", r.stdout).group(1))
+        self.assertAlmostEqual(ppm, 100.0, delta=2.0)
+        self.assertIn("8.251 ms on average", r.stdout)
+
+    def test_failures(self):
+        r = self.check("rtt", "--host", LOCAL, "--port", str(closed_port()))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("connect to", r.stderr)
+        junk = self.dir / "junk.bin"
+        junk.write_bytes(b"not a recording")
+        r = self.check("drift", str(junk))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("not a raw recording", r.stderr)
+        for args in (["rtt"], ["rtt", "--host", LOCAL, "--count", "0"], ["nothing"]):
+            with self.subTest(args=args):
+                self.assertEqual(self.check(*args).returncode, 2)
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--ec-query", type=Path, required=True)

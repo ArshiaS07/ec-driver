@@ -14,6 +14,7 @@ habit of wrapping every result in a JSON string. Unknown methods get the real
     --stale        send a reply with a wrong id before each real one
     --garbage      send a line that is not JSON-RPC before each real reply
     --split        send every reply in two TCP pieces
+    --one-client   serve one connection at a time (default: each on its own thread)
 
 poseMul and poseInv are computed, with a rotation convention chosen by
 --convention (the matrix product order of rx, ry, rz, default ZYX) and
@@ -26,6 +27,7 @@ Standard library only; works on Linux and Windows.
 import argparse
 import json
 import socket
+import threading
 import time
 
 import poses
@@ -108,6 +110,16 @@ def serve(conn: socket.socket, args: argparse.Namespace) -> None:
             send(conn, reply_for(request, args), args.split)
 
 
+def handle(conn: socket.socket, addr, args: argparse.Namespace) -> None:
+    print(f"client {addr[0]}:{addr[1]} connected", flush=True)
+    with conn:
+        try:
+            serve(conn, args)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass
+    print(f"client {addr[0]}:{addr[1]} disconnected", flush=True)
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--host", default="127.0.0.1")
@@ -116,6 +128,7 @@ def main() -> None:
     p.add_argument("--stale", action="store_true")
     p.add_argument("--garbage", action="store_true")
     p.add_argument("--split", action="store_true")
+    p.add_argument("--one-client", action="store_true")
     p.add_argument("--convention", choices=poses.ORDERS, default="ZYX")
     p.add_argument("--product", choices=("12", "21"), default="12")
     args = p.parse_args()
@@ -124,13 +137,10 @@ def main() -> None:
         print(f"fake 8055 on {args.host}:{srv.getsockname()[1]}, Ctrl+C to quit", flush=True)
         while True:
             conn, addr = srv.accept()
-            print(f"client {addr[0]}:{addr[1]} connected")
-            with conn:
-                try:
-                    serve(conn, args)
-                except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
-                    pass
-            print("client disconnected")
+            if args.one_client:
+                handle(conn, addr, args)
+            else:
+                threading.Thread(target=handle, args=(conn, addr, args), daemon=True).start()
 
 
 if __name__ == "__main__":

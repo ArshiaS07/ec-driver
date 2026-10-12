@@ -148,7 +148,8 @@ working tree, on both systems, regardless of each user's `core.autocrlf`.
     src/                  mirrors include/ec/; detail/ holds private headers
     apps/                 command-line tools (ec_monitor, ec_record, ec_query), on CLI11
     tests/                GoogleTest; support/ shared helpers; apps/ end-to-end tool tests
-    tools/                development helpers (fake_8056.py, fake_8055.py)
+    tools/                fake controller ports (fake_8055.py, fake_8056.py); measurements on the robot
+                          (rotation_convention.py; robot_checks.py, read-only)
     docs/
     cmake/                warnings, cross toolchains
 

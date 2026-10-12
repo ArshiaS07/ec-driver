@@ -124,10 +124,9 @@ What follows from it, each point a requirement on the design:
    the present. This is a playout buffer, with the same trade-off as audio over
    a network [R14]: a small L (2–5 periods) for closed-loop work such as vision
    or force, a large L for robust playback (the vendor's examples use 400 ms).
-4. **The two clocks drift.** PC and controller crystals differ by tens of ppm;
-   100 ppm moves the queue level by 0.36 s per hour. Sessions of minutes stay
-   inside the lookahead; long ones need the producer slaved to the controller's
-   clock, estimated from the 8056 timestamps (a software phase-locked loop).
+4. **The two clocks drift.** The queue integrates the small rate difference
+   between the PC's clock and the controller's. That matters only for long
+   continuous streams (§7.1).
 5. **T is a whole number of ms**, while frames come every 8.2–8.3 ms: the
    producer cannot be clocked by the frames. It runs on its own timer, with
    absolute deadlines.
@@ -315,7 +314,7 @@ job.cancel();                                                 // stop the arm, t
 ### 5.5 Streamed motion: sessions the application pushes into
 
 ```cpp
-auto servo = robot.servo({.lookahead = 40ms, .smoothness = 0.2}).value();
+auto servo = robot.servo({.lookahead = 40ms, .smoothness = 0.1}).value();
 servo.target(q);           // any thread, any time: the newest wins, stamped on arrival
 servo.follow(trajectory);  // or a timed reference, sampled by the loop on its own clock (later)
 servo.close();             // decelerate, let the queue drain, clear it; the destructor does the same
@@ -549,19 +548,60 @@ robot.run(ec::motion::PlayTrajectory{.path = path}).wait().value();  // timestam
 
 ---
 
-## 7. Open questions for the robot (before the streamed part is built)
+## 7. Assumptions until measured
 
-| # | Question | Decides |
+Each open question has a default that the design runs on, chosen so that a
+different answer changes one place, never the structure. Four can be measured
+now, read-only, with `tools/robot_checks.py`. The others need motion; they get
+scripted with the streamed-motion step of the roadmap and run against the
+moving fake first.
+
+| # | Question | Default until measured | If the answer differs | Measured by |
+|---|---|---|---|---|
+| 1 | Stream underrun: does the arm stop, decelerate, or raise an alarm? | The driver never lets the queue run dry on purpose: it sends a point every cycle (holding repeats the last setpoint) and closes deliberately (decelerate, wait for standstill, clear). An underrun then means the PC or the network stopped for longer than L; the arm is assumed to stop at the last point. | An alarm is an ordinary fault, seen in 8056. Any other answer changes only what the notes say the arm does if the PC dies. | motion |
+| 2 | Round trip of `tt_put_servo_joint_to_buf` | One request and its reply per cycle (`response_enable = 1`), as in the vendor's first example at T = 10 ms; every point is confirmed. | `response_enable = 0`, as in the vendor's second example: an option of the stream, and the control thread's way of sending. | `robot_checks.py rtt` and `pipeline` now (queries, as a baseline); the put itself with motion |
+| 3 | Drift between the controller's clock and the PC's | No correction. A stream measures the skew from the 8056 timestamps while it runs and reports it; the tracking check sees a growing lag. | The cycle timer trims its period by the measured skew. | `ec_record --seconds 600`, then `robot_checks.py drift` |
+| 4 | Two 8055 connections at once | One connection, owned by the control thread. `stop()` is handled first in every cycle, ahead of anything queued, so it waits at most one cycle and one round trip. | A second connection as an independent stop path, inside the control thread's I/O. | `robot_checks.py connections` |
+| 5 | Stop latency per family | Numbers only: the options in §7.2. | Tuned values. | motion |
+| 6 | Does the speed setting scale streams and timestamped trajectories? | Not relied on. Its value is logged when a stream or trajectory starts; trajectory time limits assume it applies (the slower case); streams are bounded by the driver's own limits. | If it slows the queue's consumption, streams require 100 %: one more condition. | motion |
+| 7 | Does a timestamped trajectory run on if the PC disconnects? | Yes, the cautious assumption: trajectories are validated before upload (joint limits, speeds, a start at the current position), and first runs use a low `speed_percent`. | Nothing. | motion |
+| 8 | Does V3.15.3 accept `targetPose` in a stream? | Joint targets only. | Cartesian streams arrive as a new reference type. | motion, without moving: stream the current pose |
+| 9 | Step response for several L, T and smoothness | The defaults in §7.2. | Tuned values, and the lag the tracking check expects. | motion |
+
+### 7.1 Why drift matters only for long streams
+
+Timing precision is not the issue: at 125 Hz, a rate error of 100 ppm changes
+each period by less than a microsecond, far below the network's jitter. The
+stream's queue, however, *integrates* the rate difference between producer and
+consumer: its level moves by skew × elapsed time, 3 ms per minute at 50 ppm. A
+40 ms lookahead therefore lasts about 13 minutes of continuous streaming before
+the queue runs dry or the latency doubles. Planned motion and sessions of a few
+minutes are unaffected. Estimating the clock offset online is the cure if it is
+ever needed: the slope of that offset is the skew to correct.
+
+### 7.2 Numbers to tune on the robot
+
+Every number is an option with a default chosen before measuring. Tuning them
+is a roadmap step (11 and 16), not a code change.
+
+| Number | Default | Used by |
 |---|---|---|
-| 1 | Stream underrun: does the arm hold, decelerate or raise an alarm? | the hold policy; whether a second stop channel is needed |
-| 2 | Step response for several lookahead, T and smoothness values | defaults; the lag the tracking check expects |
-| 3 | Round trip of `tt_put_servo_joint_to_buf` with replies; throughput without | how the control thread sends |
-| 4 | Frame period and drift: controller timestamps against the PC clock over 10 min | whether streams need clock slaving |
-| 5 | Two simultaneous 8055 connections | an independent stop channel |
-| 6 | Stop latency per family (command to standstill in 8056) | timeouts |
-| 7 | Does the speed setting scale streams and timestamped trajectories? | the meaning of speed options |
-| 8 | Does a timestamped trajectory keep running if the PC disconnects? | how strictly trajectories are validated |
-| 9 | Does firmware V3.15.3 accept `targetPose` in a stream? | Cartesian streaming |
+| Cycle period T | 8 ms, the 8056 rate | control thread; stream sampling period |
+| Network time per cycle | 4 ms (T/2) | the deadline of every call in a cycle |
+| Late cycles before a fault | 3 in a row, each later than T/2 | control thread |
+| State freshness | 50 ms, about 6 frames | condition Fresh |
+| Standstill | every joint below 0.5 °/s for 5 frames | condition Standstill |
+| Stream lookahead L | 40 ms (5 T) | position stream |
+| Stream smoothness | 0.1, as in the vendor's examples | position stream |
+| Target timeout, then hold | 100 ms: applications push at 10 Hz or faster | stream watchdog |
+| Hold before giving up | 500 ms, then `Starved` | stream watchdog |
+| Stream velocity limit | 10 % of the datasheet maxima: J1–J2 15 °/s, J3 19 °/s, J4–J6 26 °/s | stream shaper |
+| Stream acceleration limit | the velocity limit reached in 0.25 s | stream shaper |
+| Tracking tolerance | 5° between the measured position and the setpoint sent L earlier | stream guard |
+| Velocity command duration t | 40 ms (5 T), re-sent every cycle | velocity stream |
+| Jog repeat | every 200 ms (the controller stops after 1 s) | jog |
+| Stop timeout | 2 s from the stop command to standstill | every family |
+| Job time limit | given per job; 30 s otherwise | planned motion |
 
 ---
 

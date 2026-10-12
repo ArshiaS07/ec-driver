@@ -102,12 +102,12 @@ step ends with something testable.
 | 8 | Preflight: identity and configuration checked against a config file | a changed tool: refuses to start |
 | 9 | Bring-up: clear alarm → sync → servo on, each step confirmed from feedback | servos on and off from code |
 | 10 | Motion lease and point-to-point motion through the supervisor | first move at 10 % speed; a stop mid-move |
-| 11 | Experiments: stop latency, two 8055 connections, close sequences | numbers for timeouts |
+| 11 | Experiments: stop latency, two 8055 connections, close sequences; tuning the numbers in `docs/motion.md` §7.2 | numbers for timeouts |
 | 12 | Trajectory type and validator | bad trajectories rejected |
 | 13 | Kinematics checked against the controller's `positiveKinematic` | forward-kinematics error statistics |
 | 14 | Timestamped trajectories with a tracking monitor | a planned trajectory on the robot |
 | 15 | Logging of commands, setpoints and events (the feedback stream is done: raw and HDF5) | commanded against actual |
-| 16 | Transparent-transmission latency experiments | numbers for the loop design |
+| 16 | Transparent-transmission experiments (`docs/motion.md` §7: underrun, step response, round trip) | numbers for the loop design |
 | 17 | Streamed setpoints with a real-time loop | a streamed sine, one joint, then all |
 | 18 | Velocity control (speedj / speedl) | velocity commands that stop on timeout |
 | 19 | `ec::Robot`, one object for applications; examples and a guide | |
@@ -134,9 +134,9 @@ Proposed changes to this draft, not decided either:
 - A recorded stream of frames, checked against the pendant, as a test fixture.
 - `tools/fake_8055.py` lists a reply to `moveByJoint` as recorded from the
   controller: confirm it on the robot.
-- Does the controller accept two simultaneous 8055 connections?
-- What does streaming (transparent transmission) do when starved? What does a
-  timestamped trajectory do if the host dies mid-run?
+- Motion: the questions in `docs/motion.md` §7, each with the default used
+  until it is measured. The read-only ones (round trip, several requests in
+  flight, two connections, clock drift) run with `tools/robot_checks.py`.
 - Do the close sequences in `sdk_calls.md` leave the controller ready for every
   other family?
 - Which tool does `machinePose` refer to? (Answered: rx, ry, rz compose as
