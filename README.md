@@ -6,6 +6,7 @@ and cross-compiles for 64-bit ARM Linux.
 
 - `docs/architecture.md`: what exists, the rules it follows, a draft roadmap
 - `docs/log-format.md`: the raw recording and HDF5 log formats
+- `docs/motion.md`: how the controller moves the arm, and the proposed motion and control design
 - `docs/sdk_calls.md`: every SDK call, classified
 
 ## Status

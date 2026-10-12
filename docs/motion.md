@@ -1,0 +1,607 @@
+# Motion and control
+
+**Status:** proposal, 2026-10-12. Sections 1–4 describe the controller and
+the field; sections 5–6 propose a design, none of it built yet. Once agreed,
+its decisions go into an ADR that replaces ADRs 0009 and 0010.
+
+**Sources**, in order of authority (§5.1): the vendor's manuals, cited as
+[S] SDK socket manual 3.19.2 (English) / 3.11.2 (Chinese original),
+[U] EC66 user manual 3.19.2, [J] JBI manual 3.19.2, [D] EC66 datasheet;
+then our measurements on the EA66; then the references in §8 ([R1] ...).
+A citation like [S 2.2.7.1] names a manual section.
+
+---
+
+## 1. Summary
+
+- The controller offers two kinds of motion. **Planned** (offline): the whole
+  motion is handed over, and the controller times and executes it
+  (point-to-point, waypoints, timestamped trajectories, programs).
+  **Streamed** (online): the PC decides while the arm moves (position
+  streaming, velocity, jog).
+- Position streaming is a queue that the controller empties at a fixed rate:
+  one point per sampling period. The application's targets come at its own
+  rate, so something must convert them into that regular sequence. In this
+  design, the driver does it.
+- The application **pushes**: it hands over a target, or a trajectory, whenever
+  it has one, from any thread. The driver's control loop runs at the
+  controller's pace, takes the newest target, limits it and feeds the queue.
+  The watchdog is a guard in that loop: a target that gets too old makes the
+  stream hold, then stop.
+- One **control thread** owns the command connection and runs a fixed-period
+  cycle (read, decide, act), like a PLC scan. Whatever it runs (a move, a
+  stream, bring-up) is an **activity**: a small state machine without I/O,
+  behind one C++ concept. Adding a motion adds an activity; the loop does not
+  change.
+- **Supervision** remembers three things (idle, busy, fault) and recomputes
+  everything else from the newest state every cycle. Faults latch; a person
+  fixes the cause, acknowledges, and runs bring-up again.
+
+---
+
+## 2. How the controller works
+
+### 2.1 Modes, power, states, stops
+
+- **Modes** [U 6.2]: TEACH (pendant jog, programming), PLAY (stored programs),
+  REMOTE (external control, including the SDK), chosen with the key switch on
+  the pendant. The SDK can read the mode (`getRobotMode`, 8056 `robotMode`) but
+  not change it: a person decides who controls the arm.
+- **Power and readiness**: the vendor's examples bring the arm up in this order
+  [S 2.2.7.6, 2.2.9.10]: clear an alarm (`clearAlarm`), synchronise the encoders
+  if needed (`syncMotorStatus`; 8056 `can_motor_run`), switch the servos on
+  (`set_servo_status`; 8056 `servoReady`). It is the robot-level form of the
+  drive power state machine of CiA 402 (switch-on disabled, ready, operation
+  enabled; fault, fault reset) [R3].
+- **Robot state** [S 2.2.2.1]: 0 stop, 1 pause, 2 emergency stop, 3 running,
+  4 alarm, 5 collision. One motion source is active at a time. The vendor's
+  examples take "state back to 0" as "motion finished" [S 2.2.3.1].
+- **Stops** [U 7.4, 14.2; R13]: emergency stop is IEC 60204-1 category 1 (controlled
+  stop, then power off; PLd); safeguard stop is category 2 (controlled stop,
+  power kept; PLd); an alarm stops the arm at once; collision detection stops it
+  (lower sensitivity value = triggers at smaller force). The SDK's `stop` is an
+  ordinary command, **not a safety function**, and nothing in this driver is one.
+- **Speed and limits**: PLAY and REMOTE share one speed setting [U 6.5.12]
+  (`setSpeed`, 0.05–100 % [S 2.2.3.15]). EC66 [D]: joints ±360°; J1–J2 150°/s,
+  J3 190°/s, J4–J6 260°/s; typical TCP speed 1.5 m/s; payload 6 kg; reach
+  914 mm; repeatability ±0.03 mm.
+
+### 2.2 Two ports, two directions
+
+- **8055, commands**: JSON-RPC, one request per line, one reply each. A reply
+  means *accepted*, not *done*: the vendor's examples send `moveByJoint`, then
+  poll the state until it is back to stop.
+- **8056, state**: a 1024-byte frame pushed about every 8 ms; "if the access
+  time exceeds 8 ms, the data will pile up in the buffer" [S 3]. Measured on
+  the EA66: 120–122 frames/s (8.2–8.3 ms), so frames are not an exact clock.
+  The driver reads 8056 continuously on its own thread (ADR 0013) and judges
+  completion, readiness and faults from it.
+
+### 2.3 Motion families
+
+| Family | The PC sends | Timed by | Ends when | If the PC dies |
+|---|---|---|---|---|
+| Point-to-point: `moveByJoint`, `moveByLine`, `moveByArc`, `moveByLineCoord` [S 2.2.3] | one target, speed, acc/dec % | controller | state back to stop | runs to the target |
+| Waypoints: `clearPathPoint`, `addPathPoint` × N, `moveByPath` | points, move types, blend radii | controller | state back to stop | runs to the end |
+| Timestamped trajectory: `start_push_pos`, `push_pos` × N, `stop_push_pos`, `check_trajectory`, `start_trajectory` [S 2.2.9] | ≥ 3 points (joint or pose) with times from 0 s; validated before start; time scaling, pause, resume; replayable until `flush_trajectory` | controller | trajectory end | expected to run to the end (to verify) |
+| Program: `runJbi`, `pause`, `run` | a program name | controller | program end | runs on |
+| Position stream (transparent transmission) [S 2.2.7, J 2.4.11] | one joint target per sampling period | **controller takes one point per T; the PC must keep up** | the PC closes it | undocumented (to verify) |
+| Velocity: `moveBySpeedj`, `moveBySpeedl`, `stopj`, `stopl` [S 2.2.3.16–19] | velocity, acceleration, duration t; the newest command replaces the last | controller | t expires, or `stopj`/`stopl` | stops when t expires |
+| Jog: `jog` [S 2.2.3.8] | axis direction and speed %, repeated | controller | `stop`, or 1 s without a jog | stops after 1 s |
+
+The first four are **planned**: the whole motion is known before it starts,
+and the controller needs nothing more from the PC. The last three are
+**streamed**: the PC decides while the arm moves.
+
+### 2.4 Transparent transmission (position streaming)
+
+The JBI manual states the mechanism [J 2.4.11]: "T: Sampling time. Robot takes
+position information once in this time interval. LOOKAHEAD: Forward time.
+Robot waits for this time before start taking position in queue. SMOOTHNESS:
+Trajectory gain. It will be used to smooth the path." The SDK's
+`transparent_transmission_init` takes the same three values (lookahead
+10–1000 ms, t 2–100 ms, smoothness 0–1) plus `response_enable` [S 2.2.7.1].
+So the stream is a queue between two clocks:
+
+```
+PC: one point every T  --8055-->  [ queue, ~L/T points ]  -->  controller: starts L after the
+    tt_put_servo_joint_to_buf                                    first point, then takes one point
+                                                                 every T, smooths, drives the servos
+```
+
+What follows from it, each point a requirement on the design:
+
+1. **Each point stands for one period.** Points sent at another rate distort
+   time: a camera pushing 30 targets/s into a T = 8 ms queue makes the arm move
+   about 4× too fast, then run dry. The application's rate must be converted to
+   1/T: **resampling is mandatory**, by whatever sits between the application
+   and the queue.
+2. **The consumer sets the pace.** On average exactly one point per T. Faster
+   fills the queue (latency grows); slower empties it (underrun, behaviour
+   undocumented). The queue absorbs short-term jitter of about ±L.
+3. **LOOKAHEAD is latency.** A target reaches the arm about L after it was sent
+   (plus network and smoothing): the controller gets its "future" by delaying
+   the present. This is a playout buffer, with the same trade-off as audio over
+   a network [R14]: a small L (2–5 periods) for closed-loop work such as vision
+   or force, a large L for robust playback (the vendor's examples use 400 ms).
+4. **The two clocks drift.** PC and controller crystals differ by tens of ppm;
+   100 ppm moves the queue level by 0.36 s per hour. Sessions of minutes stay
+   inside the lookahead; long ones need the producer slaved to the controller's
+   clock, estimated from the 8056 timestamps (a software phase-locked loop).
+5. **T is a whole number of ms**, while frames come every 8.2–8.3 ms: the
+   producer cannot be clocked by the frames. It runs on its own timer, with
+   absolute deadlines.
+6. **The vendor's sequence** [S 2.2.7.4–7]: `moveByJoint` to the first point,
+   wait for stop, `transparent_transmission_init`, one
+   `tt_put_servo_joint_to_buf` per period, `tt_clear_servo_joint_buf`. With
+   `response_enable = 0` the puts get no reply.
+
+The parameter names resemble Universal Robots' `servoj` (`lookahead_time`,
+`gain`) [R6], but Elite defines LOOKAHEAD as a queue start delay, not as UR's
+prediction horizon. The 3.19.2 manual also accepts Cartesian targets
+(`targetPose`); whether firmware V3.15.3 does is untested.
+
+### 2.5 A session, end to end
+
+1. A person sets REMOTE on the pendant.
+2. The PC connects 8056 (state) and 8055 (commands) and checks that the state
+   is fresh.
+3. Bring-up: alarm cleared, encoders synchronised, servos on, each confirmed in 8056.
+4. Motion: planned motions run one at a time from standstill; a stream opens at
+   standstill, runs, and is closed.
+5. Stop at any time; on a fault the controller or the driver stops the arm, and
+   a person decides what happens next.
+
+---
+
+## 3. What is logically required
+
+1. **Causality.** No controller can follow a future it has not been given. A
+   streamed motion becomes smooth in three ways, which combine:
+   - *delay*: buffer, and fit a smooth curve through what is buffered (LOOKAHEAD);
+   - *filtering*: damp fast changes, at the cost of phase lag (SMOOTHNESS);
+   - *limits*: move toward the newest target as fast as velocity, acceleration
+     and jerk limits allow, re-planned every cycle. This is online trajectory
+     generation [R11, R12]: smooth by construction and reactive, with no
+     future needed. Classical trajectory planning [R1] assumes the whole path
+     is known; online generation drops that assumption.
+
+   A target that jumps is never forwarded as a jump.
+2. **Two clocks, one resampler.** The application produces on its clock and the
+   controller consumes on its own; exactly one component, in one thread,
+   converts between them, at the consumer's rate.
+3. **Observation is the truth.** A reply means accepted; 8056 shows what
+   happened. Completion, readiness and faults come from the newest state, never
+   from what was sent.
+4. **Every stream needs a guard.** If targets stop, the arm must stop. Velocity
+   and jog have it built in (t, 1 s); position streaming documents none, so the
+   driver provides one.
+5. **Soft real time.** Periods are milliseconds, and the network and the OS
+   scheduler dominate the jitter. The loop keeps the cheap real-time rules
+   (absolute deadlines, bounded work, no disk I/O, no unbounded waits); heavier
+   measures (real-time priority, a PREEMPT_RT kernel, allocation-free paths)
+   wait for measurements that ask for them.
+
+---
+
+## 4. How others do it
+
+| System | Planned motion | Streamed motion | Who runs the fixed-rate loop | Guard on silence |
+|---|---|---|---|---|
+| CiA 402 drives [R3] | profile position (pp) | cyclic synchronous position, velocity (csp, csv); interpolated position, buffered (ip) | the fieldbus cycle | EtherCAT sync-manager watchdog |
+| PLCopen motion [R2] | MC_MoveAbsolute etc. (Execute, Busy, Done, Error) | MC_MoveVelocity, synchronized motion | the PLC scan | errors latch in ErrorStop until MC_Reset |
+| ros2_control [R4] | trajectory controller | position and velocity command interfaces | the controller manager: read, update, write | command timeouts (e.g. `cmd_vel_timeout`); commands enter through a newest-wins real-time buffer |
+| MoveIt Servo [R5] | | twist or joint-jog commands | its own fixed-rate loop | `incoming_command_timeout`: halt |
+| Universal Robots, ur_rtde [R6] | moveJ, moveL (blocking or asynchronous) | servoJ (lookahead, gain), speedJ | the application, at 500 Hz | `setWatchdog`, `kickWatchdog` |
+| Franka, libfranka [R7] | | a 1 kHz callback returns the next command | the robot calls the application (pull) | a missed deadline stops the arm |
+| KUKA RSI, ABB EGM, FANUC stream motion [R8] | | cyclic corrections or positions, 4–12 ms | the robot (pull) | late or missing packets stop the arm |
+| **Elite EC (this robot)** | point-to-point, waypoints, timestamped trajectory, programs | position stream, velocity, jog | **open: the controller only empties a queue** | velocity: t; jog: 1 s; stream: undocumented |
+
+What they share:
+
+1. Planned and streamed motion are always separate interfaces.
+2. Some fixed-rate loop at the robot's period always exists. Either the robot
+   calls the application every period (pull: libfranka, RSI, EGM, which demand
+   hard real time from the application), or the application must run that loop
+   itself (ur_rtde's servoJ), or a driver-side loop runs it and the application
+   pushes at any rate (ros2_control, MoveIt Servo).
+3. Only the last tolerates an application that is slow or irregular (Python,
+   vision, planners). It needs a newest-wins buffer and a guard on the age of
+   the newest command.
+4. Errors latch and need an explicit reset.
+
+This robot is the soft-real-time case: a queue of 8 ms periods, a network in
+between, applications of any kind. That points to the third option.
+
+---
+
+## 5. Proposed design
+
+### 5.1 Order of authority
+
+1. **What the robot does**: the vendor's manuals, overruled by observed
+   hardware behaviour.
+2. **What is possible**: causality and timing (§3). Not a matter of taste.
+3. **How the software is structured**: industry practice (§4) and established
+   principles: SOLID [R16], functional core and imperative shell [R18], I/O-free
+   protocol code [R19], one writer per piece of data [R20]. They are the
+   default because they carry field experience and make the code familiar.
+4. **Our own patterns**: only where 1–3 leave a gap, each with its reason in an ADR.
+
+Safety standards are not a choice on this list: the driver never stands in for
+the robot's safety functions.
+
+### 5.2 Threads and data flow
+
+```
+application threads               control thread, one per robot                  receiver thread
+-------------------               -----------------------------                  ---------------
+job = robot.run(...)  --request-> every period T, at absolute deadlines:         8056 -> Sample
+stream.target(q)      --mailbox->  1 read    newest state, requests, targets  <-- Latest<Sample>
+robot.stop()          --flag--->   2 decide  supervision + the activity (pure)
+robot.state()         <--copy---   3 act     send this cycle's commands (8055)
+job.wait()            <--status--  4 publish status, faults, log records
+```
+
+- **Receiver thread** (built, ADR 0013): 8056 into `Latest<Sample>`.
+- **Control thread**: the only user of the 8055 connection, so "one source
+  moves the robot" holds by construction, without lease objects. Its period is
+  the stream sampling period T, set per connection (8 ms by default).
+- **Application threads** never touch a socket and never run inside the loop.
+  They submit requests, write targets into newest-wins mailboxes (`Latest<T>`),
+  and read copies of the state. A one-off query is a request too, sent by the
+  control thread with the cycle's commands.
+
+### 5.3 Activities: one contract for whatever the control thread runs
+
+An activity is a state machine without I/O. Each cycle it reads the newest
+state and the replies to what it sent the cycle before, and appends the
+commands to send now. The motion families are activities; so are bring-up,
+compositions and an application's own motions.
+
+```cpp
+namespace ec::motion {
+
+struct Cycle {                         // one cycle's inputs, copied at its start
+    std::chrono::steady_clock::time_point now;
+    const feedback::State& state;      // newest 8056 state, SI
+    std::chrono::nanoseconds state_age;
+    std::span<const Reply> replies;    // to the commands sent in the previous cycle, in order
+};
+
+enum class Phase { Running, Done };
+enum class End { Done, Cancelled, Stopped, Faulted };  // why close() is called
+
+template <class A>
+concept Activity = std::movable<A> && requires(A& a, const Cycle& c, Outbox& out, End why) {
+    { A::needs } -> std::convertible_to<Conditions>;                   // must hold while it runs
+    { a.step(c, out) } -> std::same_as<std::expected<Phase, Fault>>;   // opens, then runs
+    { a.close(c, out, why) } -> std::same_as<bool>;                    // true once closed
+};
+
+}  // namespace ec::motion
+```
+
+- **Lifecycle**, enforced by the control thread: `step` every cycle until
+  `Done` (the first steps open the family's protocol), then `close` every cycle
+  until it returns true. Close also runs after a cancel, a stop or a fault,
+  like `finally`. Its contract: **leave the arm at rest and the controller's
+  protocol clean**, whatever the reason. Opening and closing are phases, not
+  single calls, because they wait for replies or for standstill.
+- **Outbox**: activities write typed commands (`out.send(MoveByJoint{...})`).
+  Whether the control thread then sends them one by one, pipelined, without
+  replies, or over a second connection is its own business; activities do not
+  change.
+- **AnyActivity**: the control thread holds the current activity in a
+  type-erased wrapper (§5.8).
+
+### 5.4 Planned motion: jobs
+
+```cpp
+ec::Job job = robot.run(ec::motion::MoveJoint{.target = q, .speed = 0.2});  // returns at once
+if (auto done = job.wait(10s); !done) report(done.error());  // arrival seen in 8056, a fault, or a timeout
+job.cancel();                                                 // stop the arm, then close
+```
+
+- `run` accepts any `Activity`; the job is its handle (busy, then done, failed
+  or cancelled: the PLCopen pattern [R2]).
+- One activity at a time: `run` while busy is refused, not queued, because the
+  controller starts a point-to-point move only from standstill anyway.
+  `Sequence{a, b, ...}`, itself an activity, runs several back to back (PLCopen's
+  "buffered" mode).
+- Dropping a job handle leaves the motion running, as dropping a `std::future`
+  leaves the work running; `cancel()` stops it.
+
+### 5.5 Streamed motion: sessions the application pushes into
+
+```cpp
+auto servo = robot.servo({.lookahead = 40ms, .smoothness = 0.2}).value();
+servo.target(q);           // any thread, any time: the newest wins, stamped on arrival
+servo.follow(trajectory);  // or a timed reference, sampled by the loop on its own clock (later)
+servo.close();             // decelerate, let the queue drain, clear it; the destructor does the same
+```
+
+Each cycle, the stream activity:
+
+1. takes the newest reference (a target, or a trajectory) from the mailbox;
+2. **guards** it: once its age passes `timeout`, the reference becomes "stop
+   where you are" (hold); after `hold_for` more, the activity fails with
+   `Starved` and closes. This is the watchdog, and all it checks is that the
+   application keeps pushing;
+3. **shapes** it: the next setpoint moves toward the reference within velocity
+   and acceleration limits. A rate limiter is the default; online trajectory
+   generation such as Ruckig [R12] is a drop-in alternative. Jumps become ramps,
+   and a hold becomes a smooth stop;
+4. checks joint limits, and tracking (measured position against the setpoint
+   sent about L earlier);
+5. sends one `tt_put_servo_joint_to_buf`.
+
+A stream opens only at standstill and starts from the **measured** position
+(bumpless transfer), so nothing moves until the application pushes a target.
+Velocity streams (`robot.velocity(...)`: speedj or speedl re-sent every cycle
+with t of a few periods; a stale target becomes zero velocity, then
+`stopj`) and jog follow the same pattern.
+
+### 5.6 Supervision
+
+- **Remembered**: idle, busy (one activity), fault (latched). Nothing else.
+- **Recomputed every cycle** by a pure function of the newest state: the set of
+  conditions that hold (a bitset).
+
+| Condition | From 8056 | Needed by |
+|---|---|---|
+| Fresh | state age below 50 ms (about 6 frames) | everything except stop |
+| Remote | robot mode remote | every activity |
+| NoEmergencyStop | E-stop flag clear, state not 2 | every activity |
+| NoAlarm, NoCollision | state not 4 or 5, collision flag clear | motion |
+| ServoOn, Synced | `servoReady`, `can_motor_run` | motion |
+| Standstill | state stop, joint speeds near 0 | starting a planned motion or a stream |
+
+- An activity declares what it needs (`A::needs`). A missing condition refuses
+  a start (an error, no fault) or, during a run, ends the run with a fault.
+- **Faults** latch with what was observed: a condition lost, a starved stream,
+  a tracking error, a refused command, a job past its time limit, a late loop.
+  The activity's close runs, the arm is stopped if the controller has not done
+  so, and further runs are refused.
+- **Recovery is manual by design**: a person fixes the cause, the application
+  calls `acknowledge()` (refused while the cause is still visible, such as a
+  pressed E-stop), then `bring_up()`, itself an activity: clear alarm, reset
+  collision, synchronise, servo on, each confirmed in 8056. No automatic
+  retries, no retreat moves.
+- `robot.stop()`, from any thread: an atomic flag, seen at the next cycle
+  (within T). The activity's close then sends its family's fastest stop
+  (`stop`, `stopj`, `stop_trajectory`, ...).
+
+### 5.7 Changes it absorbs
+
+| Change | What is touched | What is not |
+|---|---|---|
+| A new controller family or firmware feature | one new activity, and its commands | control thread, supervision, the facade's core |
+| A new control law in an application (vision, teleoperation, force) | application code, which pushes targets | the driver |
+| A custom motion (move until contact, a square, a search) | an activity or a sequence, in the application | the driver |
+| Another smoothing method | a shaper (strategy) | the stream activity |
+| A new safety condition | one condition and its check | everything else |
+| Another transport (pipelining, a second connection for stop) | the control thread's I/O | activities |
+| Slaving the stream to the controller's clock | the cycle timer | activities |
+| Another log format | a new `Sink` | everything else |
+
+The same in SOLID terms [R16]:
+
+- **S**: each component has one job (receiver, mailbox, supervision, each
+  activity, shaper, the control thread's I/O, the facade).
+- **O**: the table above. The control thread depends on the `Activity`
+  contract, never on a family.
+- **L**: any activity can take any other's place in the control thread; the
+  wrapper enforces one contract.
+- **I**: small contracts: an activity is two functions and a constant, a sink is
+  one function, and application handles expose only their use (`Job`, `Stream`).
+- **D**: the facade composes concrete parts and hands them in; tests hand in
+  fakes.
+
+A custom motion, for illustration: a linear move that stops on contact,
+wrapping an existing activity (a decorator [R15]):
+
+```cpp
+struct MoveUntilContact {                   // satisfies ec::motion::Activity; no base class
+    ec::motion::MoveLine move;
+    double force_limit_n;
+    static constexpr auto needs = ec::motion::MoveLine::needs;
+
+    std::expected<Phase, Fault> step(const Cycle& c, Outbox& out) {
+        if (norm(c.state.tcp_force) > force_limit_n) return Phase::Done;  // contact: close() stops the arm
+        return move.step(c, out);
+    }
+    bool close(const Cycle& c, Outbox& out, End why) { return move.close(c, out, why); }
+};
+```
+
+### 5.8 The C++ shape
+
+**Why a concept, and why not only a concept.** A concept is a compile-time
+contract: `template <Activity A>` documents and checks the requirement where a
+type is used, with direct calls, no base class and no heap. It does not create
+a run-time type, though: a concept alone cannot be stored in a member, chosen
+at run time, or put in one container with others. A virtual base class creates
+that run-time type, but ties every implementation to our class hierarchy
+(inheritance, pointers, ownership and slicing questions) and to our ABI. The
+established answer uses both [R17]. The concept is the public contract; one
+wrapper, `AnyActivity`, erases it at the single place that needs run-time
+choice (the control thread), with a private virtual interface inside.
+Applications write plain values; tests drive concrete activities directly;
+`Sequence<A, B>` composes at compile time. `std::function` is the same idea for
+callables.
+
+**Where `std::variant` fits.** For closed sets that we own: the supervision
+states, a reference that is either a target or a trajectory. `std::visit` then
+checks that every case is handled. It is the wrong tool for activities: an
+application must be able to add one without editing our variant.
+
+**Language baseline.** C++23 as accepted by GCC 13, Clang 19 (the first that
+sees libstdc++'s `std::expected`) and MSVC 19.36 (Visual Studio 2022 17.6),
+following the C++ Core Guidelines [R21]. Used, each for a reason:
+
+- concepts, for contracts;
+- `std::expected`: errors as values, and no exceptions through the loop;
+- `std::jthread` and `std::stop_token`: threads that always join and stop
+  cooperatively;
+- `std::chrono` with `sleep_until`: typed time and absolute deadlines;
+- `std::span`;
+- designated initialisers, so options read like a datasheet
+  (`{.lookahead = 40ms, .smoothness = 0.2}`);
+- `std::variant`;
+- `std::atomic`, for the stop flag;
+- `std::move_only_function`, where a callback owns move-only state.
+
+Left out:
+
+- deducing `this`, `std::generator` and `std::print`: they need GCC 14;
+- coroutines in the loop: their frames allocate, and the explicit state
+  machine a coroutine would compile to is easier to test cycle by cycle.
+
+### 5.9 Push and pull
+
+At the bottom, the controller pulls: it takes one point every T. The design
+question is only where pulling turns into pushing.
+
+- **In the pull design** (libfranka, and this project's earlier drafts),
+  the application's function runs inside the loop. It must answer within every
+  period, and if it hangs, the loop hangs with it, so a second watchdog thread
+  with its own connection is needed.
+- **In the push design**, the driver's loop absorbs the controller's pull, and
+  the application pushes when it can. Application code never runs in the loop:
+  a slow or crashed application is just a stale target, and the watchdog is one
+  comparison in a loop the driver controls. The application may be as slow,
+  irregular or high-level as it likes.
+
+A control law synchronous with the robot remains possible: the application
+waits for each new state (`robot.next_state`) and pushes its output, which the
+loop picks up within one period (§6.2 b).
+
+---
+
+## 6. The control loop, idiomatically
+
+### 6.1 The driver's loop
+
+```cpp
+void ControlThread::run(std::stop_token stop) {
+    auto deadline = Clock::now();
+    while (!stop.stop_requested()) {
+        deadline += period_;                           // absolute deadlines: no drift
+        std::this_thread::sleep_until(deadline);
+        const auto now = Clock::now();
+        if (now - deadline > overrun_limit_) note_overrun(now - deadline);
+
+        const Cycle cycle = read_inputs(now);          // 1 read: newest state, replies; copies only
+        take_requests();                               //   run, stop, acknowledge, queries
+
+        outbox_.clear();
+        supervise(check(cycle), cycle);                // 2 decide (pure): conditions, then step
+                                                       //   or close the activity into outbox_
+        replies_ = send(outbox_, deadline + budget_);  // 3 act: bounded network I/O
+        publish(cycle);                                // 4 status, faults, log records (to other threads)
+    }
+}
+```
+
+The rules, each standard in cyclic control [R4, R9, R10]:
+
+1. Absolute deadlines on a monotonic clock (`next += T`). Never `sleep(T)`,
+   which accumulates drift.
+2. A fixed order: read every input, compute, then write every output. Inputs
+   are copied once per cycle, so the computation sees one consistent snapshot.
+3. Bounded work: no disk I/O, no waiting on other threads, no unbounded calls;
+   every network call has a deadline within the cycle's budget.
+4. A defined overrun policy: count late cycles; several in a row are a fault,
+   since the stream's queue may be running dry.
+5. Bumpless start, graceful end: start from the measured state; end by holding
+   and decelerating, never by just ceasing to send.
+6. Measure before tuning: histograms of cycle start times and command round
+   trips on the real setup. Real-time priority (`SCHED_FIFO`), CPU pinning or a
+   PREEMPT_RT kernel only if those numbers ask for it.
+
+### 6.2 The application's loops
+
+```cpp
+// a) Application-clocked: targets come at the application's own rate.
+auto v = robot.velocity({.acceleration = 1.0}).value();  // rad/s^2
+while (running) v.target(visual_servo(camera.grab(), robot.state()));  // 30 Hz and jittery: fine
+v.close();
+
+// b) Robot-clocked: one output per 8056 frame.
+auto servo = robot.servo({.lookahead = 24ms}).value();
+for (std::uint64_t seq = 0;;) {
+    const auto s = robot.next_state(seq, 50ms);          // waits for the next frame
+    if (!s) break;                                       // no fresh state: the driver is already holding
+    seq = s->seq;
+    servo.target(control_law(*s));
+}
+
+// c) Move, then go online: plain sequential code.
+robot.run(ec::motion::MoveJoint{.target = start, .speed = 0.2}).wait().value();
+auto stream = robot.servo({}).value();                   // opens at standstill, from the measured position
+
+// d) A recorded path: played by the controller, or streamed by the driver.
+robot.run(ec::motion::MoveJoint{.target = path.front(), .speed = 0.2}).wait().value();
+robot.run(ec::motion::PlayTrajectory{.path = path}).wait().value();  // timestamped upload
+// or: servo.follow(path)                                            // streamed, can be changed on the fly
+```
+
+---
+
+## 7. Open questions for the robot (before the streamed part is built)
+
+| # | Question | Decides |
+|---|---|---|
+| 1 | Stream underrun: does the arm hold, decelerate or raise an alarm? | the hold policy; whether a second stop channel is needed |
+| 2 | Step response for several lookahead, T and smoothness values | defaults; the lag the tracking check expects |
+| 3 | Round trip of `tt_put_servo_joint_to_buf` with replies; throughput without | how the control thread sends |
+| 4 | Frame period and drift: controller timestamps against the PC clock over 10 min | whether streams need clock slaving |
+| 5 | Two simultaneous 8055 connections | an independent stop channel |
+| 6 | Stop latency per family (command to standstill in 8056) | timeouts |
+| 7 | Does the speed setting scale streams and timestamped trajectories? | the meaning of speed options |
+| 8 | Does a timestamped trajectory keep running if the PC disconnects? | how strictly trajectories are validated |
+| 9 | Does firmware V3.15.3 accept `targetPose` in a stream? | Cartesian streaming |
+
+---
+
+## 8. References
+
+- [R1] B. Siciliano, L. Sciavicco, L. Villani, G. Oriolo. *Robotics: Modelling,
+  Planning and Control.* Springer, 2009 (ch. 4, trajectory planning).
+- [R2] PLCopen. *Function Blocks for Motion Control*, Part 1 (v2.0) and Part 4
+  (coordinated motion).
+- [R3] IEC 61800-7-201/-301, the CiA 402 drive profile: power state machine;
+  modes pp, pv, ip, csp, csv.
+- [R4] S. Chitta et al. "ros_control: A generic and simple control framework
+  for ROS." JOSS 2(20), 2017; ros2_control documentation (controller manager,
+  real-time buffer, controller lifecycle).
+- [R5] MoveIt Servo documentation (`incoming_command_timeout`, smoothing plugins).
+- [R6] Universal Robots, URScript manual (`servoj`, `speedj`); ur_rtde
+  documentation (`servoJ`, `speedJ`, `setWatchdog`).
+- [R7] libfranka documentation (`Robot::control`, real-time requirements, rate
+  limiting); S. Haddadin et al. "The Franka Emika Robot." IEEE RAM 29(2), 2022.
+- [R8] KUKA Robot Sensor Interface; ABB Externally Guided Motion; FANUC Stream
+  Motion (J519).
+- [R9] T. P. Baker, A. Shaw. "The cyclic executive model and Ada." Real-Time
+  Systems 1(1), 1989.
+- [R10] G. Buttazzo. *Hard Real-Time Computing Systems*, 3rd ed. Springer, 2011.
+- [R11] T. Kröger, F. M. Wahl. "Online Trajectory Generation: Basic Concepts
+  for Instantaneous Reactions to Unforeseen Events." IEEE T-RO 26(1), 2010.
+- [R12] L. Berscheid, T. Kröger. "Jerk-limited Real-time Trajectory Generation
+  with Arbitrary Target States." RSS 2021 (Ruckig).
+- [R13] IEC 60204-1 (stop categories); ISO 10218-1/-2; ISO 13849-1; ISO/TS 15066.
+- [R14] R. Ramjee, J. Kurose, D. Towsley, H. Schulzrinne. "Adaptive playout
+  mechanisms for packetized audio applications in wide-area networks." IEEE
+  INFOCOM 1994.
+- [R15] E. Gamma, R. Helm, R. Johnson, J. Vlissides. *Design Patterns.* 1994
+  (Strategy, Decorator, Command, State).
+- [R16] R. C. Martin. *Agile Software Development: Principles, Patterns, and
+  Practices.* 2002 (SOLID).
+- [R17] S. Parent. "Inheritance Is the Base Class of Evil." GoingNative 2013;
+  "Better Code: Runtime Polymorphism." NDC London 2017.
+- [R18] G. Bernhardt. "Functional Core, Imperative Shell." 2012.
+- [R19] "Writing I/O-Free (Sans-I/O) Protocol Implementations."
+  sans-io.readthedocs.io.
+- [R20] M. Thompson. "Single Writer Principle." Mechanical Sympathy, 2011.
+- [R21] B. Stroustrup, H. Sutter (eds.). C++ Core Guidelines.

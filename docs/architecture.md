@@ -115,6 +115,11 @@ step ends with something testable.
 
 Proposed changes to this draft, not decided either:
 
+- Steps 6–10 and 16–19 follow the design proposed in `docs/motion.md`: one
+  control thread running activities (I/O-free state machines), planned motion
+  as jobs, streamed motion as sessions the application pushes targets into,
+  with a watchdog on the age of the newest target.
+
 - Orientation stays the controller's rx/ry/rz until its convention is checked
   on the robot, so a math library (Eigen) waits for kinematics.
 - The motion lease enforced by a sender above the command client, not inside

@@ -39,6 +39,9 @@ desktop.ini
 *.ecraw
 !/tests/data/*.ecraw
 
+# The vendor's EC66 manuals (Ver3.19.2, about 57 MB): a local reference copy
+/docs/EC66/
+
 # Claude Code files and decision records stay local (also listed in
 # .git/info/exclude, which old commits cannot override)
 /CLAUDE.md
