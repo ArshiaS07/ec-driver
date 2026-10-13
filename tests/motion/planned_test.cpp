@@ -13,6 +13,7 @@
 #include "ec/motion/point_to_point.hpp"
 #include "ec/motion/sequence.hpp"
 #include "ec/motion/trajectory.hpp"
+#include "ec/motion/waypoints.hpp"
 #include "support/bench.hpp"
 
 namespace {
@@ -361,6 +362,142 @@ TEST(PlayTrajectory, CancelWhileRunningStopsItThenFlushes) {
     EXPECT_FALSE(b.close(a, End::Cancelled));  // at rest: flush
     EXPECT_EQ(b.sent.back().method, "flush_trajectory");
     EXPECT_TRUE(b.close(a, End::Cancelled));
+}
+
+// ---------------------------------------------------------------------- MoveArc
+
+TEST(MoveArc, SendsBothJointPositionsInDegreesAndAnAbsoluteSpeed) {
+    Bench b;
+    constexpr Joints middle{0.05, -0.1, 0.15, 0.0, 0.25, -0.3};
+    auto a = make_activity(ec::motion::MoveArc{.middle = middle, .target = kTarget, .speed = 0.02});
+    ASSERT_EQ(b.step(a), Phase::Running);
+    ASSERT_EQ(b.methods(), std::vector<std::string>{"moveByArc"});
+    const Json& p = b.sent[0].params;
+    EXPECT_NEAR(p["midPos"][0].get<double>(), 2.8648, 1e-4);
+    EXPECT_NEAR(p["targetPos"][0].get<double>(), 5.7296, 1e-4);
+    EXPECT_EQ(p["speed_type"], 2);  // AV
+    EXPECT_DOUBLE_EQ(p["speed"].get<double>(), 20.0);
+    EXPECT_EQ(b.step(a), Phase::Running);
+    moving(b, middle);
+    EXPECT_EQ(b.step(a), Phase::Running);
+    resting(b, kTarget);
+    EXPECT_EQ(b.step(a), Phase::Done);
+
+    auto bad = make_activity(ec::motion::MoveArc{.middle = Joints{7.0}, .target = kTarget});
+    Bench c;
+    const auto r = c.step(bad);
+    ASSERT_FALSE(r);
+    EXPECT_EQ(r.error().kind, Error::Kind::Invalid);
+    EXPECT_TRUE(c.sent.empty());
+}
+
+// --------------------------------------------------------------------- MovePath
+
+ec::motion::MovePath square_path() {
+    using ec::motion::PathMove;
+    ec::motion::MovePath m;
+    for (int k = 1; k <= 7; ++k)
+        m.points.push_back({.position = Joints{0.01 * k, 0, 0, 0, 0, 0},
+                            .move = PathMove::Line,
+                            .speed = 0.05,
+                            .blend_radius = k == 7 ? 0.0 : 0.002});
+    m.points[2].move = PathMove::Joint;
+    m.points[2].speed = 0.3;
+    return m;
+}
+
+// Answers moveByPath with the number of waypoints it was given.
+void count_waypoints(Bench& b, int n) {
+    b.answers["moveByPath"] = [n](const ec::command::Request&) -> std::expected<Json, ec::command::Error> {
+        return Json(n);
+    };
+}
+
+TEST(MovePath, ClearsUploadsInBatchesRunsAndEndsAtTheLastPoint) {
+    Bench b;
+    count_waypoints(b, 7);
+    auto a = make_activity(square_path());
+    ASSERT_EQ(b.step(a), Phase::Running);
+    ASSERT_EQ(b.methods(), std::vector<std::string>{"clearPathPoint"});
+    ASSERT_EQ(b.step(a), Phase::Running);  // cleared: 5 points
+    EXPECT_EQ(b.count("addPathPoint"), 5u);
+    ASSERT_EQ(b.step(a), Phase::Running);  // confirmed: the other 2
+    EXPECT_EQ(b.count("addPathPoint"), 7u);
+    ASSERT_EQ(b.step(a), Phase::Running);  // confirmed: run
+    EXPECT_EQ(b.methods().back(), "moveByPath");
+
+    const Json& line = b.sent[1].params;
+    EXPECT_NEAR(line["wayPoint"][0].get<double>(), 0.5730, 1e-4);
+    EXPECT_EQ(line["moveType"], 1);
+    EXPECT_EQ(line["speed_type"], 2);
+    EXPECT_DOUBLE_EQ(line["speed"].get<double>(), 50.0);
+    EXPECT_DOUBLE_EQ(line["circular_radius"].get<double>(), 2.0);
+    const Json& joint = b.sent[3].params;
+    EXPECT_EQ(joint["moveType"], 0);
+    EXPECT_FALSE(joint.contains("speed_type"));
+    EXPECT_DOUBLE_EQ(joint["speed"].get<double>(), 30.0);
+    EXPECT_DOUBLE_EQ(b.sent[7].params["circular_radius"].get<double>(), 0.0);
+
+    ASSERT_EQ(b.step(a), Phase::Running);  // the controller runs 7 waypoints
+    moving(b, Joints{0.03, 0, 0, 0, 0, 0});
+    ASSERT_EQ(b.step(a), Phase::Running);
+    resting(b, Joints{0.07, 0, 0, 0, 0, 0});
+    EXPECT_EQ(b.step(a), Phase::Done);
+    EXPECT_TRUE(b.close(a, End::Done));
+}
+
+TEST(MovePath, RefusesWhatTheControllerWouldNot) {
+    auto last_blended = square_path();
+    last_blended.points.back().blend_radius = 0.001;
+    auto too_fast = square_path();
+    too_fast.points[0].speed = 5.0;
+    for (const auto& spec : {last_blended, too_fast, ec::motion::MovePath{}}) {
+        Bench b;
+        auto a = make_activity(spec);
+        const auto r = b.step(a);
+        ASSERT_FALSE(r);
+        EXPECT_EQ(r.error().kind, Error::Kind::Invalid);
+        EXPECT_TRUE(b.sent.empty());
+    }
+}
+
+TEST(MovePath, AWrongCountOrARefusalIsAnError) {
+    Bench b;
+    count_waypoints(b, 6);
+    auto a = make_activity(square_path());
+    for (int i = 0; i < 4; ++i) ASSERT_TRUE(b.step(a));
+    const auto r = b.step(a);
+    ASSERT_FALSE(r);
+    EXPECT_EQ(r.error().kind, Error::Kind::Command);
+    EXPECT_NE(r.error().message.find("runs 6 waypoints, not 7"), std::string::npos);
+
+    Bench c;
+    count_waypoints(c, -1);
+    auto refused = make_activity(square_path());
+    for (int i = 0; i < 4; ++i) ASSERT_TRUE(c.step(refused));
+    EXPECT_EQ(c.step(refused).error().kind, Error::Kind::Command);
+}
+
+TEST(MovePath, StoppingShortAndCancelling) {
+    Bench b;
+    count_waypoints(b, 7);
+    auto a = make_activity(square_path());
+    for (int i = 0; i < 5; ++i) ASSERT_TRUE(b.step(a));
+    moving(b, Joints{0.02, 0, 0, 0, 0, 0});
+    ASSERT_TRUE(b.step(a));
+    resting(b, Joints{0.03, 0, 0, 0, 0, 0});  // resting at a corner without a blend, briefly: fine
+    for (int i = 0; i < 20; ++i) ASSERT_TRUE(b.step(a));
+    moving(b, Joints{0.04, 0, 0, 0, 0, 0});
+    ASSERT_TRUE(b.step(a));
+    resting(b, Joints{0.05, 0, 0, 0, 0, 0});
+    std::expected<Phase, Error> r = Phase::Running;
+    for (int i = 0; i < 40 && r; ++i) r = b.step(a);
+    ASSERT_FALSE(r);  // rested away from the end for 250 ms
+    EXPECT_NE(r.error().message.find("stopped 1.15 deg from the last waypoint"), std::string::npos)
+        << r.error().message;
+    EXPECT_FALSE(b.close(a, End::Faulted));
+    EXPECT_EQ(b.methods().back(), "stop");
+    EXPECT_TRUE(b.close(a, End::Faulted));
 }
 
 }  // namespace

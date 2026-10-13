@@ -29,11 +29,15 @@ add_library(ec_driver
     src/motion/conditions.cpp
     src/motion/control_loop.cpp
     src/motion/executor.cpp
+    src/motion/follow.cpp
+    src/motion/planning.cpp
     src/motion/point_to_point.cpp
     src/motion/sequence.cpp
     src/motion/stream.cpp
     src/motion/trajectory.cpp
+    src/motion/waypoints.cpp
     src/net/tcp_socket.cpp
+    src/path.cpp
     src/robot.cpp
 )
 

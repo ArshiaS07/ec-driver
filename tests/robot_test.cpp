@@ -1,7 +1,8 @@
 // ec::Robot against a minimal controller on 127.0.0.1: a command port that
 // answers every call, and a monitor port that sends a frame every 8 ms. Checks
-// the wiring: connecting, state, typed calls, a planned move, a servo session,
-// stop from another thread, and stopping on destruction.
+// the wiring: connecting, state, typed calls, kinematics, a planned move, a
+// servo session and a pose session, stop from another thread, and stopping on
+// destruction.
 
 #include "ec/robot.hpp"
 
@@ -43,11 +44,15 @@ public:
     MiniController(const MiniController&) = delete;
     MiniController& operator=(const MiniController&) = delete;
 
+    // These tests check the wiring, not the timing: a frame up to 500 ms old
+    // still counts as fresh, so a busy machine cannot fail them.
     ec::RobotOptions options() const {
-        return ec::RobotOptions{.host = "127.0.0.1",
-                                .command_port = commands_.port(),
-                                .monitor_port = frames_.port(),
-                                .first_state_within = 2s};
+        ec::RobotOptions o{.host = "127.0.0.1",
+                           .command_port = commands_.port(),
+                           .monitor_port = frames_.port(),
+                           .first_state_within = 2s};
+        o.control.thresholds.fresh_within = 500ms;
+        return o;
     }
     std::vector<std::string> seen() const {
         const std::lock_guard lock(mutex_);
@@ -56,6 +61,12 @@ public:
     std::size_t count(const std::string& method) const {
         const auto s = seen();
         return static_cast<std::size_t>(std::count(s.begin(), s.end(), method));
+    }
+    // The parameters of the last call of `method`.
+    Json last(const std::string& method) const {
+        const std::lock_guard lock(mutex_);
+        const auto it = last_.find(method);
+        return it == last_.end() ? Json{} : it->second;
     }
 
 private:
@@ -67,13 +78,18 @@ private:
                 if (line.empty()) break;
                 const Json request = Json::parse(line);
                 const std::string method = request["method"].get<std::string>();
+                const Json params = request.contains("params") ? request["params"] : Json{};
                 {
                     const std::lock_guard lock(mutex_);
                     seen_.push_back(method);
+                    last_[method] = params;
                 }
                 std::string result = "true";
                 if (method == "getRobotMode") result = "2";
                 if (method == "getSpeed") result = "100";
+                if (method == "inverseKinematic")  // the reference itself: the arm stands still
+                    result = params.contains("referencePos") ? params["referencePos"].dump() : "[0,0,0,0,0,0]";
+                if (method == "positiveKinematic") result = "[400.0,-50.0,300.0,3.0,0.1,-0.2]";
                 peer.send(Json{{"jsonrpc", "2.0"}, {"result", result}, {"id", request["id"]}}.dump() + "\n");
             }
         }
@@ -111,6 +127,7 @@ private:
     ec::test::LoopbackServer frames_;
     mutable std::mutex mutex_;
     std::vector<std::string> seen_;
+    std::map<std::string, Json> last_;
     std::atomic<bool> stop_{false};
     std::jthread commands_thread_;
     std::jthread frames_thread_;
@@ -169,6 +186,46 @@ TEST(Robot, TypedCallsGoThroughTheControlLoop) {
     ASSERT_FALSE(refused);
     EXPECT_EQ(refused.error().kind, Error::Kind::Refused);
     EXPECT_EQ(controller.count("moveByJoint"), 0u);
+}
+
+TEST(Robot, KinematicsAreTheControllersInSiUnits) {
+    MiniController controller;
+    auto robot = ec::Robot::connect(controller.options());
+    ASSERT_TRUE(robot);
+    const ec::Pose pose{{0.4, -0.05, 0.3}, {3.0, 0.1, -0.2}};
+    const ec::Joints reference{0.1, -1.5, 1.5, -1.5, -1.5, 0.0};
+    const auto q = robot->inverse_kinematics(pose, reference);
+    ASSERT_TRUE(q) << describe(q.error());
+    const Json ik = controller.last("inverseKinematic");
+    EXPECT_EQ(ik["targetPose"], Json::parse("[400.0,-50.0,300.0,3.0,0.1,-0.2]"));  // mm and radians
+    EXPECT_NEAR(ik["referencePos"][1].get<double>(), -85.9437, 1e-4);              // degrees
+    EXPECT_EQ(ik["unit_type"], 1);
+    for (std::size_t j = 0; j < q->size(); ++j) EXPECT_NEAR((*q)[j], reference[j], 1e-12);  // back in radians
+
+    const auto p = robot->forward_kinematics(reference);
+    ASSERT_TRUE(p) << describe(p.error());
+    EXPECT_NEAR(controller.last("positiveKinematic")["targetPos"][2].get<double>(), 85.9437, 1e-4);
+    EXPECT_NEAR(p->position[0], 0.4, 1e-12);  // metres
+    EXPECT_NEAR(p->position[1], -0.05, 1e-12);
+    EXPECT_EQ(p->rotation, (ec::Vec3{3.0, 0.1, -0.2}));
+}
+
+TEST(Robot, APoseSessionSolvesEachPoseAndStreamsTheJoints) {
+    MiniController controller;
+    auto robot = ec::Robot::connect(controller.options());
+    ASSERT_TRUE(robot);
+    auto session = robot->servo_pose();
+    ASSERT_TRUE(session) << describe(session.error());
+    const ec::Pose here{{0.4, 0.0, 0.3}, {3.14, 0.0, 0.0}};
+    for (int i = 0; i < 20; ++i) {
+        session->target(here);
+        std::this_thread::sleep_for(8ms);
+    }
+    const auto closed = session->close();
+    EXPECT_TRUE(closed) << describe(closed.error());
+    EXPECT_GT(controller.count("inverseKinematic"), 5u);
+    EXPECT_GT(controller.count("tt_put_servo_joint_to_buf"), 10u);
+    EXPECT_EQ(controller.count("tt_clear_servo_joint_buf"), 1u);
 }
 
 TEST(Robot, RunsAPlannedMove) {

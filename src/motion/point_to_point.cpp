@@ -152,9 +152,7 @@ PointToPoint make_activity(const MoveLine& m) {
 PointToPoint make_activity(const MoveLineToPose& m) {
     constexpr std::string_view name = "move_line_to_pose";
     if (auto e = check_linear(m.acceleration, m.deceleration, m.speed)) return PointToPoint::invalid(name, *e);
-    const auto& p = m.target.position;
-    const auto& r = m.target.rotation;
-    const command::MoveByLineCoord cmd{.target = {p[0] * 1000.0, p[1] * 1000.0, p[2] * 1000.0, r[0], r[1], r[2]},
+    const command::MoveByLineCoord cmd{.target = to_mm_rad(m.target),
                                        .speed_type = command::SpeedType::AbsoluteLinear,
                                        .speed = m.speed * 1000.0,
                                        .acc_pct = percent(m.acceleration),
@@ -169,6 +167,21 @@ PointToPoint make_activity(const MoveLineToPose& m) {
         return std::format("{:.1f} mm and {:.2f} deg off", off * 1000.0, rad_to_deg(turn));
     };
     return {name, command::to_request(cmd), std::move(remaining), m.timeout};
+}
+
+PointToPoint make_activity(const MoveArc& m) {
+    constexpr std::string_view name = "move_arc";
+    if (auto e = check_joints(m.middle)) return PointToPoint::invalid(name, "middle: " + *e);
+    if (auto e = check_joints(m.target)) return PointToPoint::invalid(name, *e);
+    if (auto e = check_linear(m.acceleration, m.deceleration, m.speed)) return PointToPoint::invalid(name, *e);
+    const command::MoveByArc cmd{.middle = rad_to_deg(m.middle),
+                                 .target = rad_to_deg(m.target),
+                                 .speed_type = command::SpeedType::AbsoluteLinear,
+                                 .speed = m.speed * 1000.0,
+                                 .acc_pct = percent(m.acceleration),
+                                 .dec_pct = percent(m.deceleration),
+                                 .until = std::nullopt};
+    return {name, command::to_request(cmd), joints_remaining(m.target, m.tolerance), m.timeout};
 }
 
 }  // namespace ec::motion

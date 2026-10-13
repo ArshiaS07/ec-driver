@@ -57,6 +57,18 @@ template <std::size_t N>
     return worst;
 }
 
+/// `q` with each joint moved by whole turns (2 pi) to lie nearest `reference`,
+/// unless that would take it beyond +-`limit`: the arm in the same pose. For
+/// joint positions given within one turn, e.g. inverse-kinematics solutions.
+[[nodiscard]] inline Joints nearest_turn(Joints q, const Joints& reference, double limit) noexcept {
+    constexpr double turn = 2.0 * std::numbers::pi;
+    for (std::size_t i = 0; i < kJointCount; ++i) {
+        const double moved = q[i] + std::round((reference[i] - q[i]) / turn) * turn;
+        if (std::abs(moved) <= limit) q[i] = moved;
+    }
+    return q;
+}
+
 /// The EC66's joint speed limits from its datasheet [rad/s]: J1-J2 150 deg/s,
 /// J3 190 deg/s, J4-J6 260 deg/s. Every joint ranges over +-360 deg.
 inline constexpr Joints kEc66MaxJointSpeed{deg_to_rad(150.0), deg_to_rad(150.0), deg_to_rad(190.0),

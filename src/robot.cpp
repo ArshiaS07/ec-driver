@@ -3,6 +3,7 @@
 #include <format>
 #include <thread>
 
+#include "ec/command/kinematics.hpp"
 #include "ec/feedback/frame.hpp"
 #include "ec/latest.hpp"
 
@@ -62,6 +63,8 @@ std::expected<Robot, motion::Error> Robot::connect(RobotOptions options) {
     auto reconnect = [host = o.host, client_options] { return command::Client::connect(host, client_options); };
     impl->loop =
         std::make_unique<motion::ControlLoop>(std::move(*client), std::move(reconnect), impl->latest, o.control);
+    // Its first cycle publishes the conditions and the mode, so that status() means something at once.
+    static_cast<void>(impl->loop->next_status(0, std::chrono::seconds{1}));
     return Robot(std::move(impl));
 }
 
@@ -123,6 +126,24 @@ std::expected<motion::Session<std::optional<motion::JogDirection>>, motion::Erro
     auto channel = std::make_shared<motion::Channel<std::optional<motion::JogDirection>>>();
     auto job = run(motion::JogStream(options, channel));
     return open(std::move(channel), std::move(job));
+}
+
+std::expected<motion::Session<Pose>, motion::Error> Robot::servo_pose(const motion::PoseServoOptions& options) {
+    auto channel = std::make_shared<motion::Channel<Pose>>();
+    auto job = run(motion::PoseServoStream(options, channel));
+    return open(std::move(channel), std::move(job));
+}
+
+std::expected<Joints, motion::Error> Robot::inverse_kinematics(const Pose& pose, const Joints& reference) {
+    auto joints = call(command::InverseKinematic{.target = to_mm_rad(pose), .reference = rad_to_deg(reference)});
+    if (!joints) return std::unexpected(std::move(joints.error()));
+    return nearest_turn(deg_to_rad(*joints), reference, kEc66JointLimit);  // in case it comes within one turn
+}
+
+std::expected<Pose, motion::Error> Robot::forward_kinematics(const Joints& joints) {
+    auto pose = call(command::PositiveKinematic{.joints = rad_to_deg(joints)});
+    if (!pose) return std::unexpected(std::move(pose.error()));
+    return from_mm_rad(*pose);
 }
 
 void Robot::stop() noexcept { impl_->loop->stop(); }

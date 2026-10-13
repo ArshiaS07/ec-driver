@@ -39,6 +39,7 @@ using native_socket = SOCKET;
 using io_size = int;
 inline constexpr native_socket kNoSocket = INVALID_SOCKET;
 inline constexpr int kNoSigpipe = 0;
+inline constexpr int kShutBoth = SD_BOTH;
 inline void close_native(native_socket s) { ::closesocket(s); }
 struct NetworkInit {
     NetworkInit() {
@@ -54,6 +55,7 @@ using native_socket = int;
 using io_size = std::size_t;
 inline constexpr native_socket kNoSocket = -1;
 inline constexpr int kNoSigpipe = MSG_NOSIGNAL;
+inline constexpr int kShutBoth = SHUT_RDWR;
 inline void close_native(native_socket s) { ::close(s); }
 struct NetworkInit {};
 #endif
@@ -103,6 +105,12 @@ public:
     // Orderly close: the client reads end of stream.
     void close() noexcept {
         if (s_ != detail::kNoSocket) detail::close_native(std::exchange(s_, detail::kNoSocket));
+    }
+
+    // Ends both directions, waking a receive blocked on this connection in
+    // another thread; the socket stays open until close().
+    void shutdown() noexcept {
+        if (s_ != detail::kNoSocket) ::shutdown(s_, detail::kShutBoth);
     }
 
     // Abortive close: the client sees the connection reset.

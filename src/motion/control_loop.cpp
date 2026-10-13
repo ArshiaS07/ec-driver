@@ -239,8 +239,8 @@ void ControlLoop::run(const std::stop_token& stop) {
             send(out, next_replies);
             serve_calls();
             std::swap(replies_, next_replies);  // the cycle above no longer looks at them
+            publish(cycle);  // before the jobs end: a thread woken by its job sees the status that ended it
             finish_jobs();
-            publish(cycle);
         }
     } catch (const std::exception& e) {
         const auto stopped = client_.call(command::to_request(command::Stop{}), options_.reply_timeout);
@@ -264,7 +264,9 @@ Cycle ControlLoop::read_inputs(Clock::time_point now) const {
         if (const auto frame = feedback::decode(newest->value.raw)) {
             c.state = feedback::to_si(*frame);
             c.state_seq = newest->seq;
-            c.state_age = now - newest->value.arrival;
+            // Measured now, not at the cycle's start: a frame that arrived since then
+            // would otherwise look as if it came from the future, which is not fresh.
+            c.state_age = Clock::now() - newest->value.arrival;
         }
     }
     c.conditions = observe(c.state, c.state_age, options_.thresholds);

@@ -17,6 +17,7 @@
 #include "ec/latest.hpp"
 #include "ec/motion/activity.hpp"
 #include "ec/motion/shaper.hpp"
+#include "ec/pose.hpp"
 #include "ec/units.hpp"
 
 namespace ec::motion {
@@ -78,12 +79,67 @@ struct ServoOptions {
     bool replies = true;                           ///< response_enable: each point confirmed
 };
 
+/// The transparent-transmission protocol that position streams share (SDK
+/// manual 2.2.7, docs/motion.md 2.4): opens the controller's queue, puts one
+/// joint setpoint per cycle, checks the replies and how the arm follows, and
+/// closes, gracefully (decelerating from the last setpoints, letting the queue
+/// drain, then clearing it) or at once (stop, clear). ServoStream,
+/// PoseServoStream and FollowTrajectory are built on it; what to put each
+/// cycle is theirs to decide. Pure, like every activity.
+class ServoLink {
+public:
+    /// `name` prefixes its error messages (the owning activity's name).
+    ServoLink(std::string_view name, const ServoOptions& options) : name_(name), options_(options) {}
+
+    /// Opens the stream; call every cycle until it returns true. The first call
+    /// checks the options against the cycle's period (Kind::Invalid), starts the
+    /// shaper at rest at the measured position, and sends the init. True in the
+    /// cycle the controller accepts it: put the first setpoint in that cycle.
+    [[nodiscard]] std::expected<bool, Error> open(const Cycle& c, Outbox& out);
+    [[nodiscard]] bool is_open() const noexcept { return stage_ == Stage::Streaming; }
+
+    /// The shaper, holding the last setpoint put and its speed. Meaningful only
+    /// after the first open().
+    [[nodiscard]] RateLimiter& shaper() noexcept { return shaper_; }
+
+    /// Whether the controller accepted the previous cycle's points (only checked
+    /// when they are confirmed, ServoOptions::replies).
+    [[nodiscard]] std::expected<void, Error> check_replies(const Cycle& c) const;
+    /// Kind::Invalid for a target that is not finite or beyond the joint limit.
+    [[nodiscard]] std::expected<void, Error> check_target(const Joints& target) const;
+    /// Kind::Tracking when a joint is further than the tracking tolerance from
+    /// the range of the setpoints of the last lookahead (and 200 ms more).
+    [[nodiscard]] std::expected<void, Error> check_tracking(const Cycle& c) const;
+    /// Puts one setpoint into the controller's queue.
+    void put(Outbox& out, const Joints& setpoint);
+
+    /// Closes the stream (an activity's close()): after Done or Cancelled
+    /// gracefully, after Stopped or Faulted at once; true once the arm rests and
+    /// the queue is cleared.
+    [[nodiscard]] bool close(const Cycle& c, Outbox& out, End why);
+
+private:
+    enum class Stage { Open, AwaitOpen, Streaming };
+    enum class Closing { Begin, Settle, Clear, AwaitClear };
+
+    std::string_view name_;
+    ServoOptions options_;
+    RateLimiter shaper_{RateLimiter::Limits{}, 0.008};  // replaced by open() with the options' limits
+    Stage stage_ = Stage::Open;
+    Closing closing_ = Closing::Begin;
+    Clock::time_point sent_at_{};
+    std::deque<Joints> recent_;  // the setpoints of the last lookahead and then some, for the tracking check
+    std::size_t recent_capacity_ = 1;
+    Clock::time_point settled_since_{};
+};
+
 /// Streams joint positions through transparent transmission (SDK manual
 /// 2.2.7). Opens at standstill and starts from the measured position, so
 /// nothing moves before the first target; until then the watchdog does not
 /// run. Sends one point per cycle, the cycle being the controller's sampling
-/// period. Closes gracefully (decelerate, let the queue drain, clear it) or,
-/// after a stop or a fault, at once (stop, clear).
+/// period, each target shaped by the rate limiter. Closes gracefully
+/// (decelerate, let the queue drain, clear it) or, after a stop or a fault, at
+/// once (stop, clear).
 class ServoStream {
 public:
     ServoStream(const ServoOptions& options, std::shared_ptr<Channel<Joints>> channel);
@@ -91,26 +147,50 @@ public:
     [[nodiscard]] Needs needs() const noexcept { return {kCanStartMotion, kCanMove}; }
     [[nodiscard]] std::string_view name() const noexcept { return "servo_stream"; }
     [[nodiscard]] std::expected<Phase, Error> step(const Cycle& c, Outbox& out);
-    [[nodiscard]] bool close(const Cycle& c, Outbox& out, End why);
+    [[nodiscard]] bool close(const Cycle& c, Outbox& out, End why) { return link_.close(c, out, why); }
 
 private:
-    enum class Stage { Open, AwaitOpen, Streaming };
-    enum class Closing { Begin, Settle, Clear, AwaitClear };
-
-    [[nodiscard]] std::expected<void, Error> check_replies(const Cycle& c) const;
-    [[nodiscard]] std::expected<void, Error> check_tracking(const Cycle& c) const;
-    void put(const Cycle& c, Outbox& out, const Joints& setpoint);
-
     ServoOptions options_;
     std::shared_ptr<Channel<Joints>> channel_;
-    std::optional<RateLimiter> shaper_;
-    Stage stage_ = Stage::Open;
-    Closing closing_ = Closing::Begin;
-    Clock::time_point sent_at_{};
-    bool pushed_ = false;        // a target has been pushed: the watchdog runs
-    std::deque<Joints> recent_;  // the setpoints of the last lookahead and then some, for the tracking check
-    std::size_t recent_capacity_ = 1;
-    Clock::time_point settled_since_{};
+    ServoLink link_;
+};
+
+/// Options of a Cartesian position stream.
+struct PoseServoOptions {
+    ServoOptions servo{};  ///< the joint stream the solutions go into
+    /// [rad]: a solution further than this from the one before on any joint ends
+    /// the stream (Kind::Invalid): the arm would change configuration, or pass a
+    /// singularity; or the targets jump.
+    double max_step = deg_to_rad(10.0);
+};
+
+/// Streams TCP poses (the current tool, in the base frame): each new pose is
+/// solved by the controller's inverse kinematics (inverseKinematic, near the
+/// solution before it), and the joint positions go into a position stream the
+/// way ServoStream's targets do: shaped, guarded by the watchdog, one point per
+/// cycle. A solution arrives one cycle after its pose, so the stream lags a
+/// joint stream by one period and sends two commands per cycle. A pose without
+/// a solution ends the stream (Kind::Invalid), gracefully. The first pose should
+/// be the TCP's current one.
+class PoseServoStream {
+public:
+    PoseServoStream(const PoseServoOptions& options, std::shared_ptr<Channel<Pose>> channel);
+
+    [[nodiscard]] Needs needs() const noexcept { return {kCanStartMotion, kCanMove}; }
+    [[nodiscard]] std::string_view name() const noexcept { return "pose_stream"; }
+    [[nodiscard]] std::expected<Phase, Error> step(const Cycle& c, Outbox& out);
+    [[nodiscard]] bool close(const Cycle& c, Outbox& out, End why) { return link_.close(c, out, why); }
+
+private:
+    [[nodiscard]] std::expected<void, Error> take_solution(const Cycle& c);
+
+    PoseServoOptions options_;
+    std::shared_ptr<Channel<Pose>> channel_;
+    ServoLink link_;
+    Joints reference_{};                     // the newest solution; at first the measured position
+    std::optional<Stamped<Joints>> target_;  // the newest solution, stamped as its pose was
+    std::optional<Stamped<Pose>> asked_;     // the pose whose solution is awaited
+    Clock::time_point last_asked_{};         // the stamp of the newest pose sent to be solved
 };
 
 /// Options of a joint velocity stream (moveBySpeedj).

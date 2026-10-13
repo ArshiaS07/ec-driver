@@ -68,6 +68,17 @@ public:
         return position_;
     }
 
+    /// Takes `setpoint` as the next one as it is, without limiting it, and keeps
+    /// the speed it implies, so that brake() stops from there: for setpoints
+    /// planned within the limits elsewhere (FollowTrajectory).
+    const Joints& follow(const Joints& setpoint) noexcept {
+        for (std::size_t j = 0; j < kJointCount; ++j) {
+            velocity_[j] = (setpoint[j] - position_[j]) / dt_;
+            position_[j] = setpoint[j];
+        }
+        return position_;
+    }
+
     /// The setpoint one period further along the fastest stop: every joint
     /// decelerates at its limit until it rests.
     const Joints& brake() noexcept {

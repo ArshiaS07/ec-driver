@@ -25,6 +25,7 @@
 #include "ec/motion/error.hpp"
 #include "ec/motion/session.hpp"
 #include "ec/motion/stream.hpp"
+#include "ec/pose.hpp"
 #include "ec/units.hpp"
 
 namespace ec {
@@ -59,8 +60,9 @@ struct Snapshot {
 /// Every member function may be called from any thread.
 class Robot {
 public:
-    /// Connects both ports and waits for the first monitoring frame. Fails with
-    /// Kind::Disconnected if either port cannot be reached.
+    /// Connects both ports, waits for the first monitoring frame, and starts the
+    /// control loop, returning after its first cycle (so status() is current).
+    /// Fails with Kind::Disconnected if either port cannot be reached.
     [[nodiscard]] static std::expected<Robot, motion::Error> connect(RobotOptions options);
 
     Robot(Robot&&) noexcept;
@@ -100,6 +102,21 @@ public:
     /// Jogs while a direction is pushed; push nullopt to stop.
     [[nodiscard]] std::expected<motion::Session<std::optional<motion::JogDirection>>, motion::Error> jog(
         const motion::JogOptions& options = {});
+    /// Streams TCP poses (current tool, base frame), each solved by the
+    /// controller's inverse kinematics into joint positions for the position
+    /// stream (motion::PoseServoStream). Start with the TCP's current pose.
+    [[nodiscard]] std::expected<motion::Session<Pose>, motion::Error> servo_pose(
+        const motion::PoseServoOptions& options = {});
+
+    // ---- kinematics, by the controller (computations: allowed at any time)
+
+    /// The joint positions [rad] that put the TCP of the current tool at `pose`
+    /// (base frame), the solution nearest `reference` (inverseKinematic), each
+    /// joint taken by whole turns to the value nearest it. A pose without a
+    /// solution is Kind::Command.
+    [[nodiscard]] std::expected<Joints, motion::Error> inverse_kinematics(const Pose& pose, const Joints& reference);
+    /// The pose of the current tool's TCP for joint positions (positiveKinematic).
+    [[nodiscard]] std::expected<Pose, motion::Error> forward_kinematics(const Joints& joints);
 
     // ---- stop and recovery
 

@@ -13,6 +13,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -47,9 +48,14 @@ public:
     Responder& operator=(const Responder&) = delete;
 
     void start() {
-        thread_ = std::jthread([this] { serve(server_.accept(5s)); });
+        thread_ = std::jthread([this] { serve(); });
     }
+    // Ends the connection, if it is still served, and waits for the thread.
     void stop() {
+        {
+            const std::lock_guard lock(mutex_);
+            if (peer_) peer_->shutdown();  // wakes serve() if it is waiting for a request
+        }
         if (thread_.joinable()) thread_.join();
     }
     void answer(const std::string& method, std::string result_json) {
@@ -63,10 +69,16 @@ public:
     }
 
 private:
-    void serve(ec::test::Peer peer) {
+    void serve() {
+        auto accepted = server_.accept(5s);
+        {
+            const std::lock_guard lock(mutex_);
+            peer_.emplace(std::move(accepted));
+        }
+        ec::test::Peer& peer = *peer_;  // reset only by this thread; stop() only shuts it down
         for (int n = 1;; ++n) {
             const std::string line = peer.receive_line();
-            if (line.empty()) return;  // the client closed
+            if (line.empty()) break;  // the client closed, or stop()
             const Json request = Json::parse(line);
             std::string result = "true";
             {
@@ -74,12 +86,15 @@ private:
                 seen_.push_back(request["method"].get<std::string>());
                 if (const auto it = answers_.find(seen_.back()); it != answers_.end()) result = it->second;
             }
-            if (n == drop_after_) return;  // closes the connection without answering
+            if (n == drop_after_) break;  // closes the connection without answering
             peer.send(Json{{"jsonrpc", "2.0"}, {"result", result}, {"id", request["id"]}}.dump() + "\n");
         }
+        const std::lock_guard lock(mutex_);
+        peer_.reset();  // closes the connection
     }
 
     ec::test::LoopbackServer& server_;
+    std::optional<ec::test::Peer> peer_;  // the connection served; guarded by mutex_ except in serve()
     mutable std::mutex mutex_;
     std::map<std::string, std::string> answers_;
     std::vector<std::string> seen_;
@@ -151,7 +166,10 @@ struct Rig {
     Feeder feeder;
     std::unique_ptr<ControlLoop> loop;
 
-    explicit Rig(const ControlOptions& options = {}) {
+    // The tests check what the loop does, not its timing: a state up to 500 ms
+    // old still counts as fresh, so a busy machine cannot fail them.
+    explicit Rig(ControlOptions options = {}) {
+        options.thresholds.fresh_within = 500ms;
         auto client = connect_to(server);
         responder.start();
         loop = std::make_unique<ControlLoop>(
@@ -269,6 +287,27 @@ TEST(ControlLoop, ASlowCycleIsAnOverrun) {
     ASSERT_FALSE(result);
     EXPECT_EQ(result.error().kind, Error::Kind::Overrun);
     EXPECT_GE(rig.loop->status().late_cycles, 3u);
+}
+
+// Frames published far faster than the cycle: some arrive between the cycle's
+// start and its reading of the state. They are fresh, not from the future, so
+// the activity, which needs fresh state all along, runs to its end.
+TEST(ControlLoop, AFrameArrivingDuringTheCycleIsFresh) {
+    ec::test::LoopbackServer server;
+    Responder responder{server};
+    auto client = connect_to(server);
+    responder.start();
+    auto latest = std::make_shared<ec::Latest<ec::feedback::Sample>>();
+    const auto frame = ec::test::make_frame(ec::test::FrameFields{});
+    std::jthread publisher([&latest, &frame](const std::stop_token& stop) {
+        while (!stop.stop_requested()) {
+            latest->publish(ec::feedback::Sample{std::chrono::steady_clock::now(), frame});
+            std::this_thread::yield();  // as often as it can: a frame lands in almost every cycle's gap
+        }
+    });
+    ControlLoop loop(std::move(client), {}, latest, ControlOptions{});  // the default 50 ms freshness
+    const auto result = loop.run(Pinger{.cycles = 100}).wait();
+    EXPECT_TRUE(result) << describe(result.error());
 }
 
 TEST(ControlLoop, NextStatusWaitsForTheNextCycle) {

@@ -36,6 +36,19 @@ struct TrajectoryLimits {
 /// joint limit, and no segment faster than the limit on any joint.
 [[nodiscard]] std::expected<void, std::string> validate(const JointTrajectory& t, const TrajectoryLimits& limits = {});
 
+/// Each joint's largest speed [rad/s] between neighbouring points of a valid
+/// trajectory.
+[[nodiscard]] Joints peak_velocity(const JointTrajectory& t) noexcept;
+
+/// Each joint's largest acceleration [rad/s^2] of a valid trajectory, from the
+/// change of speed between neighbouring segments, and from rest into the first
+/// segment and out of the last (a trajectory is run from rest to rest).
+[[nodiscard]] Joints peak_acceleration(const JointTrajectory& t) noexcept;
+
+/// The position at time `s` [s] of a valid trajectory, interpolated linearly
+/// between its points; the first or last point outside its times.
+[[nodiscard]] Joints position_at(const JointTrajectory& t, double s) noexcept;
+
 /// Uploads a trajectory, has the controller check it, and runs it, timed by the
 /// controller: the PC's timing does not matter once it runs. The arm must
 /// already rest at the first point (e.g. MoveJoint first, in a Sequence). Done

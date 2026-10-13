@@ -1,9 +1,10 @@
 # Motion and control
 
-**Status:** built, 2026-10-13 (ADR 0014, accepted). Sections 1–4 describe the
-controller and the field; sections 5–6 the design, as built, with the
-refinements listed in §5.10; section 7 what is assumed until measured on the
-robot. Nothing of sections 5–6 has run on the robot yet.
+**Status:** built, 2026-10-13 (ADR 0014, accepted); Cartesian paths, following
+a trajectory and the Cartesian stream the same day (§5.11, ADR 0016 proposed).
+Sections 1–4 describe the controller and the field; sections 5–6 the design,
+as built, with the refinements listed in §5.10; section 7 what is assumed
+until measured on the robot. Nothing of sections 5–6 has run on the robot yet.
 
 **Sources**, in order of authority (§5.1): the vendor's manuals, cited as
 [S] SDK socket manual 3.19.2 (English) / 3.11.2 (Chinese original),
@@ -138,8 +139,10 @@ What follows from it, each point a requirement on the design:
 
 The parameter names resemble Universal Robots' `servoj` (`lookahead_time`,
 `gain`) [R6], but Elite defines LOOKAHEAD as a queue start delay, not as UR's
-prediction horizon. The 3.19.2 manual also accepts Cartesian targets
-(`targetPose`); whether firmware V3.15.3 does is untested.
+prediction horizon. The 3.11.2 manual already accepts a Cartesian target
+(`targetPose`) instead of joints [S 2.2.7.4], without giving its units;
+whether firmware V3.15.3 does is untested (§7, #8). The driver's Cartesian
+stream solves poses into joints itself (§5.11).
 
 ### 2.5 A session, end to end
 
@@ -329,8 +332,8 @@ servo.close();             // decelerate, let the queue drain, clear it; the des
 ```
 
 `robot.servo()` returns once the controller has accepted the stream (or with
-why it did not). Following a timed reference inside a stream (`follow`) is
-not built yet.
+why it did not). `robot.servo_pose()` streams TCP poses the same way, and a
+known timed trajectory is streamed by `FollowTrajectory` (§5.11).
 
 Each cycle, the stream activity:
 
@@ -504,9 +507,11 @@ loop picks up within one period (§6.2 b).
 | Planned motion | `point_to_point.hpp`, `trajectory.hpp`, `sequence.hpp`, `bring_up.hpp` | `MoveJoint`, `MoveLine`, `MoveLineToPose`, `PlayTrajectory` (with `JointTrajectory` and `validate()`), `Sequence`, `BringUp` |
 | Streamed motion | `stream.hpp`, `shaper.hpp`, `session.hpp` | `ServoStream`, `VelocityStream`, `JogStream`; `RateLimiter`; the application's `Session<T>` |
 | The control thread | `ec/motion/control_loop.hpp` | `ControlLoop`, `Job`, `Status` |
-| The facade | `ec/robot.hpp` | `ec::Robot`: `connect`, `state`, `next_state`, `status`, `run`, `bring_up`, `servo`, `velocity`, `jog`, `stop`, `acknowledge`, `call<C>` |
-| Tool | `apps/ec_move.cpp` | status, bring-up, joint, nudge, sine, stop, acknowledge; nothing moves without `--yes` |
-| Test bench | `tools/fake_robot.py` | a simulated arm on 8055 and 8056, with fault injection |
+| The facade | `ec/robot.hpp` | `ec::Robot`: `connect`, `state`, `next_state`, `status`, `run`, `bring_up`, `servo`, `servo_pose`, `velocity`, `jog`, `stop`, `acknowledge`, `call<C>`, `inverse_kinematics`, `forward_kinematics` |
+| Cartesian paths | `ec/path.hpp`, `ec/motion/planning.hpp` | `CartesianPath` (a concept: `length`, `pose_at`), `Circle`; `SpeedProfile`, `JointSpline`, `solve()`, `TimedPath` (§5.11) |
+| More motion | `follow.hpp`, `waypoints.hpp`, `point_to_point.hpp`, `stream.hpp` | `FollowTrajectory` (a trajectory streamed by the PC), `MovePath` (waypoints), `MoveArc`; `ServoLink` (the transparent-transmission protocol the position streams share), `PoseServoStream` |
+| Tool | `apps/ec_move.cpp`, `apps/circle.cpp` | status, bring-up, joint, nudge, sine, circle (seven modes), stop, acknowledge; nothing moves without `--yes`; `--record` |
+| Test bench | `tools/fake_robot.py`, `tools/kinematics.py` | a simulated arm on 8055 and 8056, with fault injection, an EC66-like kinematic model, Cartesian moves and a trace of its TCP |
 
 Refinements of the design above, each for a reason:
 
@@ -520,10 +525,90 @@ Refinements of the design above, each for a reason:
   (ADR 0015) decides.
 - The loop counts a cycle as late when it starts more than half a period after
   its deadline; three in a row while an activity runs are an overrun fault.
+- The loop publishes its status before it completes the jobs that ended in the
+  cycle, so a thread woken by its job reads the status of the cycle that ended
+  it (CI found the other order racing, under ThreadSanitizer).
+- The age of the state is measured when the loop reads it, not at the cycle's
+  start: a frame that arrived in between had a negative age, which `observe()`
+  rightly distrusts as coming from the future, and a running motion stopped
+  with "fresh state" lost, at random (found by the circle tests on the fake).
 
-Not built yet: following a timed reference inside a stream, Cartesian
-streams, slaving the stream to the controller's clock, an online trajectory
-generator as the shaper, logging of commands and events.
+Not built yet: slaving the stream to the controller's clock; an online
+trajectory generator as the shaper (it would also take away the live streams'
+lag, §5.11); logging of commands and events; the stream's own Cartesian
+targets (§7, #8); arc waypoints in paths (§7, #11).
+
+### 5.11 Cartesian paths
+
+A path of the TCP becomes motion in four pure steps, then one of several
+families runs it:
+
+```cpp
+const ec::Circle circle{.center = c, .radius = 0.05, .rotation = tool};       // ec/path.hpp: geometry only
+auto ik = [&](const Pose& p, const Joints& near) { return robot.inverse_kinematics(p, near); };
+auto path = ec::motion::solve(circle, robot.state()->state.joint_position, ik).value();  // every 3 mm
+auto timed = ec::motion::TimedPath::make(std::move(path), 0.02, 0.5).value();  // 20 mm/s, 0.5 s ramps
+robot.run(ec::motion::PlayTrajectory{.path = timed.sample(0.02)});      // uploaded, the controller's clock
+robot.run(ec::motion::FollowTrajectory{.path = timed.sample(0.008)});   // or streamed by the PC
+```
+
+1. **Geometry.** A path is anything with `length(path)` and `pose_at(path, s)`
+   (the `CartesianPath` concept, found by argument-dependent lookup): a new
+   shape needs nothing else. `Circle` is the first: centre, radius, normal
+   (counter-clockwise about it), a start direction, a constant tool orientation,
+   turns.
+2. **Inverse kinematics, by the controller.** `solve()` asks `inverseKinematic`
+   for a pose every 3 mm, each near the solution before, and refuses a path whose
+   neighbouring solutions differ by more than 10° on a joint (a change of arm
+   configuration, or a singularity in between). Why the controller's: the
+   manual's model is the arm's, with its calibration and its current tool; a
+   model of our own could differ from it in ways only the robot would show
+   (ADR 0016). The price is one call per point, about one cycle each: a 50 mm
+   circle takes about a second to solve. A solution given within one turn is
+   moved by whole turns to the one nearest the last (`nearest_turn`).
+3. **Interpolation in joint space.** `JointSpline` joins the solutions with
+   cubic Hermite segments (Bessel's slopes: continuous velocity, exact for
+   quadratics). Between points 3 mm apart it stays within micrometres of the
+   path.
+4. **Timing.** `SpeedProfile` moves along the path from rest to rest: the speed
+   rises over a ramp as a half cosine (zero acceleration at both ends of the
+   ramp), cruises, and falls. `TimedPath` gives positions and velocities at any
+   time, and samples them into a `JointTrajectory`.
+
+How each family runs the result (all seven are modes of `ec_move circle`):
+
+| Mode | Family | Who times it | Exact on the path? |
+|---|---|---|---|
+| `arc` | `MoveArc`: `moveByArc` half a turn at a time, through solved points | controller | yes (its arcs); stops between arcs |
+| `path` | `MovePath`: lines between solved points, corners blended | controller | chords, cut at the corners |
+| `lines` | `Sequence` of `MoveLineToPose` (`moveByLineCoord`, the controller solves) | controller | chords; stops at each corner |
+| `trajectory` | `PlayTrajectory`: the sampled trajectory, uploaded | controller | yes |
+| `follow` | `FollowTrajectory`: the same trajectory, a point per cycle into transparent transmission | PC | yes |
+| `pose-stream` | `PoseServoStream`: poses pushed live, solved per cycle | PC | trails (below) |
+| `velocity` | `VelocityStream`: planned joint velocities plus a position correction, pushed live | PC | trails slightly |
+
+`FollowTrajectory` sends its points unshaped. The live streams' rate limiter
+plans to be able to stop at each target, so it trails a moving target by the
+braking distance, v²/2a per joint, and the joints trail by different amounts:
+the path bends. For a planned trajectory that only costs accuracy, so the
+trajectory is checked against the stream's limits before anything moves
+(speed, and acceleration from rest to rest), and then sent as it is. Live
+targets keep the shaper. On the fake, a 20 mm circle at 60 mm/s strays 1.3 mm in
+`pose-stream` mode; the lag grows with the square of the speed. An online
+trajectory generator that also takes the target's velocity would remove it.
+
+`PoseServoStream` asks `inverseKinematic` for each new pose near the last
+solution and uses the reply in the next cycle: one period more latency than a
+joint stream, and two commands per cycle on the command port (§7, #2). A pose
+without a solution, or a solution more than 10° from the last on a joint,
+ends the stream gracefully (`Kind::Invalid`).
+
+`ec_move circle` checks first that the controller's forward kinematics of the
+current joints give the TCP that 8056 reports (within 1 mm and 0.5°), so that
+planning and checking use the same tool; then it plans, prints points to
+check by hand (drag mode), and without `--yes` stops there. With `--yes` it
+moves in a straight line to the first point, draws the circle, and reports
+how far every monitoring frame strayed from it.
 
 ---
 
@@ -590,9 +675,9 @@ robot.run(ec::motion::MoveJoint{.target = start, .speed = 0.2}).wait().value();
 auto stream = robot.servo({}).value();                   // opens at standstill, from the measured position
 
 // d) A recorded path: played by the controller, or streamed by the driver.
-robot.run(ec::motion::MoveJoint{.target = path.front(), .speed = 0.2}).wait().value();
-robot.run(ec::motion::PlayTrajectory{.path = path}).wait().value();  // timestamped upload
-// or, later: servo.follow(path)                                     // streamed, can be changed on the fly
+robot.run(ec::motion::MoveJoint{.target = path.position.front(), .speed = 0.2}).wait().value();
+robot.run(ec::motion::PlayTrajectory{.path = path}).wait().value();    // timestamped upload
+robot.run(ec::motion::FollowTrajectory{.path = path}).wait().value();  // or streamed by the PC (§5.11)
 ```
 
 ---
@@ -601,8 +686,8 @@ robot.run(ec::motion::PlayTrajectory{.path = path}).wait().value();  // timestam
 
 Each open question has a default that the design runs on, chosen so that a
 different answer changes one place, never the structure. Four can be measured
-now, read-only, with `tools/robot_checks.py`. The others need motion; they get
-scripted with the streamed-motion step of the roadmap and run against the
+now, read-only, with `tools/robot_checks.py`, and two (#10, #13) by planning a
+circle without `--yes`. The others need motion; `ec_move` runs them against the
 moving fake first.
 
 | # | Question | Default until measured | If the answer differs | Measured by |
@@ -614,8 +699,12 @@ moving fake first.
 | 5 | Stop latency per family | Numbers only: the options in §7.2. | Tuned values. | motion |
 | 6 | Does the speed setting scale streams and timestamped trajectories? (It scales point-to-point speeds of types VJ, V and VR, not AV and AVR [J 2.4]; the linear moves send AV.) | Not relied on. Its value is logged when a stream or trajectory starts; trajectory time limits assume it applies (the slower case); streams are bounded by the driver's own limits. | If it slows the queue's consumption, streams require 100 %: one more condition. | motion |
 | 7 | Does a timestamped trajectory run on if the PC disconnects? | Yes, the cautious assumption: trajectories are validated before upload (joint limits, speeds, a start at the current position), and first runs use a low `speed_percent`. | Nothing. | motion |
-| 8 | Does V3.15.3 accept `targetPose` in a stream? | Joint targets only. | Cartesian streams arrive as a new reference type. | motion, without moving: stream the current pose |
+| 8 | Does V3.15.3 accept `targetPose` in a stream [S 2.2.7.4], and in which units? | Not used: Cartesian streams solve each pose with `inverseKinematic` and stream joints (§5.11). | A second way to feed `ServoLink`, without the extra call per cycle. | motion, without moving: stream the current pose as `targetPose` (a later milestone) |
 | 9 | Step response for several L, T and smoothness | The defaults in §7.2. | Tuned values, and the lag the tracking check expects. | motion |
+| 10 | Does `inverseKinematic` return the solution nearest `referencePos`, and within which range? | The nearest; any range, moved by whole turns to the reference (`nearest_turn`). A solution from another configuration shows up as a jump, which planning refuses. | Nothing structural: solving reports where the jump is. | `ec_move circle MODE --radius R` without `--yes` (computations only) |
+| 11 | How do arc waypoints (`moveType` 3) group in a path? The JBI manual has MOVC in threes [J 2.4.3]. | Not used: paths are lines with blended corners; arcs use `moveByArc`. | `PathMove::Arc` in `MovePath`. | motion |
+| 12 | How does the controller interpolate an uploaded trajectory between its points? | Linearly or better; points are sent 20 ms apart. | A different spacing. | `ec_move circle trajectory`, recorded |
+| 13 | Is the TCP in 8056 (`machinePose`) the current tool's, as `positiveKinematic` computes it? | Yes; `ec_move circle` checks it before planning (1 mm, 0.5°). | Planning would compare against the reported TCP's own tool. | `ec_move circle` without `--yes` |
 
 ### 7.1 Why drift matters only for long streams
 
@@ -651,6 +740,10 @@ is a roadmap step (11 and 16), not a code change.
 | Jog repeat | every 200 ms (the controller stops after 1 s) | jog |
 | Stop timeout | 2 s from the stop command to standstill | every family |
 | Job time limit | given per job; 30 s otherwise | planned motion |
+| Path solving | a point every 3 mm; at most 10° per joint between points; at most 5000 points | `solve()` |
+| Pose stream | at most 10° per joint between solutions | `PoseServoStream` |
+| Following | 0.5° from the first point to start; 0.2° to arrive; 2 s to settle | `FollowTrajectory` |
+| Circle defaults | 20 mm/s, 0.5 s ramps; approach at 20 mm/s, at most 300 mm; path: 36 lines a turn, blends of 0.3 of a line; lines: 12 a turn; uploads: a point every 20 ms; velocity correction 4/s | `ec_move circle` |
 
 ---
 
