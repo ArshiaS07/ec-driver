@@ -26,6 +26,7 @@ void out(std::format_string<Args...> fmt, Args&&... args) {
 template <typename... Args>
 void err(std::format_string<Args...> fmt, Args&&... args) {
     const std::string s = std::format(fmt, std::forward<Args>(args)...);
+    std::fflush(stdout);  // what was printed before comes before, also when both go to one file
     std::fwrite(s.data(), 1, s.size(), stderr);
 }
 

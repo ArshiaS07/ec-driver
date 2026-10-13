@@ -576,12 +576,111 @@ class EcMoveCircle(unittest.TestCase):
         self.assertGreater(recording.stat().st_size, 100 * 1032)
 
 
+class SbxPath(unittest.TestCase):
+    """The sandbox against the moving fake: a plan alone, a square played and
+    recorded, a circle streamed, points from a file, and its refusals."""
+
+    READY = "joints 0 -90 90 -90 -90 0"
+
+    def robot(self, *options: str) -> FakeRobot:
+        fake = FakeRobot(*options)
+        self.addCleanup(fake.stop)
+        self.assertEqual(fake.control(self.READY), "ok")
+        return fake
+
+    def sbx(self, fake: FakeRobot, *args: str) -> subprocess.CompletedProcess:
+        return run(PATHS.sbx_path, "--host", LOCAL, "--command-port", str(fake.command), "--monitor-port",
+                   str(fake.monitor), "--speed", "60", "--ramp", "0.3", *args, timeout=60.0)
+
+    def tmp(self) -> Path:
+        d = tempfile.TemporaryDirectory(dir=PATHS.sbx_path.parent)  # in the build tree
+        self.addCleanup(d.cleanup)
+        return Path(d.name)
+
+    def test_without_yes_it_only_plans(self):
+        fake = self.robot("--ready")
+        before = fake.state()["q"]
+        r = self.sbx(fake, "--shape", "square", "--size", "20")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("kinematics check: the controller's FK is 0.000 mm", r.stdout)
+        self.assertIn("the TCP stays within x -496.0..-476.0, y -122.0..-102.0", r.stdout)
+        self.assertIn("nothing moved", r.stdout)
+        self.assertEqual(fake.state()["q"], before)
+
+    def test_plays_a_square_and_records_it(self):
+        fake = self.robot("--ready")
+        x, y, z = fake.state()["pose"][:3]
+        recording = self.tmp() / "square.ecraw"
+        fake.control("trace start")
+        r = self.sbx(fake, "--yes", "--shape", "square", "--size", "20", "--record", str(recording))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("done in", r.stdout)
+        self.assertRegex(r.stdout, r"recorded \d+ frames to")
+        self.assertGreater(recording.stat().st_size, 100 * 1032)
+        trace = json.loads(fake.control("trace"))
+        for cx, cy in ((x + 20, y), (x + 20, y + 20), (x, y + 20)):  # every corner reached
+            self.assertLess(min(math.hypot(p[0] - cx, p[1] - cy) for p in trace), 0.1, (cx, cy))
+        self.assertLess(math.hypot(trace[-1][0] - x, trace[-1][1] - y), 0.1)  # back at the start
+        self.assertLess(max(abs(p[2] - z) for p in trace), 0.05)
+
+    def test_streams_a_circle(self):
+        fake = self.robot("--ready")
+        x, y, _ = fake.state()["pose"][:3]
+        fake.control("trace start")
+        r = self.sbx(fake, "--yes", "--shape", "circle", "--size", "20", "--stream")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("the TCP stayed within", r.stdout)
+        trace = json.loads(fake.control("trace"))
+        far = max(math.hypot(p[0] - x, p[1] - y) for p in trace)
+        self.assertGreater(far, 19.0)  # out on the circle
+        self.assertLess(far, 21.5)
+
+    def test_points_from_a_file_and_a_bad_one(self):
+        fake = self.robot("--ready")
+        x, y, z = fake.state()["pose"][:3]
+        points = self.tmp() / "points.txt"
+        points.write_text(f"# two points\n{x + 15}, {y}, {z}\n{x + 15} {y + 10} {z + 5}\n")
+        fake.control("trace start")
+        r = self.sbx(fake, "--yes", "--shape", "points", "--points", str(points))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        end = json.loads(fake.control("trace"))[-1]
+        self.assertLess(math.dist(end[:3], [x + 15, y + 10, z + 5]), 0.1)
+
+        points.write_text("1 2\n")
+        before = fake.state()["q"]
+        r = self.sbx(fake, "--yes", "--shape", "points", "--points", str(points))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("line 1: not three numbers", r.stderr)
+        self.assertEqual(fake.state()["q"], before)
+
+    def test_refuses_to_move_until_ready_or_brought_up(self):
+        fake = self.robot()  # servos off, not synchronised
+        r = self.sbx(fake, "--yes", "--shape", "square", "--size", "10")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("missing: servo on, encoders synchronised", r.stderr)
+        r = self.sbx(fake, "--yes", "--bring-up", "--shape", "square", "--size", "10")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("bring-up: servo on, encoders synchronised", r.stdout)
+
+    def test_a_point_out_of_reach_is_refused_before_anything_moves(self):
+        fake = self.robot("--ready")
+        x, y, z = fake.state()["pose"][:3]
+        points = self.tmp() / "far.txt"
+        points.write_text(f"{x - 900} {y} {z}\n")
+        before = fake.state()["q"]
+        r = self.sbx(fake, "--yes", "--shape", "points", "--points", str(points), "--max-distance", "1000")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("plan:", r.stderr)
+        self.assertEqual(fake.state()["q"], before)
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--ec-query", type=Path, required=True)
     p.add_argument("--ec-monitor", type=Path, required=True)
     p.add_argument("--ec-record", type=Path, required=True)
     p.add_argument("--ec-move", type=Path, required=True)
+    p.add_argument("--sbx-path", type=Path, required=True)
     p.add_argument("--tools", type=Path, required=True)
     args, rest = p.parse_known_args()
     vars(PATHS).update(vars(args))

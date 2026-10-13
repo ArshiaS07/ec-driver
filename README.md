@@ -63,6 +63,14 @@ the plan, or `--stream` pushes the poses live, each solved:
     ./build/linux-debug/apps/ec_move circle --radius 50 --speed 20
     ./build/linux-debug/apps/ec_move --yes --record circle.ecraw circle --radius 50 --center -496 -122 424
 
+To read the whole way from a list of TCP points to the robot, one commented
+step at a time, and to change it: `apps/sbx_path.cpp`, a sandbox (temporary).
+It plans a square, a circle or the points of a file from where the TCP is, and
+plays or streams them:
+
+    ./build/linux-debug/apps/sbx_path --shape square --size 30            # plan only
+    ./build/linux-debug/apps/sbx_path --yes --shape circle --size 30 --record recordings/circle.ecraw
+
 Without the robot, run the fake servers (Python 3, standard library only) in a
 second terminal and point the tools at them:
 

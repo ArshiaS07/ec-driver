@@ -19,3 +19,8 @@ ec_set_warnings(ec_record)
 add_executable(ec_move ec_move.cpp circle.cpp)
 target_link_libraries(ec_move PRIVATE ec::driver CLI11::CLI11)
 ec_set_warnings(ec_move)
+
+# A sandbox to read and to change: a list of TCP points through the driver (temporary).
+add_executable(sbx_path sbx_path.cpp)
+target_link_libraries(sbx_path PRIVATE ec::driver CLI11::CLI11)
+ec_set_warnings(sbx_path)
