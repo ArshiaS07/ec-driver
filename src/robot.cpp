@@ -144,8 +144,8 @@ std::expected<motion::JointTrajectory, motion::Error> Robot::plan(std::span<cons
         [this](const Eigen::Isometry3d& T_base_tcp, const Joints& near) { return ik(T_base_tcp, near); }, options);
 }
 
-motion::Job Robot::play(motion::JointTrajectory trajectory, double speed) {
-    return run(motion::PlayTrajectory{.path = std::move(trajectory), .speed = speed});
+motion::Job Robot::play(motion::JointTrajectory trajectory, double speed, const motion::TrajectoryLimits& limits) {
+    return run(motion::PlayTrajectory{.path = std::move(trajectory), .speed = speed, .limits = limits});
 }
 
 void Robot::stop() noexcept { impl_->loop->stop(); }

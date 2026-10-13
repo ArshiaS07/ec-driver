@@ -252,6 +252,10 @@ int run(ec::Robot& robot, const Options& o, const std::function<bool()>& interru
     cli::out("solving {} poses with the controller's inverse kinematics...\n", poses.size());
     const auto trajectory = ec::motion::plan(poses, start, ik);
     if (!trajectory) return fail(trajectory.error(), "planning");
+    if (interrupted()) {  // Ctrl+C while planning: quit before anything moves
+        cli::err("interrupted: nothing moved\n");
+        return cli::kFailed;
+    }
     const Joints fastest = ec::motion::peak_velocity(*trajectory);
     const auto worst = static_cast<std::size_t>(std::max_element(fastest.begin(), fastest.end()) - fastest.begin());
     const auto margins = ec::motion::singularity_margins(trajectory->position);

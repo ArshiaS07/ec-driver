@@ -167,6 +167,20 @@ TEST(JointSpline, RefusesBadKnots) {
     EXPECT_FALSE(JointSpline::make({0.0, std::nan("")}, {Joints{}, Joints{}}));
 }
 
+TEST(JointSpline, RestEndsHaveZeroSlope) {
+    const std::vector<double> x{0.0, 0.15, 0.3, 0.45};
+    const std::vector<Joints> q{Joints{0.0}, Joints{0.21}, Joints{1.49}, Joints{3.0}};  // a ramp from rest
+    const auto parabola = JointSpline::make(x, q);
+    const auto rest = JointSpline::make(x, q, JointSpline::Ends::Rest);
+    ASSERT_TRUE(parabola);
+    ASSERT_TRUE(rest);
+    EXPECT_LT(parabola->slope(1e-9)[0], 0.0);  // Bessel's end slope here points backwards
+    EXPECT_NEAR(rest->slope(1e-9)[0], 0.0, 1e-6);
+    EXPECT_NEAR(rest->slope(0.45 - 1e-9)[0], 0.0, 1e-6);
+    for (int k = 1; k <= 45; ++k)  // forwards only: no step backwards from rest, none past the end
+        EXPECT_GE(rest->position(0.01 * k)[0], rest->position(0.01 * (k - 1))[0]) << k;
+}
+
 TEST(JointSpline, ReproducesQuadraticsExactly) {
     const std::vector<double> x{0.0, 0.3, 0.45, 1.0, 1.2, 2.0};
     const auto f = [](double v) {
@@ -189,6 +203,14 @@ TEST(JointSpline, ReproducesQuadraticsExactly) {
 }
 
 // -------------------------------------------------------------------- sample
+
+TEST(Sample, AStepThatIsNotPositiveGivesNothing) {
+    const auto profile = SpeedProfile::make(length(circle()), 0.05, 0.5);
+    ASSERT_TRUE(profile);
+    EXPECT_TRUE(ec::motion::sample(circle(), *profile, 0.0).empty());
+    EXPECT_TRUE(ec::motion::sample(circle(), *profile, -1.0).empty());
+    EXPECT_FALSE(ec::motion::plan(std::vector<TimedPose>{}, Joints{}, StandInIk{}));
+}
 
 TEST(Sample, PosesEveryStepAlongThePathAndEveryStepsTimeInTheRamps) {
     const Circle c = circle();
@@ -234,6 +256,19 @@ TEST(Plan, SolvesEveryPointNearTheOneBeforeAndSamplesAtThePeriod) {
         EXPECT_NEAR((position_of(q) - circle().center).norm(), 0.1, 2e-6);
 }
 
+TEST(Plan, StartsAndEndsAtRestWithoutStepsBackwards) {
+    const auto t = ec::motion::plan(timed_circle(), Joints{}, StandInIk{});
+    ASSERT_TRUE(t) << describe(t.error());
+    // The circle starts along +y (counter-clockwise from +x): y must not dip first.
+    for (std::size_t k = 1; k < t->size() && t->time[k] < 0.5; ++k)
+        EXPECT_GE(t->position[k][1], t->position[k - 1][1] - 1e-9) << "t = " << t->time[k];
+    const std::size_t n = t->size();
+    const double first = ec::max_abs_diff(t->position[1], t->position[0]) / (t->time[1] - t->time[0]);
+    const double last = ec::max_abs_diff(t->position[n - 1], t->position[n - 2]) / (t->time[n - 1] - t->time[n - 2]);
+    EXPECT_LT(first, 1e-3);  // rad/s: barely moving in the first and last 20 ms
+    EXPECT_LT(last, 1e-3);
+}
+
 TEST(Plan, FillsInSparsePointsAlongStraightLinesAndEvenTurns) {
     std::vector<Joints> references;
     TimedPose a = at(0.0, 0.5, 0.0, 0.3);
@@ -268,14 +303,15 @@ TEST(Plan, RefusesPathsItCannotTrust) {
     EXPECT_NE(refused({at(0.0, 0.5, 0, 0.3), at(10.0, 0.5, 50.0, 0.3)}, ik).find("more than"), std::string::npos);
 }
 
-TEST(Plan, RefusesAPoseWithoutSolutionAndPassesConnectionErrorsThrough) {
+TEST(Plan, NamesThePoseWhoseInverseKinematicsFailedAndKeepsTheKind) {
     const auto unreachable = [](const Eigen::Isometry3d&, const Joints&) -> std::expected<Joints, Error> {
-        return std::unexpected(Error{Error::Kind::Command, "inverseKinematic: failed", {}});
+        return std::unexpected(Error{Error::Kind::Command, "inverseKinematic: rejected: no solution", {}});
     };
     const auto t = ec::motion::plan(timed_circle(), Joints{}, unreachable);
     ASSERT_FALSE(t);
-    EXPECT_EQ(t.error().kind, Error::Kind::Invalid);
-    EXPECT_NE(t.error().message.find("no joint positions for the pose at 0.000 s (600.0, 0.0, 300.0 mm)"),
+    EXPECT_EQ(t.error().kind, Error::Kind::Command);  // the controller's answer, not a judgement of the path
+    EXPECT_NE(t.error().message.find("inverse kinematics failed for the pose at 0.000 s (600.0, 0.0, 300.0 mm): "
+                                     "inverseKinematic: rejected: no solution"),
               std::string::npos)
         << t.error().message;
     const auto lost = [](const Eigen::Isometry3d&, const Joints&) -> std::expected<Joints, Error> {

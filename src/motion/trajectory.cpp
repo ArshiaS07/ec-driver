@@ -112,6 +112,9 @@ std::expected<Phase, Error> PlayTrajectoryActivity::step(const Cycle& c, Outbox&
             if (!(spec_.speed > 0.0 && spec_.speed <= 1.0))
                 return fail(Error::Kind::Invalid, std::format("speed must be in (0, 1], not {}", spec_.speed));
             if (spec_.points_per_cycle < 1) return fail(Error::Kind::Invalid, "points_per_cycle must be at least 1");
+            stationary_ = std::ranges::all_of(spec_.path.position, [this](const Joints& q) {
+                return max_abs_diff(q, spec_.path.position.front()) <= spec_.tolerance;
+            });
             const double off = max_abs_diff(c.state.joint_position, spec_.path.position.front());
             if (off > spec_.start_tolerance)
                 return fail(
@@ -202,6 +205,7 @@ std::expected<Phase, Error> PlayTrajectoryActivity::step(const Cycle& c, Outbox&
                 return fail(Error::Kind::Command,
                             std::format("the controller found the upload invalid ({})", static_cast<int>(*check)));
             out.send(command::StartTrajectory{.speed_pct = spec_.speed * 100.0});
+            start_sent_ = true;
             sent_at_ = c.now;
             stage_ = Stage::AwaitStart;
             return Phase::Running;
@@ -225,9 +229,11 @@ std::expected<Phase, Error> PlayTrajectoryActivity::step(const Cycle& c, Outbox&
             if (c.state.robot_state == RobotState::Running || !c.conditions.has(Condition::AtRest)) moved_ = true;
             const double off = max_abs_diff(c.state.joint_position, spec_.path.position.back());
             const bool resting = c.conditions.has(Condition::Standstill);
-            // Arrived: at rest at the last point, after moving, or after the trajectory's
-            // time if it hardly moves at all.
-            if (resting && off <= spec_.tolerance && (moved_ || c.now - started_at_ >= shortest_)) return Phase::Done;
+            // Arrived: at rest at the last point, after moving; a trajectory that stays at
+            // its first point (within the tolerance) after its own time. A closed path
+            // ends where it starts, so without the motion arrival would mean nothing.
+            if (resting && off <= spec_.tolerance && (moved_ || (stationary_ && c.now - started_at_ >= shortest_)))
+                return Phase::Done;
             if (resting && moved_ && ++short_cycles_ >= kShortCycles)
                 return fail(Error::Kind::Command,
                             std::format("the arm stopped {:.2f} deg from the last point", rad_to_deg(off)));
@@ -247,7 +253,9 @@ bool PlayTrajectoryActivity::close(const Cycle& c, Outbox& out, End why) {
         switch (closing_) {
             case Closing::Begin:
                 if (!uploading_) return true;  // nothing on the controller to clean up
-                if (stage_ == Stage::Running && why != End::Done) {
+                // Once start_trajectory went out the arm may move, even if its reply
+                // has not come (or never will): stop it before clearing.
+                if (start_sent_ && why != End::Done) {
                     out.send(command::StopTrajectory{});
                     out.send(command::Stop{});
                     stop_sent_at_ = c.now;

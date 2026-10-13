@@ -57,15 +57,25 @@ private:
 };
 
 /// Joint positions interpolated over an increasing parameter by cubic Hermite
-/// segments, the slope at each knot taken from the parabola through it and its
-/// neighbours (Bessel's method): positions and slopes are continuous, and
+/// segments, the slope at each inner knot taken from the parabola through it and
+/// its neighbours (Bessel's method): positions and slopes are continuous, and
 /// quadratics are reproduced exactly. Outside the knots the end positions hold.
 class JointSpline {
 public:
+    /// The slopes at the first and last knot.
+    enum class Ends {
+        Parabola,  ///< from the parabola through the three end knots: exact for quadratics
+        /// zero: the motion starts and ends at rest; the slopes next to them are
+        /// kept within three times their segment's secant, so that the end
+        /// segments do not overshoot (Fritsch and Carlson)
+        Rest,
+    };
+
     /// The spline, or why not: at least 2 knots, strictly increasing and
     /// finite, with one finite position per knot.
     [[nodiscard]] static std::expected<JointSpline, std::string> make(std::vector<double> knots,
-                                                                      std::vector<Joints> positions);
+                                                                      std::vector<Joints> positions,
+                                                                      Ends ends = Ends::Parabola);
 
     [[nodiscard]] Joints position(double x) const noexcept;
     /// dq/dx; zero outside the knots.
@@ -93,8 +103,11 @@ struct TimedPose {
 /// every `step` [m] of path, and more often where the path is slow, so that no
 /// two are further apart in time than `step` takes at the cruise speed; and
 /// one at the end. Dense enough for plan() to interpolate between them in time.
+/// Empty for a `step` that is not positive, or that would make more than a
+/// million poses (plan() then refuses the empty path).
 template <CartesianPath P>
 [[nodiscard]] std::vector<TimedPose> sample(const P& path, const SpeedProfile& profile, double step) {
+    if (!(step > 0.0) || !std::isfinite(step) || length(path) / step > 1e6) return {};
     const double end = profile.duration();
     const double longest = profile.cruise_speed() > 0.0 ? step / profile.cruise_speed() : end;
     std::vector<TimedPose> out{{.time = 0.0, .pose = pose_at(path, 0.0)}};
@@ -135,12 +148,13 @@ struct PlanOptions {
 /// max_turn are joined by straight lines and filled in; every point is solved by
 /// `ik`, the first near `start`, each next one near the one before (a solution
 /// given within one turn taken to the nearest turn); the solutions are
-/// interpolated over time (JointSpline) and sampled every `period`, ending
-/// exactly at the last time. Fails with Kind::Invalid, naming the point, if a
-/// pose has no solution, if neighbouring solutions differ by more than
-/// max_joint_step, if J5 or J3 comes within singularity_margin of 0 or 180 deg,
-/// or if the trajectory breaks the limits; other kinds (Disconnected, ...) pass
-/// through from `ik`. Every point costs one call of `ik`.
+/// interpolated over time (JointSpline, at rest at both ends) and sampled every
+/// `period`, ending exactly at the last time. Fails with Kind::Invalid, naming
+/// the point, if neighbouring solutions differ by more than max_joint_step, if J5
+/// or J3 comes within singularity_margin of 0 or 180 deg, or if the trajectory
+/// breaks the limits; a failure of `ik` keeps its kind (the controller found no
+/// solution, or did not answer, ...) and gains the pose in its message. Every
+/// point costs one call of `ik`.
 [[nodiscard]] std::expected<JointTrajectory, Error> plan(std::span<const TimedPose> path, const Joints& start,
                                                          const InverseKinematics& ik, const PlanOptions& options = {});
 

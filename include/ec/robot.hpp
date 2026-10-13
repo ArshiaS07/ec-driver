@@ -117,8 +117,10 @@ public:
     [[nodiscard]] std::expected<motion::JointTrajectory, motion::Error> plan(std::span<const motion::TimedPose> path,
                                                                              const motion::PlanOptions& options = {});
     /// Plays a joint trajectory through the controller's timestamp service
-    /// (motion::PlayTrajectory). The arm must rest at its first point.
-    [[nodiscard]] motion::Job play(motion::JointTrajectory trajectory, double speed = 1.0);
+    /// (motion::PlayTrajectory), checked against `limits` (pass the ones plan()
+    /// used). The arm must rest at its first point.
+    [[nodiscard]] motion::Job play(motion::JointTrajectory trajectory, double speed = 1.0,
+                                   const motion::TrajectoryLimits& limits = {});
     /// Starts any activity or spec (MoveJoint, Sequence, PlayTrajectory, ...).
     [[nodiscard]] motion::Job run(motion::AnyActivity activity);
     /// Clear alarm, reset collision, synchronise, servos on: what the state needs.

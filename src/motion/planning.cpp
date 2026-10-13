@@ -72,7 +72,8 @@ double SpeedProfile::peak_acceleration() const noexcept {
 
 // ------------------------------------------------------------------- JointSpline
 
-std::expected<JointSpline, std::string> JointSpline::make(std::vector<double> knots, std::vector<Joints> positions) {
+std::expected<JointSpline, std::string> JointSpline::make(std::vector<double> knots, std::vector<Joints> positions,
+                                                          Ends ends) {
     const std::size_t n = knots.size();
     if (n < 2) return std::unexpected(std::format("{} knots; at least 2 are needed", n));
     if (positions.size() != n) return std::unexpected(std::format("{} knots but {} positions", n, positions.size()));
@@ -106,6 +107,21 @@ std::expected<JointSpline, std::string> JointSpline::make(std::vector<double> kn
         for (std::size_t j = 0; j < kJointCount; ++j) {
             slopes[0][j] = secant[0][j] + (secant[0][j] - secant[1][j]) * a0 / (a0 + a1);
             slopes[n - 1][j] = secant[n - 2][j] + (secant[n - 2][j] - secant[n - 3][j]) * b1 / (b0 + b1);
+        }
+    }
+    if (ends == Ends::Rest) {
+        slopes.front() = slopes.back() = Joints{};
+        // From rest, an end segment overshoots backwards unless the slope at its
+        // other knot stays within three times its secant (Fritsch and Carlson):
+        // keep it there, so that motion from rest starts forwards.
+        const auto limit = [](double& slope, double chord) {
+            slope = chord >= 0.0 ? std::clamp(slope, 0.0, 3.0 * chord) : std::clamp(slope, 3.0 * chord, 0.0);
+        };
+        if (n >= 3) {
+            for (std::size_t j = 0; j < kJointCount; ++j) {
+                limit(slopes[1][j], secant[0][j]);
+                limit(slopes[n - 2][j], secant[n - 2][j]);
+            }
         }
     }
     return JointSpline(std::move(knots), std::move(positions), std::move(slopes));
@@ -229,10 +245,9 @@ std::expected<JointTrajectory, Error> plan(std::span<const TimedPose> path, cons
     for (std::size_t k = 0; k < points->size(); ++k) {
         const TimedPose& p = (*points)[k];
         auto q = ik(p.pose, reference);
-        if (!q) {
+        if (!q) {  // no solution, or no answer: the message says which
             Error e = std::move(q.error());
-            e.message = std::format("no joint positions for the pose {}: {}", where(p), e.message);
-            if (e.kind == Error::Kind::Command) e.kind = Error::Kind::Invalid;  // the controller found no solution
+            e.message = std::format("inverse kinematics failed for the pose {}: {}", where(p), e.message);
             return std::unexpected(std::move(e));
         }
         const Joints solution = nearest_turn(*q, reference, o.limits.joint_limit);
@@ -262,7 +277,7 @@ std::expected<JointTrajectory, Error> plan(std::span<const TimedPose> path, cons
     }
 
     // Interpolate over time, and sample.
-    auto spline = JointSpline::make(std::move(times), std::move(solutions));
+    auto spline = JointSpline::make(std::move(times), std::move(solutions), JointSpline::Ends::Rest);
     if (!spline) return invalid(spline.error());
     const double end = spline->knots().back();
     const double period = std::min(o.period, end / 2.0);  // at least 3 points

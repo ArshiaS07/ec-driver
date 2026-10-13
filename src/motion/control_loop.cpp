@@ -215,7 +215,12 @@ void ControlLoop::run(const std::stop_token& stop) {
                     shutdown_by = now + options_.shutdown_timeout;
                     executor_.stop();
                 }
-                if (!executor_.current() || now > *shutdown_by) break;
+                if (!executor_.current()) break;
+                if (now > *shutdown_by) {  // the activity did not close in time: stop the arm, then go
+                    const auto stopped = client_.call(command::to_request(command::Stop{}), options_.reply_timeout);
+                    static_cast<void>(stopped);  // the last resort: nothing more can be done if it fails
+                    break;
+                }
             }
 
             // The connection.

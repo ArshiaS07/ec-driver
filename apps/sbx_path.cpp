@@ -235,42 +235,64 @@ Eigen::Isometry3d pose_at_time(const std::vector<TimedPose>& path, double t) {
 // How far the measured TCP strays from the path: for every monitoring frame,
 // the distance to the nearest of the path's straight pieces between its poses,
 // and the turn of the tool from the orientation there; the largest of each.
+// add() only keeps the frame's TCP; report() compares, after the motion, so
+// that watching costs the loops that push targets nothing.
 class PathError {
 public:
     explicit PathError(const std::vector<TimedPose>& path) : path_(path) {}
 
+    // The TCP from 8056 (machinePose), as a pose: position [m], rotation from rx, ry, rz.
     void add(const ec::feedback::State& s) {
-        // The TCP from 8056 (machinePose), as a pose: position [m], rotation from rx, ry, rz.
-        const Eigen::Isometry3d T_base_tcp = ec::isometry(s.tcp_position_base, s.tcp_rotation_base);
-        const Eigen::Vector3d p = T_base_tcp.translation();
-        double nearest = std::numeric_limits<double>::infinity();
-        std::size_t at = 0;
-        for (std::size_t k = 1; k < path_.size(); ++k) {
-            const Eigen::Vector3d a = path_[k - 1].pose.translation();
-            const Eigen::Vector3d ab = path_[k].pose.translation() - a;
-            const double u = ab.squaredNorm() > 0.0 ? std::clamp((p - a).dot(ab) / ab.squaredNorm(), 0.0, 1.0) : 0.0;
-            if (const double d = (p - (a + u * ab)).norm(); d < nearest) {
-                nearest = d;
-                at = k - 1;
-            }
-        }
-        worst_ = std::max(worst_, nearest);
-        worst_turn_ = std::max(worst_turn_, ec::angle_between(T_base_tcp.linear(), path_[at].pose.linear()));
-        ++frames_;
+        measured_.push_back(ec::isometry(s.tcp_position_base, s.tcp_rotation_base));
     }
 
     void report() const {
-        if (frames_ == 0) return;
+        if (measured_.empty()) return;
+        double worst = 0.0;
+        double worst_turn = 0.0;
+        std::size_t last = 0;  // the frames go forward along the path: look near the last match
+        constexpr std::size_t kWindow = 2000;
+        for (const Eigen::Isometry3d& T_base_tcp : measured_) {
+            const Eigen::Vector3d p = T_base_tcp.translation();
+            double nearest = std::numeric_limits<double>::infinity();
+            std::size_t at = last;
+            const std::size_t from = last > kWindow ? last - kWindow : 0;
+            const std::size_t to = std::min(path_.size(), last + kWindow);
+            for (std::size_t k = from + 1; k < to; ++k) {  // the piece from pose k-1 to pose k
+                const Eigen::Vector3d a = path_[k - 1].pose.translation();
+                const Eigen::Vector3d ab = path_[k].pose.translation() - a;
+                const double n2 = ab.squaredNorm();
+                const double u = n2 > 0.0 ? std::clamp((p - a).dot(ab) / n2, 0.0, 1.0) : 0.0;
+                if (const double d = (p - (a + u * ab)).norm(); d < nearest) {
+                    nearest = d;
+                    at = k - 1;
+                }
+            }
+            if (path_.size() == 1) nearest = (p - path_.front().pose.translation()).norm();
+            last = at;
+            worst = std::max(worst, nearest);
+            worst_turn = std::max(worst_turn, ec::angle_between(T_base_tcp.linear(), path_[at].pose.linear()));
+        }
         cli::out("the TCP stayed within {:.2f} mm of the path, its orientation within {:.2f} deg ({} frames)\n",
-                 worst_ * 1000.0, ec::rad_to_deg(worst_turn_), frames_);
+                 worst * 1000.0, ec::rad_to_deg(worst_turn), measured_.size());
     }
 
 private:
     const std::vector<TimedPose>& path_;
-    double worst_ = 0.0;
-    double worst_turn_ = 0.0;
-    std::size_t frames_ = 0;
+    std::vector<Eigen::Isometry3d> measured_;
 };
+
+// Waits for a job (bring-up, ...), Ctrl+C stopping it: the job then ends with
+// Kind::Stopped.
+std::expected<void, Error> wait(ec::Robot& robot, const ec::motion::Job& job) {
+    for (;;) {
+        if (auto done = job.wait_for(20ms)) return *done;
+        if (interrupted()) {
+            cli::err("stopping\n");
+            robot.stop();
+        }
+    }
+}
 
 // ------------------------------------------------------------------ moving
 
@@ -421,6 +443,7 @@ int with_robot(ec::Robot& robot, const Settings& s) {
     const auto planned_at = Clock::now();
     const auto trajectory = robot.plan(*path);
     if (!trajectory) return fail("plan", trajectory.error());
+    if (interrupted()) return fail("plan", "interrupted (Ctrl+C): nothing moved");  // planning takes a while
     const double took = std::chrono::duration<double>(Clock::now() - planned_at).count();
 
     // 8. Show the plan, and save it.
@@ -450,7 +473,8 @@ int with_robot(ec::Robot& robot, const Settings& s) {
             return fail("ready", std::format("missing: {}; add --bring-up, or run ec_move --yes bring-up",
                                              ec::motion::to_string(missing)));
         cli::out("bring-up: {}\n", ec::motion::to_string(missing));
-        if (const auto up = robot.bring_up().wait(); !up) return fail("bring-up", up.error());
+        if (const auto up = wait(robot, robot.bring_up()); !up) return fail("bring-up", up.error());
+        if (interrupted()) return fail("bring-up", "interrupted (Ctrl+C): nothing moved");
     }
 
     // 10. Move.

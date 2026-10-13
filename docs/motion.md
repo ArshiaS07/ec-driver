@@ -534,6 +534,10 @@ Refinements of the design above, each for a reason:
   with "fresh state" lost, at random (found by the circle tests on the fake).
 - One-off calls are answered between cycles, as soon as they come, not at the
   next cycle: a path's inverse kinematics costs a round trip per point.
+- From a review before the first robot session: `PlayTrajectory` stops the arm
+  on any ending once `start_trajectory` went out, even before its reply; a closed
+  path (ending where it starts) counts as arrived only after the arm moved; a
+  shutdown that outlasts its time limit sends a last-resort stop.
 
 Not built yet: slaving the stream to the controller's clock; an online
 trajectory generator as the shaper (it would also take away the live streams'
@@ -580,8 +584,10 @@ servo.target(robot.ik(T_base_tcp, q).value());
    of arm configuration, or a singularity in between: MoveIt's jump threshold),
    J5 and J3 at least 5° from 0 and 180° (the wrist and elbow singularities of
    this arm, whose layout is Universal Robots'), within the joint limits.
-4. **Interpolate over time** (`JointSpline`: cubic Hermite, Bessel's slopes) and
-   sample every 20 ms, ending exactly at the last time.
+4. **Interpolate over time** (`JointSpline`: cubic Hermite, Bessel's slopes,
+   at rest at both ends, the end segments kept monotone so that the arm does not
+   step backwards from rest) and sample every 20 ms, ending exactly at the last
+   time.
 5. **Check the trajectory**: joint speeds within the datasheet's, accelerations
    within the limit (from rest at the start, to rest at the end).
 

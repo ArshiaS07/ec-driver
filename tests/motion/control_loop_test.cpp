@@ -325,6 +325,27 @@ TEST(ControlLoop, CallsAreAnsweredBetweenCyclesNotAtThem) {
     EXPECT_EQ(job.wait().error().kind, Error::Kind::Cancelled);
 }
 
+// Never finishes closing.
+struct Stubborn {
+    [[nodiscard]] Needs needs() const { return {{Condition::Fresh}, {Condition::Fresh}}; }
+    std::expected<Phase, Error> step(const Cycle&, Outbox&) { return Phase::Running; }
+    bool close(const Cycle&, Outbox&, End) { return false; }
+};
+
+TEST(ControlLoop, ShutdownStopsTheArmWhenTheActivityWillNotClose) {
+    ControlOptions options;
+    options.shutdown_timeout = 100ms;
+    options.executor.close_timeout = 10s;  // longer than the shutdown: the loop's own last resort counts
+    Rig rig(options);
+    const auto job = rig.loop->run(Stubborn{});
+    std::this_thread::sleep_for(50ms);
+    rig.loop.reset();
+    const auto seen = rig.responder.seen();
+    EXPECT_EQ(std::count(seen.begin(), seen.end(), "stop"), 1);
+    ASSERT_TRUE(job.done());
+    EXPECT_FALSE(job.wait());
+}
+
 TEST(ControlLoop, NextStatusWaitsForTheNextCycle) {
     Rig rig;
     const auto first = rig.loop->next_status(0, 1s);

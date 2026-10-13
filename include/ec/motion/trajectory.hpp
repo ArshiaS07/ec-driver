@@ -97,6 +97,8 @@ private:
     std::size_t uploaded_ = 0;
     std::size_t awaited_ = 0;  // PushPos replies due this cycle
     bool uploading_ = false;   // start_push_pos was accepted: the buffer needs flushing
+    bool start_sent_ = false;  // start_trajectory went out: the arm may move
+    bool stationary_ = false;  // the whole trajectory stays within `tolerance` of its first point
     bool moved_ = false;
     int short_cycles_ = 0;
     Clock::time_point stop_sent_at_{};

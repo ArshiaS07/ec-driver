@@ -315,6 +315,66 @@ TEST(PlayTrajectory, AnUploadTheControllerRejectsIsFlushed) {
     EXPECT_TRUE(b.close(a, End::Faulted));
 }
 
+// Out and back to where it started: a closed path, as a square or a circle is.
+ec::motion::JointTrajectory there_and_back() {
+    ec::motion::JointTrajectory t;
+    for (int k = 0; k <= 10; ++k) {
+        t.time.push_back(0.1 * k);
+        t.position.push_back(Joints{0.002 * std::min(k, 10 - k), 0, 0, 0, 0, 0});
+    }
+    return t;
+}
+
+void answer_upload(Bench& b) {
+    b.answers["getSpeed"] = [](const auto&) -> std::expected<Json, ec::command::Error> { return Json(100.0); };
+    b.answers["check_trajectory"] = [](const auto&) -> std::expected<Json, ec::command::Error> { return Json(0); };
+}
+
+TEST(PlayTrajectory, AClosedPathIsDoneOnlyAfterTheArmMoved) {
+    Bench b;
+    answer_upload(b);
+    auto a = make_activity(ec::motion::PlayTrajectory{.path = there_and_back(), .margin = 500ms});
+    for (int i = 0; i < 20 && b.count("start_trajectory") == 0; ++i) ASSERT_TRUE(b.step(a));
+    // The arm never moves: at rest at the first point, which is also the last.
+    std::expected<Phase, Error> r = Phase::Running;
+    for (int i = 0; i < 400 && r && *r == Phase::Running; ++i) r = b.step(a);
+    ASSERT_FALSE(r);
+    EXPECT_EQ(r.error().kind, Error::Kind::Timeout);
+}
+
+TEST(PlayTrajectory, ATrajectoryThatStaysPutIsDoneAfterItsTime) {
+    Bench b;
+    answer_upload(b);
+    ec::motion::JointTrajectory still;
+    still.time = {0.0, 0.1, 0.2};
+    still.position = {Joints{}, Joints{}, Joints{}};
+    auto a = make_activity(ec::motion::PlayTrajectory{.path = still});
+    for (int i = 0; i < 20 && b.count("start_trajectory") == 0; ++i) ASSERT_TRUE(b.step(a));
+    int cycles = 0;
+    std::expected<Phase, Error> r = Phase::Running;
+    while (r && *r == Phase::Running && cycles < 100) {
+        r = b.step(a);
+        ++cycles;
+    }
+    ASSERT_TRUE(r) << describe(r.error());
+    EXPECT_EQ(*r, Phase::Done);
+    EXPECT_NEAR(cycles * 8, 200, 16);  // its 0.2 s
+}
+
+TEST(PlayTrajectory, AStopRightAfterTheStartStopsTheArm) {
+    Bench b;
+    answer_upload(b);
+    auto a = make_activity(ec::motion::PlayTrajectory{.path = ramp(6)});
+    for (int i = 0; i < 20 && b.count("start_trajectory") == 0; ++i) ASSERT_TRUE(b.step(a));
+    // start_trajectory went out and its reply has not been looked at: the arm may move.
+    EXPECT_FALSE(b.close(a, End::Stopped));
+    EXPECT_EQ(b.count("stop_trajectory"), 1u);
+    EXPECT_EQ(b.count("stop"), 1u);
+    EXPECT_FALSE(b.close(a, End::Stopped));  // at rest: flush
+    EXPECT_EQ(b.sent.back().method, "flush_trajectory");
+    EXPECT_TRUE(b.close(a, End::Stopped));
+}
+
 TEST(PlayTrajectory, CancelWhileRunningStopsItThenFlushes) {
     Bench b;
     b.answers["getSpeed"] = [](const auto&) -> std::expected<Json, ec::command::Error> { return Json(100.0); };
