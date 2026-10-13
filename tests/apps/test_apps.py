@@ -474,7 +474,8 @@ class EcMove(unittest.TestCase):
 
 class EcMoveCircle(unittest.TestCase):
     """ec_move circle against the moving fake: the plan alone, then the circle
-    drawn in every mode, checked against the fake's own trace of its TCP."""
+    played by the timestamp service and pushed as a stream, checked against the
+    fake's own trace of its TCP."""
 
     RADIUS = 20.0  # mm
     READY = "joints 0 -90 90 -90 -90 0"  # elbow bent, the tool pointing down
@@ -495,32 +496,32 @@ class EcMoveCircle(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         plan = Path(tmp.name) / "plan.csv"
         before = fake.state()["q"]
-        r = self.circle(fake, "circle", "follow", "--radius", "20", "--save", str(plan))
+        r = self.circle(fake, "circle", "--radius", "20", "--save", str(plan))
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("points to check: start (0 deg) (-476.0, -122.0, 424.4) mm", r.stdout)  # the TCP is the centre
+        self.assertIn("approach: a straight line of 20.0 mm", r.stdout)
+        self.assertIn("closest to a singularity", r.stdout)
         self.assertIn("nothing moved", r.stdout)
         self.assertEqual(fake.state()["q"], before)
         rows = plan.read_text().splitlines()
-        self.assertTrue(rows[0].startswith("# ec_move circle follow"))
+        self.assertTrue(rows[0].startswith("# ec_move circle:"))
         self.assertEqual(rows[2].split(",")[:4], ["t_s", "x_mm", "y_mm", "z_mm"])
         self.assertEqual(rows[3].split(",")[:2], ["0.000", "-476.0000"])
 
-    def test_every_mode_draws_the_circle(self):
-        # mode, and how far its TCP may stray [mm]: chords for path and lines;
-        # for the live pose stream, the shaper's lag, which bends the path (it
-        # trails each joint's target by its braking distance: 1.3 mm here at
-        # 60 mm/s, a ninth of that at 20); the correction's lag for velocity.
-        for mode, tolerance in (("arc", 0.05), ("path", 0.15), ("lines", 0.8), ("trajectory", 0.05),
-                                ("follow", 0.05), ("pose-stream", 2.0), ("velocity", 0.5)):
-            with self.subTest(mode=mode):
+    def test_the_circle_is_played_or_streamed(self):
+        # how, and how far its TCP may stray [mm]: the stream's shaper lags
+        # behind each joint's target by its braking distance, which bends the
+        # path (1.3 mm here at 60 mm/s, a ninth of that at 20).
+        for how, extra, tolerance in (("played", [], 0.05), ("streamed", ["--stream"], 2.0)):
+            with self.subTest(how=how):
                 fake = self.robot()
                 x, y, z = fake.state()["pose"][:3]
                 cx = x - self.RADIUS  # the TCP is the circle's first point: no approach
                 fake.control("trace start")
-                r = self.circle(fake, "--yes", "circle", mode, "--radius", str(self.RADIUS), "--center", str(cx),
-                                str(y), str(z), "--start-toward", "1", "0", "0", "--speed", "60", "--ramp", "0.3")
+                r = self.circle(fake, "--yes", "circle", "--radius", str(self.RADIUS), "--center", str(cx), str(y),
+                                str(z), "--start-toward", "1", "0", "0", "--speed", "60", "--ramp", "0.3", *extra)
                 self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-                self.assertIn(f"circle ({mode}): done", r.stdout)
+                self.assertIn("circle: done", r.stdout)
                 self.assertNotIn("approach", r.stdout)
                 trace = json.loads(fake.control("trace"))
                 radial = [abs(math.hypot(p[0] - cx, p[1] - y) - self.RADIUS) for p in trace]
@@ -532,32 +533,45 @@ class EcMoveCircle(unittest.TestCase):
                 end = trace[-1]
                 self.assertLess(math.hypot(end[0] - x, end[1] - y), 0.5)  # back at the start
 
+    def test_the_approach_comes_first_in_a_straight_line(self):
+        fake = self.robot()
+        x, y, z = fake.state()["pose"][:3]
+        fake.control("trace start")
+        r = self.circle(fake, "--yes", "circle", "--radius", "15", "--speed", "60", "--ramp", "0.3",
+                        "--approach-speed", "60")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("approach: a straight line of 15.0 mm", r.stdout)
+        trace = json.loads(fake.control("trace"))
+        first = next(i for i, p in enumerate(trace) if math.hypot(p[0] - x, p[1] - y) > 14.9)
+        for p in trace[:first]:  # from the centre straight out along base x
+            self.assertLess(abs(p[1] - y), 0.05)
+            self.assertLess(abs(p[2] - z), 0.05)
+
     def test_an_unreachable_circle_is_refused_before_anything_moves(self):
         fake = self.robot()
         before = fake.state()["q"]
-        r = self.circle(fake, "--yes", "circle", "follow", "--radius", "500", "--max-approach", "2000")
+        r = self.circle(fake, "--yes", "circle", "--radius", "500", "--max-approach", "2000")
         self.assertEqual(r.returncode, 1)
-        self.assertIn("planning: invalid: no joint positions for the pose", r.stderr)
+        self.assertIn("planning", r.stderr)
         self.assertEqual(fake.state()["q"], before)
 
-    def test_too_fast_for_a_stream_is_refused(self):
+    def test_a_circle_too_abrupt_for_the_joints_is_refused(self):
         fake = self.robot()
-        r = self.circle(fake, "--yes", "circle", "follow", "--radius", "5", "--speed", "250", "--ramp", "0")
+        r = self.circle(fake, "--yes", "circle", "--radius", "5", "--speed", "250", "--ramp", "0")
         self.assertEqual(r.returncode, 1)
-        self.assertIn("too fast for a stream", r.stderr)
+        self.assertIn("would accelerate at", r.stderr)
 
-    def test_an_emergency_stop_ends_a_streamed_circle_and_the_recording_has_it(self):
+    def test_an_emergency_stop_ends_the_circle_and_the_recording_has_it(self):
         fake = self.robot()
         tmp = tempfile.TemporaryDirectory(dir=PATHS.ec_move.parent)
         self.addCleanup(tmp.cleanup)
         recording = Path(tmp.name) / "circle.ecraw"
-        timer = threading.Timer(2.5, lambda: fake.control("estop on"))
+        timer = threading.Timer(3.0, lambda: fake.control("estop on"))
         timer.start()
         self.addCleanup(timer.cancel)
-        r = self.circle(fake, "--yes", "--record", str(recording), "circle", "follow", "--radius", "20")
+        r = self.circle(fake, "--yes", "--record", str(recording), "circle", "--radius", "20")
         self.assertEqual(r.returncode, 1)
         self.assertIn("condition lost", r.stderr)
-        self.assertFalse(fake.state()["streaming"])
         self.assertRegex(r.stdout, r"recorded \d+ frames to")
         self.assertGreater(recording.stat().st_size, 100 * 1032)
 

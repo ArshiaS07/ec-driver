@@ -126,10 +126,12 @@ public:
     /// activity is still closing.
     [[nodiscard]] std::expected<void, Error> acknowledge();
 
-    /// Sends one call at the next cycle and waits for its unwrapped result.
-    /// Queries and computations always; settings, actions and sessions only
-    /// while no activity is open; motion commands never (they belong to
-    /// activities): those are Kind::Refused. A failed call is Kind::Command, or
+    /// Sends one call as soon as the control thread is free, between its cycles
+    /// (a cycle that is due goes first), and waits for its unwrapped result: a
+    /// sequence of calls costs a round trip each, not a cycle each. Queries and
+    /// computations always; settings, actions and sessions only while no
+    /// activity is open; motion commands never (they belong to activities):
+    /// those are Kind::Refused. A failed call is Kind::Command, or
     /// Kind::Disconnected.
     [[nodiscard]] std::expected<command::Json, Error> call(command::Request request, command::Kind kind);
 
@@ -140,6 +142,7 @@ public:
 
 private:
     void run(const std::stop_token& stop);
+    void wait_until(Clock::time_point deadline);  // answers calls while it waits
     void serve_requests(const Cycle& cycle);
     void send(const Outbox& out, std::vector<Reply>& replies);
     void serve_calls();

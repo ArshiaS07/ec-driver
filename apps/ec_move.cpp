@@ -8,7 +8,7 @@
 //   nudge JOINT DEGREES          move one joint (1..6) by up to 30 deg    (--speed F)
 //   sine JOINT AMPLITUDE PERIOD  stream a sine [deg, s] on one joint, from where it is
 //                                (--seconds S, default two periods; --lookahead MS, default 40)
-//   circle MODE --radius MM      the TCP draws a circle (see below)
+//   circle --radius MM           the TCP draws a circle (see below)
 //   stop                         stop whatever moves the arm
 //   acknowledge                  clear a latched fault, once a person has dealt with its cause
 //
@@ -19,17 +19,13 @@
 // circle: around --center X Y Z [mm, base frame] (default: where the TCP is),
 // in the plane normal to --normal (default 0 0 1: parallel to the ground),
 // counter-clockwise about it, starting toward --start-toward (default: the TCP),
-// keeping the tool's orientation. The plan comes from the controller's inverse
-// kinematics (computations only); without --yes it is printed with points to
-// check by hand, and nothing moves. MODE is how it is drawn:
-//   arc          the controller's arcs (moveByArc), half a turn at a time
-//   path         a waypoint path of short lines with blended corners (moveByPath)
-//   lines        straight lines from corner to corner, stopping at each (moveByLineCoord)
-//   trajectory   a timed joint trajectory, uploaded and run by the controller
-//   follow       the same trajectory, streamed by the PC (transparent transmission)
-//   pose-stream  TCP poses pushed live, each solved by the controller
-//   velocity     joint velocities pushed live (moveBySpeedj), with a position correction
-// The arm first moves in a straight line to the circle's first point.
+// keeping the tool's orientation. It is planned in joint space: the controller
+// solves a pose every 3 mm, and the plan is checked for jumps, singularities
+// (J5, J3) and joint limits. Without --yes the plan is printed with points to
+// check by hand, and nothing moves. With --yes the arm moves in a straight line
+// to the first point, then draws the circle: both are joint trajectories played
+// by the controller's timestamp service; with --stream the circle's poses are
+// instead pushed live, each solved by the controller, as joint targets.
 //
 // Exit codes: 0 done (or a plan printed); 1 refused, failed or stopped; 2 bad command line.
 
@@ -141,9 +137,9 @@ int act(ec::Robot& robot, const CLI::App& app, bool yes, double speed, const std
         double amount, double period, double seconds, int lookahead_ms);
 
 // Turns three numbers from the command line into a vector, if given.
-std::optional<ec::Vec3> vec3(const std::vector<double>& v) {
+std::optional<Eigen::Vector3d> vec3(const std::vector<double>& v) {
     if (v.size() != 3) return std::nullopt;
-    return ec::Vec3{v[0], v[1], v[2]};
+    return Eigen::Vector3d(v[0], v[1], v[2]);
 }
 
 int run(int argc, char** argv) {
@@ -193,16 +189,10 @@ int run(int argc, char** argv) {
         ->capture_default_str()
         ->check(CLI::Range(10, 1000));
     circle::Options drawing;
-    std::string mode_name;
     std::vector<double> center;
     std::vector<double> normal;
     std::vector<double> start_toward;
-    auto* circ = app.add_subcommand("circle",
-                                    "The TCP draws a circle: arc, path, lines, trajectory, follow, "
-                                    "pose-stream or velocity");
-    circ->add_option("mode", mode_name, "How it is drawn")
-        ->required()
-        ->check(CLI::IsMember({"arc", "path", "lines", "trajectory", "follow", "pose-stream", "velocity"}));
+    auto* circ = app.add_subcommand("circle", "The TCP draws a circle, planned in joint space");
     circ->add_option("--radius", drawing.radius_mm, "[mm]")->required()->check(CLI::Range(1.0, 500.0));
     circ->add_option("--center", center, "X Y Z [mm] in the base frame (default: where the TCP is)")->expected(3);
     circ->add_option("--normal", normal, "NX NY NZ: the axis it turns counter-clockwise about (default 0 0 1)")
@@ -226,19 +216,12 @@ int run(int argc, char** argv) {
     circ->add_option("--max-approach", drawing.max_approach_mm, "[mm]: a first point further away is refused")
         ->capture_default_str()
         ->check(CLI::Range(0.0, 2000.0));
-    circ->add_option("--segments", drawing.segments, "Lines per turn for path (default 36) and lines (default 12)")
-        ->check(CLI::Range(3, 360));
-    circ->add_option("--gain", drawing.gain, "[1/s] velocity mode's position correction")
-        ->capture_default_str()
-        ->check(CLI::Range(0.0, 50.0));
-    circ->add_option("--save", drawing.save, "Write the plan as CSV, a row every 8 ms");
+    circ->add_flag("--stream", drawing.stream, "Push the poses live, each solved, instead of playing the plan");
+    circ->add_option("--save", drawing.save, "Write the plan as CSV, a row per trajectory point");
     app.add_subcommand("stop", "Stop whatever moves the arm");
     app.add_subcommand("acknowledge", "Clear a latched fault");
     if (const auto code = cli::parse(app, argc, argv)) return *code;
     if (circ->parsed()) {
-        const auto mode = circle::parse_mode(mode_name);
-        if (!mode) return cli::kUsage;  // CLI11 checked it already
-        drawing.mode = *mode;
         drawing.center_mm = vec3(center);
         if (auto n = vec3(normal)) drawing.normal = *n;
         drawing.start_toward = vec3(start_toward);

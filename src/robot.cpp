@@ -121,29 +121,31 @@ std::expected<motion::Session<Joints>, motion::Error> Robot::velocity(const moti
     return open(std::move(channel), std::move(job));
 }
 
-std::expected<motion::Session<std::optional<motion::JogDirection>>, motion::Error> Robot::jog(
-    const motion::JogOptions& options) {
-    auto channel = std::make_shared<motion::Channel<std::optional<motion::JogDirection>>>();
-    auto job = run(motion::JogStream(options, channel));
-    return open(std::move(channel), std::move(job));
-}
-
-std::expected<motion::Session<Pose>, motion::Error> Robot::servo_pose(const motion::PoseServoOptions& options) {
-    auto channel = std::make_shared<motion::Channel<Pose>>();
-    auto job = run(motion::PoseServoStream(options, channel));
-    return open(std::move(channel), std::move(job));
-}
-
-std::expected<Joints, motion::Error> Robot::inverse_kinematics(const Pose& pose, const Joints& reference) {
-    auto joints = call(command::InverseKinematic{.target = to_mm_rad(pose), .reference = rad_to_deg(reference)});
+std::expected<Joints, motion::Error> Robot::ik(const Eigen::Isometry3d& T_base_tcp, const Joints& near) {
+    auto joints = call(command::InverseKinematic{.target = to_mm_rad(T_base_tcp), .reference = rad_to_deg(near)});
     if (!joints) return std::unexpected(std::move(joints.error()));
-    return nearest_turn(deg_to_rad(*joints), reference, kEc66JointLimit);  // in case it comes within one turn
+    return nearest_turn(deg_to_rad(*joints), near, kEc66JointLimit);  // in case it comes within one turn
 }
 
-std::expected<Pose, motion::Error> Robot::forward_kinematics(const Joints& joints) {
+std::expected<Eigen::Isometry3d, motion::Error> Robot::fk(const Joints& joints) {
     auto pose = call(command::PositiveKinematic{.joints = rad_to_deg(joints)});
     if (!pose) return std::unexpected(std::move(pose.error()));
     return from_mm_rad(*pose);
+}
+
+motion::Job Robot::move_joints(const motion::MoveJoint& move) { return run(move); }
+
+std::expected<motion::JointTrajectory, motion::Error> Robot::plan(std::span<const motion::TimedPose> path,
+                                                                  const motion::PlanOptions& options) {
+    const auto now = state();
+    if (!now) return std::unexpected(motion::Error{motion::Error::Kind::Refused, "no state yet", {}});
+    return motion::plan(
+        path, now->state.joint_position,
+        [this](const Eigen::Isometry3d& T_base_tcp, const Joints& near) { return ik(T_base_tcp, near); }, options);
+}
+
+motion::Job Robot::play(motion::JointTrajectory trajectory, double speed) {
+    return run(motion::PlayTrajectory{.path = std::move(trajectory), .speed = speed});
 }
 
 void Robot::stop() noexcept { impl_->loop->stop(); }

@@ -1,6 +1,7 @@
 #include "ec/motion/control_loop.hpp"
 
 #include <algorithm>
+#include <condition_variable>
 #include <exception>
 #include <format>
 #include <utility>
@@ -46,8 +47,9 @@ using Request = std::variant<StartRequest, CancelRequest, AcknowledgeRequest, Pe
 /// What the applications' threads and the loop share.
 struct Requests {
     std::mutex mutex;
-    std::vector<Request> pending;  // guarded by mutex
-    bool closed = false;           // guarded by mutex: the loop has ended
+    std::condition_variable woken;  // a call was queued: the loop answers it between cycles
+    std::vector<Request> pending;   // guarded by mutex
+    bool closed = false;            // guarded by mutex: the loop has ended
     std::atomic<bool> stop{false};
     std::atomic<Ticket> next_ticket{1};
 };
@@ -157,6 +159,7 @@ std::expected<command::Json, Error> ControlLoop::call(command::Request request, 
         if (requests_->closed) return std::unexpected(loop_ended("the control loop has ended"));
         requests_->pending.emplace_back(detail::PendingCall{std::move(request), kind, std::move(done)});
     }
+    requests_->woken.notify_one();
     if (answer.wait_for(kAnswerTimeout) != std::future_status::ready)
         return std::unexpected(Error{Error::Kind::Timeout, "the control loop did not answer", {}});
     return answer.get();
@@ -184,7 +187,7 @@ void ControlLoop::run(const std::stop_token& stop) {
     try {
         for (;;) {
             deadline += period;
-            std::this_thread::sleep_until(deadline);
+            wait_until(deadline);
             const auto now = Clock::now();
 
             // Timing: count late starts; far behind, give up catching up.
@@ -252,6 +255,30 @@ void ControlLoop::run(const std::stop_token& stop) {
         return;
     }
     fail_everything("the control loop has ended");
+}
+
+void ControlLoop::wait_until(Clock::time_point deadline) {
+    const auto has_call = [this] {
+        return std::ranges::any_of(requests_->pending, [](const detail::Request& r) {
+            return std::holds_alternative<detail::PendingCall>(r);
+        });
+    };
+    while (Clock::now() < deadline) {  // past the deadline, the cycle goes first
+        {
+            std::unique_lock lock(requests_->mutex);
+            if (!requests_->woken.wait_until(lock, deadline, has_call)) return;
+            auto& pending = requests_->pending;  // take the calls; the other requests wait for the cycle
+            for (auto it = pending.begin(); it != pending.end();) {
+                if (auto* call = std::get_if<detail::PendingCall>(&*it)) {
+                    calls_.push_back(std::move(*call));
+                    it = pending.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+        }
+        serve_calls();
+    }
 }
 
 Cycle ControlLoop::read_inputs(Clock::time_point now) const {

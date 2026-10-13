@@ -286,27 +286,4 @@ TEST(VelocityStream, CloseSendsStopjAndWaitsForRest) {
     EXPECT_TRUE(b.close(v.stream, End::Faulted));
 }
 
-TEST(JogStream, JogsWhilePushedRepeatsAndStopsWhenStale) {
-    Bench b;
-    auto channel = std::make_shared<Channel<std::optional<ec::motion::JogDirection>>>();
-    ec::motion::JogStream jog(ec::motion::JogOptions{.speed = 0.2}, channel);
-    channel->push(ec::motion::JogDirection{.axis = 2, .positive = false}, b.now);
-    ASSERT_TRUE(b.step(jog));
-    ASSERT_EQ(b.methods(), std::vector<std::string>{"jog"});
-    EXPECT_EQ(b.sent[0].params, Json::parse(R"({"index":4,"speed":20.0})"));
-    for (int i = 0; i < 25; ++i) {  // 200 ms later: repeated
-        channel->push(ec::motion::JogDirection{.axis = 2, .positive = false}, b.now);
-        ASSERT_TRUE(b.step(jog));
-    }
-    EXPECT_EQ(b.count("jog"), 2u);
-    channel->push(std::nullopt, b.now);
-    ASSERT_TRUE(b.step(jog));
-    EXPECT_EQ(b.sent.back().method, "stop");
-    channel->push(ec::motion::JogDirection{.axis = 0, .positive = true}, b.now);
-    ASSERT_TRUE(b.step(jog));
-    EXPECT_EQ(b.sent.back().params["index"], 1);
-    for (int i = 0; i < 20; ++i) ASSERT_TRUE(b.step(jog));  // no more pushes: stale after 100 ms
-    EXPECT_EQ(b.sent.back().method, "stop");
-}
-
 }  // namespace

@@ -1,81 +1,41 @@
 #pragma once
 /// @file
-/// A Cartesian pose in SI units, with the controller's rotation convention:
-/// R = Rz(rz) * Ry(ry) * Rx(rx), measured on the EA66 (ADR 0012). Also the few
-/// vector operations the paths need, and the conversion to the controller's
-/// units (mm, rad).
+/// Poses of frames as rigid transforms, Eigen::Isometry3d, in SI units (m, rad),
+/// and their conversion to and from the controller's units.
+///
+/// Notation: T_ab is the pose of frame b in frame a. It maps coordinates given
+/// in b to coordinates in a, p_a = T_ab * p_b. Its translation r_ab_a is where
+/// b's origin is, along a's axes; its rotation q_ab turns vectors from b's axes
+/// into a's, v_a = q_ab * v_b. Poses chain as T_ac = T_ab * T_bc, and
+/// T_ba = T_ab.inverse(). Code spells the frames out: T_base_tcp is the pose of
+/// the current tool's centre point in the robot's base frame.
+///
+/// The controller writes a pose as x, y, z [mm] and rx, ry, rz [rad], the
+/// rotation being R = Rz(rz) * Ry(ry) * Rx(rx) (measured on the EA66, ADR 0012).
 
-#include <algorithm>
+#include <Eigen/Geometry>
 #include <array>
-#include <cmath>
-
-#include "ec/units.hpp"
 
 namespace ec {
 
-using Vec3 = std::array<double, 3>;
-using Matrix3 = std::array<std::array<double, 3>, 3>;
+/// The rotation of the controller's angles [rad]: Rz(rz) * Ry(ry) * Rx(rx).
+[[nodiscard]] Eigen::Matrix3d rotation_from_rxyz(double rx, double ry, double rz) noexcept;
 
-/// A pose: a position [m] and the controller's rotation angles rx, ry, rz [rad].
-struct Pose {
-    Vec3 position{};
-    Vec3 rotation{};
-    bool operator==(const Pose&) const = default;
-};
+/// The controller's angles of a rotation: rx and rz in [-pi, pi], ry in
+/// [-pi/2, pi/2]. At ry = +-pi/2 only rx + rz or rx - rz is defined; rx is then 0.
+[[nodiscard]] Eigen::Vector3d rxyz_from_rotation(const Eigen::Matrix3d& r) noexcept;
 
-// ---- vectors
-
-[[nodiscard]] constexpr Vec3 add(const Vec3& a, const Vec3& b) noexcept {
-    return {a[0] + b[0], a[1] + b[1], a[2] + b[2]};
-}
-[[nodiscard]] constexpr Vec3 sub(const Vec3& a, const Vec3& b) noexcept {
-    return {a[0] - b[0], a[1] - b[1], a[2] - b[2]};
-}
-[[nodiscard]] constexpr Vec3 mul(const Vec3& a, double k) noexcept { return {a[0] * k, a[1] * k, a[2] * k}; }
-[[nodiscard]] constexpr double dot(const Vec3& a, const Vec3& b) noexcept {
-    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-}
-[[nodiscard]] constexpr Vec3 cross(const Vec3& a, const Vec3& b) noexcept {
-    return {a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]};
-}
-[[nodiscard]] inline double norm(const Vec3& a) noexcept { return std::hypot(a[0], a[1], a[2]); }
-
-/// The distance [m] between two positions.
-[[nodiscard]] inline double distance(const Vec3& a, const Vec3& b) noexcept { return norm(sub(a, b)); }
-
-// ---- rotations
-
-/// The rotation matrix of rx, ry, rz: Rz(rz) * Ry(ry) * Rx(rx).
-[[nodiscard]] inline Matrix3 rotation_matrix(const Vec3& r) noexcept {
-    const double cx = std::cos(r[0]), sx = std::sin(r[0]);
-    const double cy = std::cos(r[1]), sy = std::sin(r[1]);
-    const double cz = std::cos(r[2]), sz = std::sin(r[2]);
-    return {{{cz * cy, cz * sy * sx - sz * cx, cz * sy * cx + sz * sx},
-             {sz * cy, sz * sy * sx + cz * cx, sz * sy * cx - cz * sx},
-             {-sy, cy * sx, cy * cx}}};
-}
-
-/// The angle [rad] of the rotation that takes orientation `a` to `b`, in [0, pi].
-[[nodiscard]] inline double rotation_between(const Vec3& a, const Vec3& b) noexcept {
-    const Matrix3 ra = rotation_matrix(a);
-    const Matrix3 rb = rotation_matrix(b);
-    double trace = 0.0;  // trace(ra^T * rb)
-    for (std::size_t i = 0; i < 3; ++i)
-        for (std::size_t k = 0; k < 3; ++k) trace += ra[k][i] * rb[k][i];
-    return std::acos(std::clamp((trace - 1.0) / 2.0, -1.0, 1.0));
-}
-
-// ---- the controller's units
-
-/// The pose as the controller writes one: x, y, z [mm], rx, ry, rz [rad].
-[[nodiscard]] constexpr std::array<double, 6> to_mm_rad(const Pose& p) noexcept {
-    return {p.position[0] * 1000.0, p.position[1] * 1000.0, p.position[2] * 1000.0,
-            p.rotation[0],          p.rotation[1],          p.rotation[2]};
-}
+/// A pose from a position [m] and the controller's angles rx, ry, rz [rad].
+[[nodiscard]] Eigen::Isometry3d isometry(const std::array<double, 3>& position,
+                                         const std::array<double, 3>& rxyz) noexcept;
 
 /// A pose the controller wrote: x, y, z [mm], rx, ry, rz [rad].
-[[nodiscard]] constexpr Pose from_mm_rad(const std::array<double, 6>& p) noexcept {
-    return {{p[0] / 1000.0, p[1] / 1000.0, p[2] / 1000.0}, {p[3], p[4], p[5]}};
-}
+[[nodiscard]] Eigen::Isometry3d from_mm_rad(const std::array<double, 6>& pose) noexcept;
+
+/// A pose as the controller writes one: x, y, z [mm], rx, ry, rz [rad].
+[[nodiscard]] std::array<double, 6> to_mm_rad(const Eigen::Isometry3d& pose) noexcept;
+
+/// The angle [rad] of the rotation that takes orientation `a` to `b`, in [0, pi].
+[[nodiscard]] double angle_between(const Eigen::Matrix3d& a, const Eigen::Matrix3d& b) noexcept;
 
 }  // namespace ec

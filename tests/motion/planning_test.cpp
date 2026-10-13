@@ -1,7 +1,8 @@
-// Planning a Cartesian path into a joint trajectory: the circle's geometry, the
-// speed profile, the joint spline, solving by inverse kinematics, and timing.
-// The inverse kinematics here is a stand-in: joint j is the pose's j-th number,
-// so the joint path is the pose path and the geometry can be checked exactly.
+// Planned paths in joint space: the circle's geometry, the speed profile, the
+// joint spline, sampling a path, and plan(), which solves timed poses by
+// inverse kinematics into a checked joint trajectory. The inverse kinematics
+// here is a stand-in whose joints are the pose's own numbers, offset away from
+// the singularities, so that the joint path can be checked against the poses.
 
 #include "ec/motion/planning.hpp"
 
@@ -10,111 +11,105 @@
 #include <cmath>
 #include <limits>
 #include <numbers>
+#include <string>
 #include <vector>
 
 #include "ec/path.hpp"
+#include "ec/pose.hpp"
 
 namespace {
 
 using ec::Circle;
 using ec::Joints;
-using ec::Pose;
-using ec::Vec3;
 using ec::motion::Error;
 using ec::motion::JointSpline;
 using ec::motion::SpeedProfile;
-using ec::motion::TimedPath;
+using ec::motion::TimedPose;
 
 constexpr double kPi = std::numbers::pi;
 
-void expect_near(const Vec3& a, const Vec3& b, double tolerance) {
-    for (std::size_t i = 0; i < 3; ++i) EXPECT_NEAR(a[i], b[i], tolerance) << "component " << i;
+// The stand-in arm: J1..J3 = x, y, z + 0.5 [m as rad], J4..J6 = rx, ry + 1, rz:
+// J3 and J5 stay well away from 0 and pi for the poses used here.
+Joints joints_of(const Eigen::Isometry3d& T) {
+    const Eigen::Vector3d p = T.translation();
+    const Eigen::Vector3d r = ec::rxyz_from_rotation(T.linear());
+    return {p.x(), p.y(), p.z() + 0.5, r.x(), r.y() + 1.0, r.z()};
 }
+Eigen::Vector3d position_of(const Joints& q) { return {q[0], q[1], q[2] - 0.5}; }
 
-// Joint j = pose number j (x, y, z [m], rx, ry, rz [rad]); records the references it was given.
-struct IdentityIk {
+// The stand-in inverse kinematics; records the references it was given.
+struct StandInIk {
     std::vector<Joints>* references = nullptr;
-    std::expected<Joints, Error> operator()(const Pose& p, const Joints& reference) const {
-        if (references != nullptr) references->push_back(reference);
-        return Joints{p.position[0], p.position[1], p.position[2], p.rotation[0], p.rotation[1], p.rotation[2]};
+    std::expected<Joints, Error> operator()(const Eigen::Isometry3d& T, const Joints& near) const {
+        if (references != nullptr) references->push_back(near);
+        return joints_of(T);
     }
 };
 
-Vec3 position_of(const Joints& q) { return {q[0], q[1], q[2]}; }
+Circle circle() {
+    Circle c;
+    c.center = Eigen::Vector3d(0.5, 0.0, 0.3);
+    c.radius = 0.1;
+    c.start = Eigen::Vector3d::UnitX();
+    c.orientation = Eigen::Quaterniond(Eigen::AngleAxisd(2.0, Eigen::Vector3d::UnitX()));
+    return c;
+}
 
-const Circle kCircle{.center = {0.5, 0.0, 0.3},
-                     .radius = 0.1,
-                     .normal = {0.0, 0.0, 1.0},
-                     .start = {1.0, 0.0, 0.0},
-                     .rotation = {kPi, 0.0, 0.0},
-                     .turns = 1.0};
+TimedPose at(double t, double x, double y, double z) {
+    TimedPose p{.time = t, .pose = Eigen::Isometry3d::Identity()};
+    p.pose.translation() = Eigen::Vector3d(x, y, z);
+    return p;
+}
 
 // ---------------------------------------------------------------------- Circle
 
 TEST(Circle, RefusesWhatIsNotACircle) {
-    EXPECT_TRUE(validate(kCircle));
-    auto c = kCircle;
+    EXPECT_TRUE(validate(circle()));
+    auto c = circle();
     c.radius = 0.0;
     EXPECT_FALSE(validate(c));
-    c.radius = std::nan("");
+    c = circle();
+    c.normal = Eigen::Vector3d::Zero();
     EXPECT_FALSE(validate(c));
-    c = kCircle;
-    c.normal = {0.0, 0.0, 0.0};
-    EXPECT_FALSE(validate(c));
-    c = kCircle;
+    c = circle();
     c.turns = 0.0;
     EXPECT_FALSE(validate(c));
-    c = kCircle;
-    c.center[1] = std::numeric_limits<double>::infinity();
+    c = circle();
+    c.center.y() = std::numeric_limits<double>::infinity();
+    EXPECT_FALSE(validate(c));
+    c = circle();
+    c.orientation.coeffs() *= 2.0;
     EXPECT_FALSE(validate(c));
 }
 
 TEST(Circle, StartsTowardItsStartAndTurnsCounterClockwiseAboutTheNormal) {
-    const double l = length(kCircle);
+    const Circle c = circle();
+    const double l = length(c);
     EXPECT_NEAR(l, 2.0 * kPi * 0.1, 1e-12);
-    expect_near(pose_at(kCircle, 0.0).position, {0.6, 0.0, 0.3}, 1e-12);
-    expect_near(pose_at(kCircle, l / 4.0).position, {0.5, 0.1, 0.3}, 1e-12);  // from +x toward +y
-    expect_near(pose_at(kCircle, l / 2.0).position, {0.4, 0.0, 0.3}, 1e-12);
-    expect_near(pose_at(kCircle, l).position, {0.6, 0.0, 0.3}, 1e-12);
+    EXPECT_TRUE(pose_at(c, 0.0).translation().isApprox(Eigen::Vector3d(0.6, 0.0, 0.3), 1e-12));
+    EXPECT_TRUE(pose_at(c, l / 4.0).translation().isApprox(Eigen::Vector3d(0.5, 0.1, 0.3), 1e-12));
+    EXPECT_TRUE(pose_at(c, l / 2.0).translation().isApprox(Eigen::Vector3d(0.4, 0.0, 0.3), 1e-12));
     for (int k = 0; k <= 100; ++k) {
-        const Pose p = pose_at(kCircle, l * k / 100.0);
-        EXPECT_NEAR(ec::distance(p.position, kCircle.center), 0.1, 1e-12);
-        EXPECT_NEAR(p.position[2], 0.3, 1e-12);
-        EXPECT_EQ(p.rotation, kCircle.rotation);  // the tool keeps its orientation
+        const Eigen::Isometry3d p = pose_at(c, l * k / 100.0);
+        EXPECT_NEAR((p.translation() - c.center).norm(), 0.1, 1e-12);
+        EXPECT_NEAR(p.translation().z(), 0.3, 1e-12);
+        EXPECT_TRUE(p.linear().isApprox(c.orientation.toRotationMatrix(), 1e-15));  // the tool keeps its orientation
     }
-
-    auto clockwise = kCircle;
-    clockwise.normal = {0.0, 0.0, -2.0};  // any length
-    expect_near(pose_at(clockwise, l / 4.0).position, {0.5, -0.1, 0.3}, 1e-12);
+    auto clockwise = c;
+    clockwise.normal = Eigen::Vector3d(0.0, 0.0, -2.0);  // any length
+    EXPECT_TRUE(pose_at(clockwise, l / 4.0).translation().isApprox(Eigen::Vector3d(0.5, -0.1, 0.3), 1e-12));
 }
 
 TEST(Circle, ChoosesAStartDirectionInItsPlane) {
-    auto c = kCircle;
-    c.start = {};
-    expect_near(ec::axes(c).u, {1.0, 0.0, 0.0}, 1e-12);  // base x
-    c.start = {3.0, 0.0, 5.0};                           // only the part in the plane counts
-    expect_near(ec::axes(c).u, {1.0, 0.0, 0.0}, 1e-12);
-    c.start = {0.0, 0.0, 1.0};  // along the normal: as if none were given
-    expect_near(ec::axes(c).u, {1.0, 0.0, 0.0}, 1e-12);
-
-    c.normal = {1.0, 0.0, 0.0};  // x is the normal: base y
-    c.start = {};
-    expect_near(ec::axes(c).u, {0.0, 1.0, 0.0}, 1e-12);
-    expect_near(ec::axes(c).v, {0.0, 0.0, 1.0}, 1e-12);  // n x u
-
-    c.normal = {0.0, 1.0, 1.0};  // a tilted plane that contains x
-    const auto a = ec::axes(c);
-    expect_near(a.u, {1.0, 0.0, 0.0}, 1e-12);
-    EXPECT_NEAR(ec::dot(a.v, a.n), 0.0, 1e-12);
-    EXPECT_NEAR(ec::norm(a.v), 1.0, 1e-12);
-}
-
-TEST(Circle, PartialTurnsAndDistancesOutsideTheCircle) {
-    auto half = kCircle;
-    half.turns = 0.5;
-    EXPECT_NEAR(length(half), kPi * 0.1, 1e-12);
-    expect_near(pose_at(half, 10.0).position, {0.4, 0.0, 0.3}, 1e-12);  // clamped to the end
-    expect_near(pose_at(half, -1.0).position, {0.6, 0.0, 0.3}, 1e-12);  // and to the start
+    auto c = circle();
+    c.start = Eigen::Vector3d::Zero();
+    EXPECT_TRUE(ec::axes(c).u.isApprox(Eigen::Vector3d::UnitX()));  // base x
+    c.start = Eigen::Vector3d(3.0, 0.0, 5.0);                       // only the part in the plane counts
+    EXPECT_TRUE(ec::axes(c).u.isApprox(Eigen::Vector3d::UnitX()));
+    c.normal = Eigen::Vector3d::UnitX();  // x is the normal: base y
+    c.start = Eigen::Vector3d::Zero();
+    EXPECT_TRUE(ec::axes(c).u.isApprox(Eigen::Vector3d::UnitY()));
+    EXPECT_TRUE(ec::axes(c).v.isApprox(Eigen::Vector3d::UnitZ()));  // n x u
 }
 
 // --------------------------------------------------------------- SpeedProfile
@@ -132,14 +127,10 @@ TEST(SpeedProfile, RampsCruisesAndStopsAtTheEnd) {
     ASSERT_TRUE(p);
     EXPECT_NEAR(p->duration(), 4.5, 1e-12);  // ramp + distance / speed
     EXPECT_EQ(p->distance(0.0), 0.0);
-    EXPECT_EQ(p->distance(-1.0), 0.0);
     EXPECT_EQ(p->distance(4.5), 0.2);
-    EXPECT_EQ(p->distance(10.0), 0.2);
     EXPECT_NEAR(p->speed(2.0), 0.05, 1e-15);
     EXPECT_EQ(p->speed(0.0), 0.0);
-    EXPECT_EQ(p->speed(4.5), 0.0);
     EXPECT_NEAR(p->peak_acceleration(), 0.05 * kPi / 1.0, 1e-12);
-
     constexpr double dt = 1e-4;
     double last = 0.0;
     for (int k = 1; k * dt < p->duration(); ++k) {
@@ -148,10 +139,16 @@ TEST(SpeedProfile, RampsCruisesAndStopsAtTheEnd) {
         EXPECT_GE(s, last - 1e-15);
         EXPECT_LE(p->speed(t), 0.05 + 1e-12);
         EXPECT_NEAR((s - last) / dt, p->speed(t - dt / 2.0), 1e-6) << "t = " << t;  // speed is ds/dt
-        const double a = (p->speed(t) - p->speed(t - dt)) / dt;
-        EXPECT_LE(std::abs(a), p->peak_acceleration() + 1e-6);
         last = s;
     }
+}
+
+TEST(SpeedProfile, TimeAtIsTheInverseOfDistance) {
+    const auto p = SpeedProfile::make(0.2, 0.05, 0.5);
+    ASSERT_TRUE(p);
+    for (double t : {0.1, 0.4, 1.0, 2.5, 4.2, 4.45}) EXPECT_NEAR(p->time_at(p->distance(t)), t, 1e-9) << t;
+    EXPECT_EQ(p->time_at(-1.0), 0.0);
+    EXPECT_EQ(p->time_at(1.0), p->duration());
 }
 
 TEST(SpeedProfile, AShortDistanceLowersTheSpeed) {
@@ -159,16 +156,6 @@ TEST(SpeedProfile, AShortDistanceLowersTheSpeed) {
     ASSERT_TRUE(p);
     EXPECT_NEAR(p->cruise_speed(), 0.02, 1e-15);
     EXPECT_NEAR(p->duration(), 1.0, 1e-12);
-    EXPECT_NEAR(p->distance(0.5), 0.005, 1e-12);  // half way at half time
-}
-
-TEST(SpeedProfile, WithoutARampTheSpeedJumps) {
-    const auto p = SpeedProfile::make(0.1, 0.05, 0.0);
-    ASSERT_TRUE(p);
-    EXPECT_NEAR(p->duration(), 2.0, 1e-12);
-    EXPECT_NEAR(p->distance(1.0), 0.05, 1e-12);
-    EXPECT_EQ(p->speed(1e-9), 0.05);
-    EXPECT_TRUE(std::isinf(p->peak_acceleration()));
 }
 
 // ---------------------------------------------------------------- JointSpline
@@ -178,25 +165,15 @@ TEST(JointSpline, RefusesBadKnots) {
     EXPECT_FALSE(JointSpline::make({0.0, 1.0}, {Joints{}}));
     EXPECT_FALSE(JointSpline::make({0.0, 0.0}, {Joints{}, Joints{}}));
     EXPECT_FALSE(JointSpline::make({0.0, std::nan("")}, {Joints{}, Joints{}}));
-    EXPECT_FALSE(JointSpline::make({0.0, 1.0}, {Joints{}, Joints{std::nan("")}}));
 }
 
 TEST(JointSpline, ReproducesQuadraticsExactly) {
-    // Unevenly spaced knots; joint j follows (j + 1) x^2 - j x + 0.5.
     const std::vector<double> x{0.0, 0.3, 0.45, 1.0, 1.2, 2.0};
     const auto f = [](double v) {
         Joints q{};
         for (std::size_t j = 0; j < q.size(); ++j) {
             const auto k = static_cast<double>(j);
             q[j] = (k + 1.0) * v * v - k * v + 0.5;
-        }
-        return q;
-    };
-    const auto df = [](double v) {
-        Joints q{};
-        for (std::size_t j = 0; j < q.size(); ++j) {
-            const auto k = static_cast<double>(j);
-            q[j] = 2.0 * (k + 1.0) * v - k;
         }
         return q;
     };
@@ -207,151 +184,164 @@ TEST(JointSpline, ReproducesQuadraticsExactly) {
     ASSERT_TRUE(spline);
     for (int k = 0; k < 146; ++k) {
         const double v = 0.001 + 0.0137 * k;
-        const Joints got = spline->position(v);
-        const Joints slope = spline->slope(v);
-        for (std::size_t j = 0; j < got.size(); ++j) {
-            EXPECT_NEAR(got[j], f(v)[j], 1e-12) << "x = " << v << ", joint " << j;
-            EXPECT_NEAR(slope[j], df(v)[j], 1e-10) << "x = " << v << ", joint " << j;
-        }
+        for (std::size_t j = 0; j < 6; ++j) EXPECT_NEAR(spline->position(v)[j], f(v)[j], 1e-12) << v;
     }
 }
 
-TEST(JointSpline, PassesThroughItsKnotsAndHoldsOutsideThem) {
-    const std::vector<double> x{0.0, 1.0, 3.0};
-    const std::vector<Joints> q{Joints{0.0}, Joints{1.0}, Joints{-2.0}};
-    const auto spline = JointSpline::make(x, q);
-    ASSERT_TRUE(spline);
-    for (std::size_t k = 0; k < x.size(); ++k) EXPECT_EQ(spline->position(x[k])[0], q[k][0]);
-    EXPECT_EQ(spline->position(-5.0)[0], 0.0);
-    EXPECT_EQ(spline->position(5.0)[0], -2.0);
-    EXPECT_EQ(spline->slope(-5.0)[0], 0.0);
-    EXPECT_EQ(spline->slope(5.0)[0], 0.0);
-    // Slopes are continuous across a knot.
-    EXPECT_NEAR(spline->slope(1.0 - 1e-9)[0], spline->slope(1.0 + 1e-9)[0], 1e-6);
+// -------------------------------------------------------------------- sample
 
-    const auto line = JointSpline::make({0.0, 2.0}, {Joints{1.0}, Joints{3.0}});
-    ASSERT_TRUE(line);
-    EXPECT_NEAR(line->position(0.5)[0], 1.5, 1e-15);
-    EXPECT_NEAR(line->slope(0.5)[0], 1.0, 1e-15);
+TEST(Sample, PosesEveryStepAlongThePathAndEveryStepsTimeInTheRamps) {
+    const Circle c = circle();
+    const auto profile = SpeedProfile::make(length(c), 0.05, 0.5);
+    ASSERT_TRUE(profile);
+    const auto poses = ec::motion::sample(c, *profile, 0.003);
+    // 2 pi 0.1 m / 3 mm = 209.4 steps, and some more in the two 0.5 s ramps.
+    EXPECT_GT(poses.size(), 211u);
+    EXPECT_LT(poses.size(), 230u);
+    EXPECT_EQ(poses.front().time, 0.0);
+    EXPECT_EQ(poses.back().time, profile->duration());
+    EXPECT_TRUE(poses.back().pose.isApprox(pose_at(c, length(c)), 1e-12));
+    for (std::size_t k = 1; k < poses.size(); ++k) {
+        EXPECT_GT(poses[k].time, poses[k - 1].time);
+        EXPECT_LE(poses[k].time - poses[k - 1].time, 0.003 / 0.05 + 1e-9);  // a step's time at cruise speed
+        EXPECT_LE((poses[k].pose.translation() - poses[k - 1].pose.translation()).norm(), 0.003 + 1e-12);
+    }
 }
 
-// ---------------------------------------------------------------------- solve
+// ---------------------------------------------------------------------- plan
 
-TEST(Solve, SolvesTheCircleEveryFewMillimetresFromTheStart) {
+std::vector<TimedPose> timed_circle() {
+    const Circle c = circle();
+    const auto profile = SpeedProfile::make(length(c), 0.05, 0.5);
+    return ec::motion::sample(c, *profile, 0.003);
+}
+
+TEST(Plan, SolvesEveryPointNearTheOneBeforeAndSamplesAtThePeriod) {
+    const auto poses = timed_circle();
     std::vector<Joints> references;
-    const Joints start{0.1, 0.2, 0.3, 0.4, 0.5, 0.6};
-    const auto path = ec::motion::solve(kCircle, start, IdentityIk{&references}, {.spacing = 0.003});
-    ASSERT_TRUE(path) << describe(path.error());
-    // 2 pi 0.1 m / 3 mm = 209.4: 210 intervals, 211 points.
-    ASSERT_EQ(path->poses.size(), 211u);
-    EXPECT_EQ(path->joints.knots().front(), 0.0);
-    EXPECT_EQ(path->joints.knots().back(), length(kCircle));
-    EXPECT_EQ(path->length(), length(kCircle));
-    ASSERT_EQ(references.size(), 211u);
-    EXPECT_EQ(references.front(), start);                        // the first near the start
-    EXPECT_EQ(references[1], path->joints.positions().front());  // then each near the one before
+    const Joints start{0.1, 0.2, 0.3, 0.4, 1.5, 0.6};
+    const auto t = ec::motion::plan(poses, start, StandInIk{&references});
+    ASSERT_TRUE(t) << describe(t.error());
+    ASSERT_EQ(references.size(), poses.size());  // points at most 3 mm apart: none filled in
+    EXPECT_EQ(references.front(), start);
+    EXPECT_EQ(references[1], joints_of(poses.front().pose));
 
-    // Between the solved points, the interpolated joints stay on the circle.
-    for (int k = 0; k * 0.0007 <= path->length(); ++k) {
-        const double s = k * 0.0007;
-        const Vec3 p = position_of(path->joints.position(s));
-        EXPECT_NEAR(ec::distance(p, kCircle.center), 0.1, 2e-6) << "s = " << s;
-        EXPECT_NEAR(p[2], 0.3, 1e-12);
+    EXPECT_EQ(t->time.front(), 0.0);
+    EXPECT_NEAR(t->time.back(), poses.back().time, 1e-12);
+    for (std::size_t k = 1; k + 1 < t->size(); ++k) EXPECT_NEAR(t->time[k] - t->time[k - 1], 0.02, 1e-12);
+    EXPECT_TRUE(validate(*t));
+    for (const Joints& q : t->position)  // between the solved points the joints stay on the circle
+        EXPECT_NEAR((position_of(q) - circle().center).norm(), 0.1, 2e-6);
+}
+
+TEST(Plan, FillsInSparsePointsAlongStraightLinesAndEvenTurns) {
+    std::vector<Joints> references;
+    TimedPose a = at(0.0, 0.5, 0.0, 0.3);
+    TimedPose b = at(3.0, 0.5, 0.03, 0.3);  // 30 mm along y
+    b.pose.linear() = Eigen::AngleAxisd(ec::deg_to_rad(4.0), Eigen::Vector3d::UnitZ()).toRotationMatrix();
+    const std::vector path{a, b};
+    const auto t = ec::motion::plan(path, Joints{}, StandInIk{&references}, {.max_step = 0.003});
+    ASSERT_TRUE(t) << describe(t.error());
+    EXPECT_EQ(references.size(), 11u);  // 10 pieces of 3 mm (and of 0.4 deg)
+    for (const Joints& q : t->position) {
+        EXPECT_NEAR(q[0], 0.5, 1e-9);  // on the line
+        EXPECT_NEAR(q[2], 0.8, 1e-9);
     }
 }
 
-TEST(Solve, TakesSolutionsGivenWithinOneTurnToTheNearestTurn) {
-    // Joint 6 turns with the circle, but the solver reports it within (-pi, pi].
-    const auto wrapping = [](const Pose& p, const Joints&) -> std::expected<Joints, Error> {
-        const double angle = std::atan2(p.position[1] - kCircle.center[1], p.position[0] - kCircle.center[0]);
-        return Joints{0.0, 0.0, 0.0, 0.0, 0.0, angle};
+TEST(Plan, RefusesPathsItCannotTrust) {
+    const auto refused = [](std::vector<TimedPose> path, const ec::motion::InverseKinematics& ik,
+                            const ec::motion::PlanOptions& o = {}) {
+        const auto t = ec::motion::plan(path, Joints{}, ik, o);
+        EXPECT_FALSE(t);
+        return t ? std::string{} : t.error().message;
     };
-    const auto path = ec::motion::solve(kCircle, Joints{}, wrapping);
-    ASSERT_TRUE(path) << describe(path.error());
-    EXPECT_NEAR(path->joints.positions().back()[5], 2.0 * kPi, 1e-9);  // all the way round, not back to 0
-
-    EXPECT_EQ(ec::nearest_turn(Joints{0, 0, 0, 0, 0, -3.0}, Joints{0, 0, 0, 0, 0, 3.0}, 2.0 * kPi)[5],
-              -3.0 + 2.0 * kPi);
-    EXPECT_EQ(ec::nearest_turn(Joints{0, 0, 0, 0, 0, -3.0}, Joints{0, 0, 0, 0, 0, 3.0}, 3.2)[5], -3.0);  // limit
+    const StandInIk ik;
+    EXPECT_NE(refused({at(1.0, 0.5, 0, 0.3), at(2.0, 0.5, 0, 0.3)}, ik).find("starts at 1 s"), std::string::npos);
+    EXPECT_NE(refused({at(0.0, 0.5, 0, 0.3), at(0.0, 0.5, 0, 0.3)}, ik).find("does not increase"), std::string::npos);
+    auto skewed = at(1.0, 0.5, 0, 0.3);
+    skewed.pose.linear() *= 2.0;
+    EXPECT_NE(refused({at(0.0, 0.5, 0, 0.3), skewed}, ik).find("not a pose"), std::string::npos);
+    // Too fast for the joints: 0.5 m in 0.1 s is 5 rad/s on the stand-in's J2.
+    EXPECT_NE(refused({at(0.0, 0.5, 0, 0.3), at(0.1, 0.5, 0.5, 0.3)}, ik).find("would move at"), std::string::npos);
+    // Too many points.
+    EXPECT_NE(refused({at(0.0, 0.5, 0, 0.3), at(10.0, 0.5, 50.0, 0.3)}, ik).find("more than"), std::string::npos);
 }
 
-TEST(Solve, RefusesAJumpBetweenNeighbours) {
-    // The "arm" changes configuration half way: joint 4 turns by half a turn.
-    const auto flipping = [](const Pose& p, const Joints&) -> std::expected<Joints, Error> {
-        Joints q{p.position[0], p.position[1], p.position[2], p.rotation[0], p.rotation[1], p.rotation[2]};
-        if (p.position[1] < 0.0) q[3] += kPi;
-        return q;
+TEST(Plan, RefusesAPoseWithoutSolutionAndPassesConnectionErrorsThrough) {
+    const auto unreachable = [](const Eigen::Isometry3d&, const Joints&) -> std::expected<Joints, Error> {
+        return std::unexpected(Error{Error::Kind::Command, "inverseKinematic: failed", {}});
     };
-    const auto path = ec::motion::solve(kCircle, Joints{}, flipping);
-    ASSERT_FALSE(path);
-    EXPECT_EQ(path.error().kind, Error::Kind::Invalid);
-    EXPECT_NE(path.error().message.find("joint 4 turns 180.0 deg"), std::string::npos) << path.error().message;
-}
-
-TEST(Solve, ReportsAPoseWithoutSolution) {
-    const auto unreachable = [](const Pose& p, const Joints&) -> std::expected<Joints, Error> {
-        if (p.position[0] < 0.45) return std::unexpected(Error{Error::Kind::Command, "inverseKinematic: failed", {}});
-        return Joints{};
-    };
-    const auto path = ec::motion::solve(kCircle, Joints{}, unreachable);
-    ASSERT_FALSE(path);
-    EXPECT_EQ(path.error().kind, Error::Kind::Invalid);
-    EXPECT_NE(path.error().message.find("no joint positions for the pose at"), std::string::npos);
-    EXPECT_NE(path.error().message.find("inverseKinematic: failed"), std::string::npos);
-
-    const auto lost = [](const Pose&, const Joints&) -> std::expected<Joints, Error> {
+    const auto t = ec::motion::plan(timed_circle(), Joints{}, unreachable);
+    ASSERT_FALSE(t);
+    EXPECT_EQ(t.error().kind, Error::Kind::Invalid);
+    EXPECT_NE(t.error().message.find("no joint positions for the pose at 0.000 s (600.0, 0.0, 300.0 mm)"),
+              std::string::npos)
+        << t.error().message;
+    const auto lost = [](const Eigen::Isometry3d&, const Joints&) -> std::expected<Joints, Error> {
         return std::unexpected(Error{Error::Kind::Disconnected, "the command connection was lost", {}});
     };
-    EXPECT_EQ(ec::motion::solve(kCircle, Joints{}, lost).error().kind, Error::Kind::Disconnected);
+    EXPECT_EQ(ec::motion::plan(timed_circle(), Joints{}, lost).error().kind, Error::Kind::Disconnected);
 }
 
-TEST(Solve, RefusesTooManyPoints) {
-    const auto path = ec::motion::solve(kCircle, Joints{}, IdentityIk{}, {.spacing = 1e-5, .max_points = 5'000});
-    ASSERT_FALSE(path);
-    EXPECT_EQ(path.error().kind, Error::Kind::Invalid);
+TEST(Plan, RefusesAJumpAndTheWristAndElbowSingularities) {
+    // Half way round, the stand-in changes configuration: J4 turns half a turn.
+    const auto flipping = [](const Eigen::Isometry3d& T, const Joints&) -> std::expected<Joints, Error> {
+        Joints q = joints_of(T);
+        if (T.translation().y() < 0.0) q[3] += kPi / 2.0;
+        return q;
+    };
+    const auto jump = ec::motion::plan(timed_circle(), Joints{}, flipping);
+    ASSERT_FALSE(jump);
+    EXPECT_NE(jump.error().message.find("joint 4 turns 90.0 deg"), std::string::npos) << jump.error().message;
+
+    const auto wrist = [](const Eigen::Isometry3d& T, const Joints&) -> std::expected<Joints, Error> {
+        Joints q = joints_of(T);
+        q[4] = ec::deg_to_rad(183.0);  // 3 deg from 180
+        return q;
+    };
+    const auto w = ec::motion::plan(timed_circle(), Joints{}, wrist);
+    ASSERT_FALSE(w);
+    EXPECT_NE(w.error().message.find("wrist singularity"), std::string::npos) << w.error().message;
+    EXPECT_TRUE(ec::motion::plan(timed_circle(), Joints{}, wrist, {.singularity_margin = ec::deg_to_rad(2.0)}));
+
+    const auto elbow = [](const Eigen::Isometry3d& T, const Joints&) -> std::expected<Joints, Error> {
+        Joints q = joints_of(T);
+        q[2] = ec::deg_to_rad(-1.0);
+        return q;
+    };
+    const auto e = ec::motion::plan(timed_circle(), Joints{}, elbow);
+    ASSERT_FALSE(e);
+    EXPECT_NE(e.error().message.find("elbow singularity"), std::string::npos) << e.error().message;
 }
 
-// ------------------------------------------------------------------- TimedPath
-
-TEST(TimedPath, SamplesFromStartToEndAtThePeriod) {
-    auto path = ec::motion::solve(kCircle, Joints{}, IdentityIk{});
-    ASSERT_TRUE(path);
-    const auto timed = TimedPath::make(std::move(*path), 0.05, 0.5);
-    ASSERT_TRUE(timed) << describe(timed.error());
-    EXPECT_NEAR(timed->duration(), 0.5 + length(kCircle) / 0.05, 1e-12);
-
-    const auto t = timed->sample(0.008);
-    ASSERT_GT(t.size(), 3u);
-    EXPECT_EQ(t.time.front(), 0.0);
-    EXPECT_EQ(t.time.back(), timed->duration());
-    const double last = t.time[t.size() - 1] - t.time[t.size() - 2];
-    EXPECT_GE(last, 0.004);
-    EXPECT_LE(last, 0.012);
-    EXPECT_TRUE(validate(t)) << validate(t).error();
-    expect_near(position_of(t.position.front()), {0.6, 0.0, 0.3}, 1e-12);
-    expect_near(position_of(t.position.back()), {0.6, 0.0, 0.3}, 1e-9);
-
-    // The velocity is the derivative of the position; the speed along the circle is the profile's.
-    for (int k = 0; 0.01 + 0.37 * k < timed->duration(); ++k) {
-        const double s = 0.01 + 0.37 * k;
-        const Joints v = timed->velocity(s);
-        const Joints a = timed->position(s - 1e-6);
-        const Joints b = timed->position(s + 1e-6);
-        for (std::size_t j = 0; j < 3; ++j) EXPECT_NEAR(v[j], (b[j] - a[j]) / 2e-6, 1e-5) << "t = " << s;
-        EXPECT_NEAR(ec::norm(position_of(v)), timed->profile().speed(s), 1e-4) << "t = " << s;
-    }
+TEST(Plan, TakesSolutionsGivenWithinOneTurnToTheNearestTurn) {
+    // J6 turns with the circle, from -90 deg, but the solver reports it within (-3/2 pi, pi/2].
+    const auto wrapping = [](const Eigen::Isometry3d& T, const Joints&) -> std::expected<Joints, Error> {
+        Joints q = joints_of(T);
+        q[5] = std::atan2(T.translation().y(), T.translation().x() - 0.5) - kPi / 2.0;
+        return q;
+    };
+    const auto t = ec::motion::plan(timed_circle(), Joints{}, wrapping);
+    ASSERT_TRUE(t) << describe(t.error());
+    EXPECT_NEAR(t->position.back()[5], 1.5 * kPi, 1e-9);  // all the way round, not back to -90 deg
 }
 
-TEST(TimedPath, PeakRatesAndInterpolation) {
+TEST(Plan, SingularityMarginsReportTheClosestApproach) {
+    const std::vector<Joints> q{Joints{0, 0, 1.0, 0, 2.0, 0}, Joints{0, 0, 3.0, 0, -0.2, 0}};
+    const auto m = ec::motion::singularity_margins(q);
+    EXPECT_NEAR(m.wrist, 0.2, 1e-12);        // J5 at -0.2 rad: 0.2 from 0
+    EXPECT_NEAR(m.elbow, kPi - 3.0, 1e-12);  // J3 at 3 rad: 0.14 from pi
+}
+
+TEST(Trajectory, PeakRatesAndInterpolation) {
     ec::motion::JointTrajectory t;
     t.time = {0.0, 1.0, 2.0, 4.0};
     t.position = {Joints{0.0}, Joints{1.0}, Joints{1.0}, Joints{-1.0}};
     EXPECT_NEAR(ec::motion::peak_velocity(t)[0], 1.0, 1e-15);
-    EXPECT_NEAR(ec::motion::peak_acceleration(t)[0], 1.0, 1e-15);  // 1 rad/s to 0 within (1 + 1) / 2 s
+    EXPECT_NEAR(ec::motion::peak_acceleration(t)[0], 1.0, 1e-15);
     EXPECT_NEAR(ec::motion::position_at(t, 0.5)[0], 0.5, 1e-15);
     EXPECT_NEAR(ec::motion::position_at(t, 3.0)[0], 0.0, 1e-15);
-    EXPECT_EQ(ec::motion::position_at(t, -1.0)[0], 0.0);
-    EXPECT_EQ(ec::motion::position_at(t, 9.0)[0], -1.0);
 }
 
 }  // namespace

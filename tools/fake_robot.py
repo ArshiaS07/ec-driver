@@ -8,22 +8,17 @@ for testing the motion layer without the robot (docs/motion.md).
 Simulated, at the monitor rate (8 ms), on an EC66-like arm (tools/kinematics.py):
   - modes, servo power, encoder synchronisation, alarms, collision, E-stop;
   - joint moves (moveByJoint), stop, the speed setting (setSpeed), which scales
-    joint moves and speeds of type V;
-  - Cartesian moves, the joints solved every period: moveByLine and
-    moveByLineCoord (straight lines), moveByArc (the circle through the start,
-    middle and target), and paths (clearPathPoint, addPathPoint, moveByPath;
-    joint and line waypoints, stopping at each: blending is ignored);
+    joint moves;
   - forward and inverse kinematics (positiveKinematic, inverseKinematic, the
     solution nearest the reference), get_tcp_pose, and the TCP pose in frames;
   - transparent transmission: a queue consumed one point per t after the
     lookahead; an empty queue holds the last point (smoothing is ignored);
   - moveBySpeedj / stopj, each command valid for its t;
-  - jog, which stops 1 s after the last jog;
   - timestamped trajectories: upload, check, start, pause, resume, stop, flush.
-Not simulated: arc waypoints in paths, tools and user frames (the TCP is the
-flange, poses are in the base frame), dynamics, the controller's smoothing.
-Where the real controller is not yet measured, the fake does what
-docs/motion.md 7 assumes.
+Not simulated: Cartesian moves (moveByLine, moveByArc, paths: the driver moves
+in joint space), jog, tools and user frames (the TCP is the flange, poses are
+in the base frame), dynamics, the controller's smoothing. Where the real
+controller is not yet measured, the fake does what docs/motion.md 7 assumes.
 
 Faults are injected through the control port, one command per line, answered
 with "ok" (or the state, as JSON):
@@ -59,7 +54,6 @@ FRAME_SIZE = 1024
 MATCHING_WORD = 0xEC8056EC
 PERIOD = 0.008
 MAX_SPEED = [150.0, 150.0, 190.0, 260.0, 260.0, 260.0]  # deg/s, the EC66 datasheet
-JOG_SPEED = 30.0  # deg/s at 100 % manual speed
 HOME = [0.0, -90.0, 0.0, -90.0, 90.0, 0.0]
 
 STOP, PAUSE, ESTOP, RUNNING, ALARM, COLLISION = 0, 1, 2, 3, 4, 5
@@ -114,135 +108,6 @@ class PointToPoint:
         arm.q = [a + d * s for a, d in zip(self.start, self.delta)]
         arm.qd = [d * ds for d in self.delta]
         return self.t < self.duration
-
-
-class Unreachable(Exception):
-    """A Cartesian move's next pose has no joint solution."""
-
-
-def _quaternion(r):
-    """The unit quaternion (w, x, y, z) of a rotation matrix."""
-    t = r[0][0] + r[1][1] + r[2][2]
-    if t > 0:
-        w = math.sqrt(1.0 + t) / 2
-        return [w, (r[2][1] - r[1][2]) / (4 * w), (r[0][2] - r[2][0]) / (4 * w), (r[1][0] - r[0][1]) / (4 * w)]
-    i = max(range(3), key=lambda k: r[k][k])
-    j, k = (i + 1) % 3, (i + 2) % 3
-    v = math.sqrt(1.0 + r[i][i] - r[j][j] - r[k][k]) / 2
-    q = [0.0, 0.0, 0.0, 0.0]
-    q[0] = (r[k][j] - r[j][k]) / (4 * v)
-    q[1 + i] = v
-    q[1 + j] = (r[j][i] + r[i][j]) / (4 * v)
-    q[1 + k] = (r[k][i] + r[i][k]) / (4 * v)
-    return q
-
-
-def _matrix(q):
-    w, x, y, z = q
-    return [[1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
-            [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
-            [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]]
-
-
-def _slerp(a, b, u):
-    d = sum(x * y for x, y in zip(a, b))
-    if d < 0:
-        b, d = [-v for v in b], -d
-    if d > 0.9995:
-        q = [x + (y - x) * u for x, y in zip(a, b)]
-    else:
-        theta = math.acos(d)
-        q = [(math.sin((1 - u) * theta) * x + math.sin(u * theta) * y) / math.sin(theta) for x, y in zip(a, b)]
-    n = math.sqrt(sum(v * v for v in q))
-    return [v / n for v in q]
-
-
-def _sub(a, b):
-    return [x - y for x, y in zip(a, b)]
-
-
-def _dot(a, b):
-    return sum(x * y for x, y in zip(a, b))
-
-
-def _cross(a, b):
-    return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
-
-
-class CartesianMove:
-    """The TCP along a straight line, or along the circle through its start, a
-    middle and an end point, with a smooth (cubic) profile, the orientation
-    turning evenly from start to end; the joints are solved every period near
-    the last ones, and end exactly at `end_q` when given."""
-
-    def __init__(self, q_start, end_pose, speed_mm_s, end_q=None, mid=None):
-        start = kinematics.forward(q_start)
-        p0, p2 = start[:3], end_pose[:3]
-        self.q0 = _quaternion(poses.rotation("ZYX", *start[3:]))
-        self.q2 = _quaternion(poses.rotation("ZYX", *end_pose[3:]))
-        self.end_q = end_q
-        if mid is None:
-            self.place = lambda u: [a + (b - a) * u for a, b in zip(p0, p2)]
-            length = math.dist(p0, p2)
-        else:
-            ab, ac = _sub(mid, p0), _sub(p2, p0)
-            n = _cross(ab, ac)
-            nn = _dot(n, n)
-            if nn < 1e-9:
-                raise ValueError("the three points of the arc lie on one line")
-            center = [p + (_dot(ac, ac) * x + _dot(ab, ab) * y) / (2 * nn)
-                      for p, x, y in zip(p0, _cross(n, ab), _cross(ac, n))]
-            radius = math.dist(p0, center)
-            u_axis = [v / radius for v in _sub(p0, center)]
-            n_axis = [v / math.sqrt(nn) for v in n]
-            v_axis = _cross(n_axis, u_axis)
-            angle = math.atan2(_dot(_sub(p2, center), v_axis), _dot(_sub(p2, center), u_axis)) % (2 * math.pi)
-            self.place = lambda u: [c + radius * (math.cos(angle * u) * x + math.sin(angle * u) * y)
-                                    for c, x, y in zip(center, u_axis, v_axis)]
-            length = radius * angle
-        turn = 2 * math.acos(min(1.0, abs(_dot(self.q0, self.q2))))
-        self.duration = max(0.05, 1.5 * max(length / speed_mm_s, turn / math.radians(30.0)))
-        self.t = 0.0
-
-    def tick(self, arm, dt):
-        self.t = min(self.t + dt, self.duration)
-        u = self.t / self.duration
-        s = 3 * u * u - 2 * u ** 3
-        if self.t >= self.duration and self.end_q is not None:
-            q = list(self.end_q)
-        else:
-            pose = self.place(s) + poses.angles("ZYX", _matrix(_slerp(self.q0, self.q2, s)))
-            q = kinematics.inverse(pose, arm.q, iterations=50)
-            if q is None:
-                raise Unreachable(f"no joint positions for {[round(v, 1) for v in pose[:3]]} mm")
-        arm.qd = [(n - o) / dt for n, o in zip(q, arm.q)]
-        arm.q = q
-        return self.t < self.duration
-
-
-class PathRun:
-    """Waypoints one after the other: joint moves and lines, stopping at each."""
-
-    def __init__(self, points, speed_pct):
-        self.points = list(points)
-        self.speed_pct = speed_pct
-        self.index = 0
-        self.current = None
-
-    def tick(self, arm, dt):
-        if self.current is None:
-            if self.index >= len(self.points):
-                arm.qd = [0.0] * 6
-                return False
-            w = self.points[self.index]
-            self.index += 1
-            if w["moveType"] == 0:
-                self.current = PointToPoint(arm.q, w["q"], max(w["speed"] / 100.0 * self.speed_pct / 100.0, 1e-4))
-            else:
-                self.current = CartesianMove(arm.q, kinematics.forward(w["q"]), w["mm_s"], end_q=w["q"])
-        if not self.current.tick(arm, dt):
-            self.current = None
-        return True
 
 
 class Brake:
@@ -310,24 +175,6 @@ class SpeedJ:
         return now < self.until or any(abs(v) > 1e-9 for v in arm.qd)
 
 
-class Jog:
-    def __init__(self):
-        self.joint, self.speed, self.until = 0, 0.0, 0.0
-
-    def command(self, index, speed_pct, now):
-        self.joint = index // 2
-        self.speed = (1.0 if index % 2 else -1.0) * JOG_SPEED * speed_pct / 100.0
-        self.until = now + 1.0
-
-    def tick(self, arm, dt, now):
-        moving = now < self.until
-        arm.qd = [0.0] * 6
-        if moving:
-            arm.qd[self.joint] = self.speed
-            arm.q[self.joint] += self.speed * dt
-        return moving
-
-
 class Trajectory:
     def __init__(self):
         self.expected = 0
@@ -383,7 +230,6 @@ class Arm:
         self.motion = None  # PointToPoint or Brake
         self.stream = None
         self.speedj = None
-        self.jog = None
         self.trajectory = Trajectory()
         self.rejected = set()
         self.pending = []  # (when, function): delayed effects
@@ -391,7 +237,6 @@ class Arm:
         self.pose = kinematics.forward(self.q)  # the TCP: the flange [mm, rad]
         self.tcp_speed = 0.0
         self.trace = None  # the poses recorded since "trace start"
-        self.path_points = []  # waypoints added for moveByPath
 
     # -- the simulation
 
@@ -403,10 +248,7 @@ class Arm:
             self.state = ALARM  # the manual: E-stop shows briefly, then alarm
         moving = False
         if self.motion is not None:
-            try:
-                moving = self.motion.tick(self, PERIOD)
-            except Unreachable:
-                self.halt(ALARM)  # as a controller would: out of reach mid-move is an alarm
+            moving = self.motion.tick(self, PERIOD)
             if not moving:
                 self.motion = None
                 self.qd = [0.0] * 6
@@ -416,10 +258,6 @@ class Arm:
             moving = self.speedj.tick(self, PERIOD, now)
             if not moving:
                 self.speedj = None
-        elif self.jog is not None:
-            moving = self.jog.tick(self, PERIOD, now)
-            if not moving:
-                self.jog = None
         elif self.trajectory.playing:
             moving = self.trajectory.tick(self, PERIOD)
         else:
@@ -434,13 +272,13 @@ class Arm:
 
     def halt(self, state: int) -> None:
         """Faults: the arm stops at once and every motion ends."""
-        self.motion = self.stream = self.speedj = self.jog = None
+        self.motion = self.stream = self.speedj = None
         self.trajectory.playing = False
         self.qd = [0.0] * 6
         self.state = state
 
     def stop(self) -> None:
-        self.stream = self.speedj = self.jog = None
+        self.stream = self.speedj = None
         self.trajectory.playing = False
         if any(abs(v) > 1e-9 for v in self.qd):
             self.motion = Brake(self.qd)
@@ -511,8 +349,7 @@ class Arm:
 
         # Everything else changes the controller: remote mode only.
         if method in ("set_servo_status", "syncMotorStatus", "clearAlarm", "resetCollisionState", "setSpeed",
-                      "moveByJoint", "moveByLine", "moveByLineCoord", "moveByArc", "clearPathPoint", "addPathPoint",
-                      "moveByPath", "stop", "jog", "moveBySpeedj", "stopj",
+                      "moveByJoint", "stop", "moveBySpeedj", "stopj",
                       "transparent_transmission_init", "tt_put_servo_joint_to_buf", "tt_clear_servo_joint_buf",
                       "start_push_pos", "push_pos", "stop_push_pos", "start_trajectory", "pause_trajectory",
                       "resume_trajectory", "stop_trajectory", "flush_trajectory"):
@@ -549,61 +386,13 @@ class Arm:
         if method == "stop":
             self.stop()
             return True
-        if method in ("moveByJoint", "moveByLine", "moveByArc"):
+        if method == "moveByJoint":
             target = joints(p["targetPos"])
             if not self.can_move():
                 return False
-            if method == "moveByJoint":
-                fraction = float(p["speed"]) / 100.0 * self.speed_pct / 100.0
-                self.motion = PointToPoint(self.q, target, max(fraction, 1e-4))
-            else:
-                mid = kinematics.forward(joints(p["midPos"]))[:3] if method == "moveByArc" else None
-                try:
-                    self.motion = CartesianMove(self.q, kinematics.forward(target), self.linear_speed(p), target, mid)
-                except ValueError as e:
-                    raise RpcError(-32693, str(e)) from e
+            fraction = float(p["speed"]) / 100.0 * self.speed_pct / 100.0
+            self.motion = PointToPoint(self.q, target, max(fraction, 1e-4))
             self.state = RUNNING
-            return True
-        if method == "moveByLineCoord":
-            degrees = int(p.get("unit_type", 1)) == 0
-            to_rad = poses.to_radians if degrees else (lambda v: list(v))
-            target = to_rad([float(v) for v in p["targetUserPose"]])
-            frame = to_rad([float(v) for v in p.get("user_coord", [0.0] * 6)])
-            pose = poses.compose("ZYX", frame, target)
-            if not self.can_move():
-                return False
-            end = kinematics.inverse(pose, self.q)
-            if end is None:
-                return False
-            self.motion = CartesianMove(self.q, pose, self.linear_speed(p), end)
-            self.state = RUNNING
-            return True
-        if method == "clearPathPoint":
-            self.path_points = []
-            return True
-        if method == "addPathPoint":
-            move_type = int(p["moveType"])
-            point = {"q": joints(p["wayPoint"]), "moveType": move_type, "speed": float(p["speed"])}
-            if move_type != 0:
-                point["mm_s"] = self.linear_speed(p)
-            self.path_points.append(point)
-            return True
-        if method == "moveByPath":
-            if not self.path_points or not self.can_move():
-                return -1
-            if any(w["moveType"] not in (0, 1) for w in self.path_points):
-                return -1  # arcs and rotations in paths are not simulated
-            self.motion = PathRun(self.path_points, self.speed_pct)
-            self.state = RUNNING
-            return len(self.path_points)
-        if method == "jog":
-            if not self.servo or not self.synced or self.estop or self.collision or self.state not in (STOP, RUNNING):
-                return False
-            if self.jog is None:
-                if self.motion is not None or self.stream is not None:
-                    return False
-                self.jog = Jog()
-            self.jog.command(int(p["index"]), float(p.get("speed", 10.0)), now)
             return True
         if method == "moveBySpeedj":
             if not self.servo or not self.synced or self.estop or self.collision or self.state not in (STOP, RUNNING):
@@ -668,13 +457,6 @@ class Arm:
             return True
         raise RpcError(-32601, "Method not found.")
 
-    def linear_speed(self, p) -> float:
-        """A Cartesian move's TCP speed [mm/s]: V is scaled by the speed setting, AV is not."""
-        speed = float(p["speed"])
-        if int(p.get("speed_type", 2)) == 0:
-            speed *= self.speed_pct / 100.0
-        return max(speed, 0.1)
-
     def kinematics(self, method: str, p):
         degrees = int(p.get("unit_type", 1)) == 0
         if method == "get_tcp_pose":
@@ -721,7 +503,7 @@ class Arm:
             self.state = STOP
             return "ok"
         if cmd == "joints":
-            if self.motion is not None or self.stream is not None or self.speedj is not None or self.jog is not None:
+            if self.motion is not None or self.stream is not None or self.speedj is not None:
                 return "moving"
             self.q = [float(v) for v in words[1:7]]
             self.qd = [0.0] * 6

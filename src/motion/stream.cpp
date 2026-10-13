@@ -5,7 +5,6 @@
 #include <format>
 #include <utility>
 
-#include "ec/command/kinematics.hpp"
 #include "ec/command/movement.hpp"
 #include "ec/command/reply.hpp"
 #include "ec/command/transparent.hpp"
@@ -48,11 +47,14 @@ int deg_s2(double rad_s2) { return std::max(1, static_cast<int>(std::lround(rad_
 
 }  // namespace
 
-// --------------------------------------------------------------------- ServoLink
+// ------------------------------------------------------------------- ServoStream
 
-std::expected<bool, Error> ServoLink::open(const Cycle& c, Outbox& out) {
-    const auto invalid = [this](std::string message) {
-        return std::unexpected(Error{Error::Kind::Invalid, std::format("{}: {}", name_, message), {}});
+ServoStream::ServoStream(const ServoOptions& options, std::shared_ptr<Channel<Joints>> channel)
+    : options_(options), channel_(std::move(channel)) {}
+
+std::expected<Phase, Error> ServoStream::step(const Cycle& c, Outbox& out) {
+    const auto invalid = [](std::string message) {
+        return std::unexpected(Error{Error::Kind::Invalid, "servo_stream: " + std::move(message), {}});
     };
     switch (stage_) {
         case Stage::Open: {
@@ -72,8 +74,8 @@ std::expected<bool, Error> ServoLink::open(const Cycle& c, Outbox& out) {
                 if (!(options_.max_velocity[j] > 0.0)) return invalid("every max_velocity must be positive");
                 accel[j] = options_.max_velocity[j] / seconds(options_.accelerate_in);
             }
-            shaper_ = RateLimiter(RateLimiter::Limits{options_.max_velocity, accel}, seconds(c.period));
-            shaper_.reset(c.state.joint_position);
+            shaper_.emplace(RateLimiter::Limits{options_.max_velocity, accel}, seconds(c.period));
+            shaper_->reset(c.state.joint_position);
             recent_capacity_ = static_cast<std::size_t>((lookahead + milliseconds{200}) / period) + 1;
             recent_.assign(1, c.state.joint_position);
             command::TransparentTransmissionInit init{.lookahead_ms = static_cast<int>(lookahead.count()),
@@ -84,40 +86,56 @@ std::expected<bool, Error> ServoLink::open(const Cycle& c, Outbox& out) {
             out.send(init);
             sent_at_ = c.now;
             stage_ = Stage::AwaitOpen;
-            return false;
+            return Phase::Running;
         }
 
         case Stage::AwaitOpen: {
             const Reply* reply = find_reply<command::TransparentTransmissionInit>(c.replies);
             if (reply == nullptr) {
                 if (c.now - sent_at_ > kReplyTimeout)
-                    return std::unexpected(
-                        Error{Error::Kind::Timeout, std::format("{}: no reply to the init", name_), {}});
-                return false;
+                    return std::unexpected(Error{Error::Kind::Timeout, "servo_stream: no reply to the init", {}});
+                return Phase::Running;
             }
             if (const auto ok = decode<command::TransparentTransmissionInit>(*reply); !ok)
                 return std::unexpected(command_failed(reply->method, ok.error()));
             stage_ = Stage::Streaming;
-            return true;
+            channel_->mark_open();
+            [[fallthrough]];
         }
 
-        case Stage::Streaming: return true;
+        case Stage::Streaming: {
+            if (!shaper_) return std::unexpected(Error{Error::Kind::Internal, "servo_stream: not opened", {}});
+            RateLimiter& shaper = *shaper_;
+            if (auto ok = check_replies(c); !ok) return std::unexpected(ok.error());
+            if (channel_->close_requested()) return Phase::Done;
+            Joints setpoint{};
+            if (const auto target = channel_->newest()) {
+                const auto age = c.now - target->at;
+                if (age > options_.watchdog.target_timeout + options_.watchdog.hold_for)
+                    return std::unexpected(starved("servo_stream", age));
+                if (age > options_.watchdog.target_timeout) {
+                    setpoint = shaper.brake();
+                } else {
+                    if (auto bad = joint_limit_violation(target->value, options_.joint_limit)) return invalid(*bad);
+                    setpoint = shaper.next(target->value);
+                }
+            } else {
+                setpoint = shaper.brake();  // nothing pushed yet: stays where it started
+            }
+            if (auto ok = check_tracking(c); !ok) return std::unexpected(ok.error());
+            put(out, setpoint);
+            return Phase::Running;
+        }
     }
-    return false;
+    return Phase::Running;
 }
 
-std::expected<void, Error> ServoLink::check_replies(const Cycle& c) const {
+std::expected<void, Error> ServoStream::check_replies(const Cycle& c) const {
     if (!options_.replies) return {};
     return all_ok(c, command::TtPutServoJointToBuf::method);
 }
 
-std::expected<void, Error> ServoLink::check_target(const Joints& target) const {
-    if (auto bad = joint_limit_violation(target, options_.joint_limit))
-        return std::unexpected(Error{Error::Kind::Invalid, std::format("{}: {}", name_, *bad), {}});
-    return {};
-}
-
-std::expected<void, Error> ServoLink::check_tracking(const Cycle& c) const {
+std::expected<void, Error> ServoStream::check_tracking(const Cycle& c) const {
     for (std::size_t j = 0; j < kJointCount; ++j) {
         double lo = recent_.front()[j];
         double hi = lo;
@@ -128,15 +146,16 @@ std::expected<void, Error> ServoLink::check_tracking(const Cycle& c) const {
         const double q = c.state.joint_position[j];
         const double off = q < lo ? lo - q : (q > hi ? q - hi : 0.0);
         if (off > options_.tracking_tolerance)
-            return std::unexpected(Error{
-                Error::Kind::Tracking,
-                std::format("{}: joint {} is {:.2f} deg away from its recent setpoints", name_, j + 1, rad_to_deg(off)),
-                {}});
+            return std::unexpected(
+                Error{Error::Kind::Tracking,
+                      std::format("servo_stream: joint {} is {:.2f} deg away from its recent setpoints", j + 1,
+                                  rad_to_deg(off)),
+                      {}});
     }
     return {};
 }
 
-void ServoLink::put(Outbox& out, const Joints& setpoint) {
+void ServoStream::put(Outbox& out, const Joints& setpoint) {
     const command::TtPutServoJointToBuf point{.target = rad_to_deg(setpoint)};
     if (options_.replies)
         out.send(point);
@@ -146,7 +165,7 @@ void ServoLink::put(Outbox& out, const Joints& setpoint) {
     while (recent_.size() > recent_capacity_) recent_.pop_front();
 }
 
-bool ServoLink::close(const Cycle& c, Outbox& out, End why) {
+bool ServoStream::close(const Cycle& c, Outbox& out, End why) {
     for (;;) {
         switch (closing_) {
             case Closing::Begin:
@@ -161,7 +180,11 @@ bool ServoLink::close(const Cycle& c, Outbox& out, End why) {
                 break;
 
             case Closing::Settle: {
-                RateLimiter& shaper = shaper_;  // opened: Settle follows only a stream that streamed
+                if (!shaper_) {
+                    closing_ = Closing::Clear;
+                    break;
+                }
+                RateLimiter& shaper = *shaper_;
                 // Keep the queue fed along the fastest smooth stop, then with the
                 // final point until the arm has consumed the lookahead and rests.
                 if (!all_ok(c, command::TtPutServoJointToBuf::method) && options_.replies) {
@@ -190,116 +213,6 @@ bool ServoLink::close(const Cycle& c, Outbox& out, End why) {
             }
         }
     }
-}
-
-// ------------------------------------------------------------------- ServoStream
-
-ServoStream::ServoStream(const ServoOptions& options, std::shared_ptr<Channel<Joints>> channel)
-    : options_(options), channel_(std::move(channel)), link_("servo_stream", options) {}
-
-std::expected<Phase, Error> ServoStream::step(const Cycle& c, Outbox& out) {
-    if (!link_.is_open()) {
-        const auto opened = link_.open(c, out);
-        if (!opened) return std::unexpected(opened.error());
-        if (!*opened) return Phase::Running;
-        channel_->mark_open();
-    }
-    if (auto ok = link_.check_replies(c); !ok) return std::unexpected(ok.error());
-    if (channel_->close_requested()) return Phase::Done;
-    RateLimiter& shaper = link_.shaper();
-    Joints setpoint{};
-    if (const auto target = channel_->newest()) {
-        const auto age = c.now - target->at;
-        if (age > options_.watchdog.target_timeout + options_.watchdog.hold_for)
-            return std::unexpected(starved("servo_stream", age));
-        if (age > options_.watchdog.target_timeout) {
-            setpoint = shaper.brake();
-        } else {
-            if (auto ok = link_.check_target(target->value); !ok) return std::unexpected(ok.error());
-            setpoint = shaper.next(target->value);
-        }
-    } else {
-        setpoint = shaper.brake();  // nothing pushed yet: stays where it started
-    }
-    if (auto ok = link_.check_tracking(c); !ok) return std::unexpected(ok.error());
-    link_.put(out, setpoint);
-    return Phase::Running;
-}
-
-// --------------------------------------------------------------- PoseServoStream
-
-PoseServoStream::PoseServoStream(const PoseServoOptions& options, std::shared_ptr<Channel<Pose>> channel)
-    : options_(options), channel_(std::move(channel)), link_("pose_stream", options.servo) {}
-
-std::expected<void, Error> PoseServoStream::take_solution(const Cycle& c) {
-    const Reply* reply = find_reply<command::InverseKinematic>(c.replies);
-    if (reply == nullptr || !asked_) return {};
-    const Stamped<Pose> pose = *asked_;
-    asked_.reset();
-    const auto joints = decode<command::InverseKinematic>(*reply);
-    if (!joints) {
-        Error e = command_failed(reply->method, joints.error());
-        if (e.kind == Error::Kind::Command) {
-            const auto& p = pose.value.position;
-            e.kind = Error::Kind::Invalid;  // the controller found no solution: the target's fault
-            e.message = std::format("pose_stream: no joint positions for the target ({:.1f}, {:.1f}, {:.1f} mm): {}",
-                                    p[0] * 1000.0, p[1] * 1000.0, p[2] * 1000.0, e.message);
-        }
-        return std::unexpected(std::move(e));
-    }
-    const Joints q = nearest_turn(deg_to_rad(*joints), reference_, options_.servo.joint_limit);
-    for (std::size_t j = 0; j < kJointCount; ++j) {
-        const double step = std::abs(q[j] - reference_[j]);
-        if (step > options_.max_step)
-            return std::unexpected(Error{Error::Kind::Invalid,
-                                         std::format("pose_stream: joint {} would turn {:.1f} deg for the next target "
-                                                     "(at most {:.1f}): another arm configuration, a singularity, or a "
-                                                     "target that jumps",
-                                                     j + 1, rad_to_deg(step), rad_to_deg(options_.max_step)),
-                                         {}});
-    }
-    reference_ = q;
-    target_ = Stamped<Joints>{q, pose.at};
-    return {};
-}
-
-std::expected<Phase, Error> PoseServoStream::step(const Cycle& c, Outbox& out) {
-    if (!link_.is_open()) {
-        const auto opened = link_.open(c, out);
-        if (!opened) return std::unexpected(opened.error());
-        if (!*opened) return Phase::Running;
-        reference_ = c.state.joint_position;
-        channel_->mark_open();
-    }
-    if (auto ok = link_.check_replies(c); !ok) return std::unexpected(ok.error());
-    if (auto ok = take_solution(c); !ok) return std::unexpected(ok.error());
-    if (channel_->close_requested()) return Phase::Done;
-
-    // Ask for the newest pose's solution, unless it was asked for already.
-    if (const auto pose = channel_->newest(); pose && pose->at != last_asked_) {
-        out.send(command::InverseKinematic{.target = to_mm_rad(pose->value), .reference = rad_to_deg(reference_)});
-        asked_ = *pose;
-        last_asked_ = pose->at;
-    }
-
-    RateLimiter& shaper = link_.shaper();
-    Joints setpoint{};
-    if (target_) {
-        const auto age = c.now - target_->at;
-        if (age > options_.servo.watchdog.target_timeout + options_.servo.watchdog.hold_for)
-            return std::unexpected(starved("pose_stream", age));
-        if (age > options_.servo.watchdog.target_timeout) {
-            setpoint = shaper.brake();
-        } else {
-            if (auto ok = link_.check_target(target_->value); !ok) return std::unexpected(ok.error());
-            setpoint = shaper.next(target_->value);
-        }
-    } else {
-        setpoint = shaper.brake();  // nothing solved yet: stays where it started
-    }
-    if (auto ok = link_.check_tracking(c); !ok) return std::unexpected(ok.error());
-    link_.put(out, setpoint);
-    return Phase::Running;
 }
 
 // ---------------------------------------------------------------- VelocityStream
@@ -336,44 +249,6 @@ bool VelocityStream::close(const Cycle& c, Outbox& out, End why) {
     if (!stop_sent_at_) {
         out.send(command::Stopj{.acc_deg_s2 = deg_s2(options_.acceleration)});
         if (why == End::Stopped || why == End::Faulted) out.send(command::Stop{});
-        stop_sent_at_ = c.now;
-        return false;
-    }
-    return c.now > *stop_sent_at_ && c.conditions.has(Condition::AtRest);
-}
-
-// --------------------------------------------------------------------- JogStream
-
-std::expected<Phase, Error> JogStream::step(const Cycle& c, Outbox& out) {
-    channel_->mark_open();
-    if (auto ok = all_ok(c, command::Jog::method); !ok) return std::unexpected(ok.error());
-    if (!(options_.speed > 0.0 && options_.speed <= 1.0))
-        return std::unexpected(Error{
-            Error::Kind::Invalid, std::format("jog_stream: speed must be in (0, 1], not {}", options_.speed), {}});
-    if (channel_->close_requested()) return Phase::Done;
-    std::optional<JogDirection> wanted;
-    if (const auto target = channel_->newest(); target && c.now - target->at <= options_.watchdog.target_timeout)
-        wanted = target->value;
-    if (wanted) {
-        if (wanted->axis < 0 || wanted->axis > 5)
-            return std::unexpected(
-                Error{Error::Kind::Invalid, std::format("jog_stream: axis {} is not 0..5", wanted->axis), {}});
-        const int index = 2 * wanted->axis + (wanted->positive ? 1 : 0);
-        if (jogging_ != index || c.now - last_sent_ >= options_.repeat) {
-            out.send(command::Jog{.index = index, .speed_pct = std::max(0.05, options_.speed * 100.0)});
-            jogging_ = index;
-            last_sent_ = c.now;
-        }
-    } else if (jogging_) {
-        out.send(command::Stop{});
-        jogging_.reset();
-    }
-    return Phase::Running;
-}
-
-bool JogStream::close(const Cycle& c, Outbox& out, End /*why*/) {
-    if (!stop_sent_at_) {
-        out.send(command::Stop{});
         stop_sent_at_ = c.now;
         return false;
     }

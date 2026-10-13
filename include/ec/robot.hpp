@@ -4,13 +4,25 @@
 /// the parts below it: a feedback::Receiver for the monitoring stream, the
 /// newest state in an ec::Latest, and a motion::ControlLoop that owns the
 /// command connection and runs one activity at a time.
+///
+/// Motion is in joint space; TCP poses become joints through the controller's
+/// inverse kinematics (ADR 0017):
+///
+///     Joints q = robot.ik(T_base_tcp, near).value();         // the controller's IK
+///     robot.move_joints({.target = q, .speed = 0.2}).wait();  // moveByJoint
+///     auto trajectory = robot.plan(timed_poses).value();      // IK, checks, a joint trajectory
+///     robot.play(trajectory).wait();                          // the timestamp service
+///     auto servo = robot.servo().value();                     // live: push joints
+///     servo.target(robot.ik(T_base_tcp, q).value());
 
+#include <Eigen/Geometry>
 #include <chrono>
 #include <cstdint>
 #include <expected>
 #include <functional>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <utility>
 
@@ -23,8 +35,11 @@
 #include "ec/motion/bring_up.hpp"
 #include "ec/motion/control_loop.hpp"
 #include "ec/motion/error.hpp"
+#include "ec/motion/planning.hpp"
+#include "ec/motion/point_to_point.hpp"
 #include "ec/motion/session.hpp"
 #include "ec/motion/stream.hpp"
+#include "ec/motion/trajectory.hpp"
 #include "ec/pose.hpp"
 #include "ec/units.hpp"
 
@@ -84,8 +99,26 @@ public:
     /// The monitoring connection's own status.
     [[nodiscard]] feedback::Receiver::Status feedback_status() const;
 
+    // ---- kinematics, by the controller (computations: allowed at any time)
+
+    /// The joint positions [rad] that put the current tool's TCP at T_base_tcp,
+    /// the solution nearest `near` (inverseKinematic), each joint taken by whole
+    /// turns to the value nearest it. A pose without a solution is Kind::Command.
+    [[nodiscard]] std::expected<Joints, motion::Error> ik(const Eigen::Isometry3d& T_base_tcp, const Joints& near);
+    /// T_base_tcp, the current tool's TCP, for joint positions (positiveKinematic).
+    [[nodiscard]] std::expected<Eigen::Isometry3d, motion::Error> fk(const Joints& joints);
+
     // ---- planned motion and procedures
 
+    /// Moves in joint space to joint positions (moveByJoint).
+    [[nodiscard]] motion::Job move_joints(const motion::MoveJoint& move);
+    /// A timed TCP path solved into a joint trajectory from where the arm is now:
+    /// motion::plan() with ik(). Computations only: nothing moves.
+    [[nodiscard]] std::expected<motion::JointTrajectory, motion::Error> plan(std::span<const motion::TimedPose> path,
+                                                                             const motion::PlanOptions& options = {});
+    /// Plays a joint trajectory through the controller's timestamp service
+    /// (motion::PlayTrajectory). The arm must rest at its first point.
+    [[nodiscard]] motion::Job play(motion::JointTrajectory trajectory, double speed = 1.0);
     /// Starts any activity or spec (MoveJoint, Sequence, PlayTrajectory, ...).
     [[nodiscard]] motion::Job run(motion::AnyActivity activity);
     /// Clear alarm, reset collision, synchronise, servos on: what the state needs.
@@ -99,24 +132,6 @@ public:
     /// Streams joint velocities [rad/s] (moveBySpeedj).
     [[nodiscard]] std::expected<motion::Session<Joints>, motion::Error> velocity(
         const motion::VelocityOptions& options = {});
-    /// Jogs while a direction is pushed; push nullopt to stop.
-    [[nodiscard]] std::expected<motion::Session<std::optional<motion::JogDirection>>, motion::Error> jog(
-        const motion::JogOptions& options = {});
-    /// Streams TCP poses (current tool, base frame), each solved by the
-    /// controller's inverse kinematics into joint positions for the position
-    /// stream (motion::PoseServoStream). Start with the TCP's current pose.
-    [[nodiscard]] std::expected<motion::Session<Pose>, motion::Error> servo_pose(
-        const motion::PoseServoOptions& options = {});
-
-    // ---- kinematics, by the controller (computations: allowed at any time)
-
-    /// The joint positions [rad] that put the TCP of the current tool at `pose`
-    /// (base frame), the solution nearest `reference` (inverseKinematic), each
-    /// joint taken by whole turns to the value nearest it. A pose without a
-    /// solution is Kind::Command.
-    [[nodiscard]] std::expected<Joints, motion::Error> inverse_kinematics(const Pose& pose, const Joints& reference);
-    /// The pose of the current tool's TCP for joint positions (positiveKinematic).
-    [[nodiscard]] std::expected<Pose, motion::Error> forward_kinematics(const Joints& joints);
 
     // ---- stop and recovery
 

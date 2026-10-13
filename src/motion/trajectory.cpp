@@ -39,6 +39,11 @@ std::expected<void, std::string> validate(const JointTrajectory& t, const Trajec
                                                    j + 1, v, limits.max_velocity[j]));
         }
     }
+    const Joints a = peak_acceleration(t);
+    for (std::size_t j = 0; j < kJointCount; ++j)
+        if (a[j] > limits.max_acceleration[j] * (1.0 + 1e-9))
+            return std::unexpected(std::format("joint {} would accelerate at {:.3f} rad/s^2, above {:.3f}", j + 1, a[j],
+                                               limits.max_acceleration[j]));
     return {};
 }
 
@@ -207,6 +212,8 @@ std::expected<Phase, Error> PlayTrajectoryActivity::step(const Cycle& c, Outbox&
             if (!r) return Phase::Running;
             if (!*r) return std::unexpected(r->error());
             started_at_ = c.now;
+            shortest_ = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::duration<double>(spec_.path.duration() / spec_.speed));
             limit_ = std::chrono::duration_cast<std::chrono::nanoseconds>(
                          std::chrono::duration<double>(spec_.path.duration() / (spec_.speed * setting_))) +
                      spec_.margin;
@@ -218,7 +225,9 @@ std::expected<Phase, Error> PlayTrajectoryActivity::step(const Cycle& c, Outbox&
             if (c.state.robot_state == RobotState::Running || !c.conditions.has(Condition::AtRest)) moved_ = true;
             const double off = max_abs_diff(c.state.joint_position, spec_.path.position.back());
             const bool resting = c.conditions.has(Condition::Standstill);
-            if (resting && moved_ && off <= spec_.tolerance) return Phase::Done;
+            // Arrived: at rest at the last point, after moving, or after the trajectory's
+            // time if it hardly moves at all.
+            if (resting && off <= spec_.tolerance && (moved_ || c.now - started_at_ >= shortest_)) return Phase::Done;
             if (resting && moved_ && ++short_cycles_ >= kShortCycles)
                 return fail(Error::Kind::Command,
                             std::format("the arm stopped {:.2f} deg from the last point", rad_to_deg(off)));

@@ -14,7 +14,6 @@
 
 #include "ec/command/request.hpp"
 #include "ec/motion/activity.hpp"
-#include "ec/pose.hpp"
 #include "ec/units.hpp"
 
 namespace ec::motion {
@@ -28,44 +27,6 @@ struct MoveJoint {
     std::optional<double> deceleration{};       ///< fraction, (0, 1]; controller default: the acceleration
     double tolerance = deg_to_rad(0.2);         ///< [rad] on every joint, to count as arrived
     std::chrono::milliseconds timeout{60'000};  ///< from the command to arrival
-};
-
-/// Straight-line TCP motion to the pose of joint positions (moveByLine). The
-/// speed is absolute (speed type AV): the speed setting does not scale it.
-struct MoveLine {
-    Joints target{};                       ///< [rad]: the TCP goes to these joints' pose
-    double speed = 0.05;                   ///< TCP speed [m/s], [0.001, 3]
-    std::optional<double> acceleration{};  ///< fraction, (0, 1]
-    std::optional<double> deceleration{};  ///< fraction, (0, 1]
-    double tolerance = deg_to_rad(0.2);    ///< [rad] on every joint
-    std::chrono::milliseconds timeout{60'000};
-};
-
-/// A circular arc of the TCP from where it is, through the pose of `middle`,
-/// to the pose of `target` (moveByArc): the three points fix the circle. The
-/// SDK manual's version takes joint positions only, so poses are solved first
-/// (Robot::inverse_kinematics). Absolute speed, as MoveLine. An arc of 180
-/// degrees or more needs two.
-struct MoveArc {
-    Joints middle{};                       ///< [rad]: the TCP passes through these joints' pose
-    Joints target{};                       ///< [rad]: and ends at these joints' pose
-    double speed = 0.05;                   ///< TCP speed [m/s], [0.001, 3]
-    std::optional<double> acceleration{};  ///< fraction, (0, 1]
-    std::optional<double> deceleration{};  ///< fraction, (0, 1]
-    double tolerance = deg_to_rad(0.2);    ///< [rad] on every joint, at the target
-    std::chrono::milliseconds timeout{60'000};
-};
-
-/// Straight-line TCP motion to a pose in the base frame, for the current tool
-/// (moveByLineCoord with the base frame as user frame). Absolute speed, as MoveLine.
-struct MoveLineToPose {
-    Pose target{};                                ///< position [m], rotation [rad] (R = Rz Ry Rx)
-    double speed = 0.05;                          ///< TCP speed [m/s], [0.001, 3]
-    std::optional<double> acceleration{};         ///< fraction, (0, 1]
-    std::optional<double> deceleration{};         ///< fraction, (0, 1]
-    double position_tolerance = 0.0005;           ///< [m]
-    double rotation_tolerance = deg_to_rad(0.2);  ///< [rad]
-    std::chrono::milliseconds timeout{60'000};
 };
 
 /// Runs one point-to-point command; see the file comment. Needs everything a
@@ -104,13 +65,7 @@ private:
 };
 
 [[nodiscard]] PointToPoint make_activity(const MoveJoint& spec);
-[[nodiscard]] PointToPoint make_activity(const MoveLine& spec);
-[[nodiscard]] PointToPoint make_activity(const MoveLineToPose& spec);
-[[nodiscard]] PointToPoint make_activity(const MoveArc& spec);
 
 static_assert(Spec<MoveJoint>);
-static_assert(Spec<MoveLine>);
-static_assert(Spec<MoveLineToPose>);
-static_assert(Spec<MoveArc>);
 
 }  // namespace ec::motion

@@ -28,12 +28,17 @@ struct JointTrajectory {
 /// The bounds a trajectory is checked against before it runs.
 struct TrajectoryLimits {
     Joints max_velocity = kEc66MaxJointSpeed;  ///< [rad/s], between neighbouring points
-    double joint_limit = kEc66JointLimit;      ///< [rad], on |q|
+    /// [rad/s^2], peak_acceleration(): the datasheet speeds reached in 0.5 s. The
+    /// datasheet gives no accelerations; to tune on the robot (docs/motion.md 7.2).
+    Joints max_acceleration = scale(kEc66MaxJointSpeed, 2.0);
+    double joint_limit = kEc66JointLimit;  ///< [rad], on |q|
 };
 
 /// Why `t` cannot run, or nothing: it needs at least 3 points, as many times as
 /// positions, times from 0 strictly increasing, finite positions within the
-/// joint limit, and no segment faster than the limit on any joint.
+/// joint limit, no segment faster than the speed limit on any joint, and no
+/// change of speed (from rest at the start, to rest at the end) above the
+/// acceleration limit.
 [[nodiscard]] std::expected<void, std::string> validate(const JointTrajectory& t, const TrajectoryLimits& limits = {});
 
 /// Each joint's largest speed [rad/s] between neighbouring points of a valid
@@ -86,6 +91,7 @@ private:
     Closing closing_ = Closing::Begin;
     Clock::time_point sent_at_{};
     Clock::time_point started_at_{};
+    std::chrono::nanoseconds shortest_{};  // the trajectory's own time, at the speed asked for
     std::chrono::nanoseconds limit_{};
     double setting_ = 1.0;  // the controller's speed setting, as a fraction
     std::size_t uploaded_ = 0;

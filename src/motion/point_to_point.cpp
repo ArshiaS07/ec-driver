@@ -43,14 +43,6 @@ PointToPoint::Remaining joints_remaining(const Joints& target, double tolerance)
     };
 }
 
-std::optional<std::string> check_linear(const std::optional<double>& acc, const std::optional<double>& dec,
-                                        double speed) {
-    if (!std::isfinite(speed) || speed < 0.001 || speed > 3.0)
-        return std::format("speed must be in [0.001, 3] m/s, not {}", speed);
-    if (auto e = check_fraction("acceleration", acc)) return e;
-    return check_fraction("deceleration", dec);
-}
-
 }  // namespace
 
 PointToPoint::PointToPoint(std::string_view name, command::Request request, Remaining remaining,
@@ -133,54 +125,6 @@ PointToPoint make_activity(const MoveJoint& m) {
                                    .acc_pct = percent(m.acceleration),
                                    .dec_pct = percent(m.deceleration),
                                    .until = std::nullopt};
-    return {name, command::to_request(cmd), joints_remaining(m.target, m.tolerance), m.timeout};
-}
-
-PointToPoint make_activity(const MoveLine& m) {
-    constexpr std::string_view name = "move_line";
-    if (auto e = check_joints(m.target)) return PointToPoint::invalid(name, *e);
-    if (auto e = check_linear(m.acceleration, m.deceleration, m.speed)) return PointToPoint::invalid(name, *e);
-    const command::MoveByLine cmd{.target = rad_to_deg(m.target),
-                                  .speed_type = command::SpeedType::AbsoluteLinear,
-                                  .speed = m.speed * 1000.0,
-                                  .acc_pct = percent(m.acceleration),
-                                  .dec_pct = percent(m.deceleration),
-                                  .until = std::nullopt};
-    return {name, command::to_request(cmd), joints_remaining(m.target, m.tolerance), m.timeout};
-}
-
-PointToPoint make_activity(const MoveLineToPose& m) {
-    constexpr std::string_view name = "move_line_to_pose";
-    if (auto e = check_linear(m.acceleration, m.deceleration, m.speed)) return PointToPoint::invalid(name, *e);
-    const command::MoveByLineCoord cmd{.target = to_mm_rad(m.target),
-                                       .speed_type = command::SpeedType::AbsoluteLinear,
-                                       .speed = m.speed * 1000.0,
-                                       .acc_pct = percent(m.acceleration),
-                                       .dec_pct = percent(m.deceleration),
-                                       .user_frame = command::PoseMmRad{},  // the base frame
-                                       .until = std::nullopt};
-    auto remaining = [target = m.target, pos_tol = m.position_tolerance,
-                      rot_tol = m.rotation_tolerance](const feedback::State& s) -> std::optional<std::string> {
-        const double off = distance(s.tcp_position_base, target.position);
-        const double turn = rotation_between(s.tcp_rotation_base, target.rotation);
-        if (off <= pos_tol && turn <= rot_tol) return std::nullopt;
-        return std::format("{:.1f} mm and {:.2f} deg off", off * 1000.0, rad_to_deg(turn));
-    };
-    return {name, command::to_request(cmd), std::move(remaining), m.timeout};
-}
-
-PointToPoint make_activity(const MoveArc& m) {
-    constexpr std::string_view name = "move_arc";
-    if (auto e = check_joints(m.middle)) return PointToPoint::invalid(name, "middle: " + *e);
-    if (auto e = check_joints(m.target)) return PointToPoint::invalid(name, *e);
-    if (auto e = check_linear(m.acceleration, m.deceleration, m.speed)) return PointToPoint::invalid(name, *e);
-    const command::MoveByArc cmd{.middle = rad_to_deg(m.middle),
-                                 .target = rad_to_deg(m.target),
-                                 .speed_type = command::SpeedType::AbsoluteLinear,
-                                 .speed = m.speed * 1000.0,
-                                 .acc_pct = percent(m.acceleration),
-                                 .dec_pct = percent(m.deceleration),
-                                 .until = std::nullopt};
     return {name, command::to_request(cmd), joints_remaining(m.target, m.tolerance), m.timeout};
 }
 

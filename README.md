@@ -19,7 +19,7 @@ and cross-compiles for 64-bit ARM Linux.
 | `ec::log` (raw recordings; HDF5 logs in the optional `ec::hdf5`) | done, tested |
 | live state: `feedback::Receiver` (8056 thread, reconnects), `ec::Latest` (newest value) | done, tested; not yet on the robot |
 | `ec::motion` (supervision, planned and streamed motion, the control thread) and `ec::Robot` | done, tested against loopback servers and a simulated arm; not yet on the robot (`docs/motion.md`) |
-| Cartesian paths (`ec::Circle`, planning with the controller's inverse kinematics, following a trajectory, a Cartesian stream, arcs and waypoint paths) | done, tested the same way (`docs/motion.md` 5.11) |
+| TCP paths in joint space (poses as Eigen isometries, `ec::Circle`/`Line`, `plan()` with the controller's inverse kinematics and singularity checks, played by the timestamp service) | done, tested the same way (`docs/motion.md` 5.11) |
 | `apps/ec_monitor`, `apps/ec_record`, `apps/ec_query`, `apps/ec_move` | done, tested end to end against the fake servers |
 | still open | the robot checks in `docs/motion.md` §7; logging of commands and events; preflight; a guide |
 
@@ -55,13 +55,13 @@ Moving the arm through the driver (remote mode; nothing moves without
     ./build/linux-debug/apps/ec_move --yes sine 6 2 4               # stream 2 deg x sin(2 pi t / 4 s) on J6
 
 A circle of the TCP around where it is (parallel to the ground unless
-`--normal` says otherwise), drawn by the controller's arcs, a waypoint path,
-lines, an uploaded trajectory, a trajectory streamed by the PC, a stream of
-poses or of joint velocities. Without `--yes` it only plans (with the
-controller's inverse kinematics) and prints points to check:
+`--normal` says otherwise), planned in joint space with the controller's
+inverse kinematics and checked for singularities. Without `--yes` it only plans
+and prints points to check; with it, the controller's timestamp service plays
+the plan, or `--stream` pushes the poses live, each solved:
 
-    ./build/linux-debug/apps/ec_move circle follow --radius 50 --speed 20
-    ./build/linux-debug/apps/ec_move --yes --record circle.ecraw circle arc --radius 50 --center -496 -122 424
+    ./build/linux-debug/apps/ec_move circle --radius 50 --speed 20
+    ./build/linux-debug/apps/ec_move --yes --record circle.ecraw circle --radius 50 --center -496 -122 424
 
 Without the robot, run the fake servers (Python 3, standard library only) in a
 second terminal and point the tools at them:

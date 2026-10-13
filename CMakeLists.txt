@@ -29,15 +29,14 @@ add_library(ec_driver
     src/motion/conditions.cpp
     src/motion/control_loop.cpp
     src/motion/executor.cpp
-    src/motion/follow.cpp
     src/motion/planning.cpp
     src/motion/point_to_point.cpp
     src/motion/sequence.cpp
     src/motion/stream.cpp
     src/motion/trajectory.cpp
-    src/motion/waypoints.cpp
     src/net/tcp_socket.cpp
     src/path.cpp
+    src/pose.cpp
     src/robot.cpp
 )
 
@@ -51,9 +50,10 @@ set_target_properties(ec_driver PROPERTIES CXX_EXTENSIONS OFF)
 ec_set_warnings(ec_driver)
 
 # PUBLIC: command parameters are nlohmann::ordered_json in the public headers.
+find_package(Eigen3 CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(Threads REQUIRED)
-target_link_libraries(ec_driver PUBLIC nlohmann_json::nlohmann_json Threads::Threads)
+target_link_libraries(ec_driver PUBLIC Eigen3::Eigen nlohmann_json::nlohmann_json Threads::Threads)
 if(WIN32)
     target_link_libraries(ec_driver PRIVATE ws2_32 winmm)  # winmm: timeBeginPeriod for the control loop
 endif()

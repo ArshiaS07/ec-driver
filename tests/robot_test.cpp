@@ -21,6 +21,7 @@
 #include "ec/command/movement.hpp"
 #include "ec/command/param.hpp"
 #include "ec/motion/point_to_point.hpp"
+#include "ec/pose.hpp"
 #include "support/frame_builder.hpp"
 #include "support/loopback_server.hpp"
 
@@ -90,6 +91,7 @@ private:
                 if (method == "inverseKinematic")  // the reference itself: the arm stands still
                     result = params.contains("referencePos") ? params["referencePos"].dump() : "[0,0,0,0,0,0]";
                 if (method == "positiveKinematic") result = "[400.0,-50.0,300.0,3.0,0.1,-0.2]";
+                if (method == "check_trajectory") result = "0";
                 peer.send(Json{{"jsonrpc", "2.0"}, {"result", result}, {"id", request["id"]}}.dump() + "\n");
             }
         }
@@ -192,40 +194,43 @@ TEST(Robot, KinematicsAreTheControllersInSiUnits) {
     MiniController controller;
     auto robot = ec::Robot::connect(controller.options());
     ASSERT_TRUE(robot);
-    const ec::Pose pose{{0.4, -0.05, 0.3}, {3.0, 0.1, -0.2}};
-    const ec::Joints reference{0.1, -1.5, 1.5, -1.5, -1.5, 0.0};
-    const auto q = robot->inverse_kinematics(pose, reference);
+    const Eigen::Isometry3d T_base_tcp = ec::from_mm_rad({400.0, -50.0, 300.0, 3.0, 0.1, -0.2});
+    const ec::Joints near{0.1, -1.5, 1.5, -1.5, -1.5, 0.0};
+    const auto q = robot->ik(T_base_tcp, near);
     ASSERT_TRUE(q) << describe(q.error());
     const Json ik = controller.last("inverseKinematic");
-    EXPECT_EQ(ik["targetPose"], Json::parse("[400.0,-50.0,300.0,3.0,0.1,-0.2]"));  // mm and radians
-    EXPECT_NEAR(ik["referencePos"][1].get<double>(), -85.9437, 1e-4);              // degrees
+    for (std::size_t i = 0; i < 6; ++i)  // mm and radians
+        EXPECT_NEAR(ik["targetPose"][i].get<double>(), (std::array{400.0, -50.0, 300.0, 3.0, 0.1, -0.2})[i], 1e-9);
+    EXPECT_NEAR(ik["referencePos"][1].get<double>(), -85.9437, 1e-4);  // degrees
     EXPECT_EQ(ik["unit_type"], 1);
-    for (std::size_t j = 0; j < q->size(); ++j) EXPECT_NEAR((*q)[j], reference[j], 1e-12);  // back in radians
+    for (std::size_t j = 0; j < q->size(); ++j) EXPECT_NEAR((*q)[j], near[j], 1e-12);  // back in radians
 
-    const auto p = robot->forward_kinematics(reference);
-    ASSERT_TRUE(p) << describe(p.error());
+    const auto T = robot->fk(near);
+    ASSERT_TRUE(T) << describe(T.error());
     EXPECT_NEAR(controller.last("positiveKinematic")["targetPos"][2].get<double>(), 85.9437, 1e-4);
-    EXPECT_NEAR(p->position[0], 0.4, 1e-12);  // metres
-    EXPECT_NEAR(p->position[1], -0.05, 1e-12);
-    EXPECT_EQ(p->rotation, (ec::Vec3{3.0, 0.1, -0.2}));
+    EXPECT_TRUE(T->translation().isApprox(Eigen::Vector3d(0.4, -0.05, 0.3), 1e-12));  // metres
+    EXPECT_TRUE(T->linear().isApprox(ec::rotation_from_rxyz(3.0, 0.1, -0.2), 1e-12));
 }
 
-TEST(Robot, APoseSessionSolvesEachPoseAndStreamsTheJoints) {
+TEST(Robot, PlansWithTheControllersKinematicsAndPlaysThroughTheTimestampService) {
     MiniController controller;
     auto robot = ec::Robot::connect(controller.options());
     ASSERT_TRUE(robot);
-    auto session = robot->servo_pose();
-    ASSERT_TRUE(session) << describe(session.error());
-    const ec::Pose here{{0.4, 0.0, 0.3}, {3.14, 0.0, 0.0}};
-    for (int i = 0; i < 20; ++i) {
-        session->target(here);
-        std::this_thread::sleep_for(8ms);
-    }
-    const auto closed = session->close();
-    EXPECT_TRUE(closed) << describe(closed.error());
-    EXPECT_GT(controller.count("inverseKinematic"), 5u);
-    EXPECT_GT(controller.count("tt_put_servo_joint_to_buf"), 10u);
-    EXPECT_EQ(controller.count("tt_clear_servo_joint_buf"), 1u);
+    // The mini controller answers inverseKinematic with the reference itself:
+    // the arm stays where it is (all joints 0 deg: J3 and J5 sit on singularities).
+    const ec::motion::TimedPose here{.time = 0.0, .pose = Eigen::Isometry3d::Identity()};
+    const ec::motion::TimedPose later{.time = 1.0, .pose = Eigen::Isometry3d::Identity()};
+    const std::vector path{here, later};
+    const auto refused = robot->plan(path);
+    ASSERT_FALSE(refused);
+    EXPECT_NE(refused.error().message.find("singularity"), std::string::npos) << refused.error().message;
+
+    const auto relaxed = robot->plan(path, {.singularity_margin = 0.0});
+    ASSERT_TRUE(relaxed) << describe(relaxed.error());
+    EXPECT_EQ(controller.count("inverseKinematic"), 1u + 2u);  // the refusal came at the first point
+    const auto played = robot->play(*relaxed).wait();
+    EXPECT_TRUE(played) << describe(played.error());
+    EXPECT_EQ(controller.count("start_trajectory"), 1u);
 }
 
 TEST(Robot, RunsAPlannedMove) {

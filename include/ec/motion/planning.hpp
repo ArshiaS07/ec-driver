@@ -1,16 +1,19 @@
 #pragma once
 /// @file
-/// Turning a Cartesian path into a timed joint trajectory (docs/motion.md 5.11):
-/// the path is solved by inverse kinematics every few millimetres, the
-/// solutions are interpolated in joint space, and the path is timed by a
-/// rest-to-rest speed profile. Pure, apart from the inverse kinematics the
-/// caller supplies (the controller's, through Robot::inverse_kinematics).
+/// Planned paths in joint space (docs/motion.md 5.11, ADR 0017): timed TCP
+/// poses are solved by inverse kinematics into joint positions, checked, and
+/// sampled into a JointTrajectory, which the controller's timestamp service
+/// plays (PlayTrajectory). Pure, apart from the inverse kinematics the caller
+/// supplies (the controller's, through Robot::ik). Poses follow ec/pose.hpp.
 
+#include <Eigen/Geometry>
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <expected>
-#include <format>
 #include <functional>
+#include <numbers>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -18,7 +21,6 @@
 #include "ec/motion/error.hpp"
 #include "ec/motion/trajectory.hpp"
 #include "ec/path.hpp"
-#include "ec/pose.hpp"
 #include "ec/units.hpp"
 
 namespace ec::motion {
@@ -33,10 +35,13 @@ public:
     /// `speed` [m/s] > 0, `ramp` [s] >= 0, all finite.
     [[nodiscard]] static std::expected<SpeedProfile, std::string> make(double distance, double speed, double ramp);
 
-    [[nodiscard]] double duration() const noexcept;                 ///< [s]
-    [[nodiscard]] double distance(double t) const noexcept;         ///< [m] covered at time t [s], within [0, total()]
-    [[nodiscard]] double speed(double t) const noexcept;            ///< [m/s] at time t; 0 outside [0, duration()]
-    [[nodiscard]] double total() const noexcept { return total_; }  ///< [m]
+    [[nodiscard]] double duration() const noexcept;          ///< [s]
+    [[nodiscard]] double distance(double t) const noexcept;  ///< [m] covered at time t [s], within [0, total()]
+    [[nodiscard]] double speed(double t) const noexcept;     ///< [m/s] at time t; 0 outside [0, duration()]
+    /// [s] when `distance` [m] is reached: the inverse of distance(t), clamped
+    /// to [0, duration()].
+    [[nodiscard]] double time_at(double distance) const noexcept;
+    [[nodiscard]] double total() const noexcept { return total_; }          ///< [m]
     [[nodiscard]] double cruise_speed() const noexcept { return cruise_; }  ///< [m/s]
     [[nodiscard]] double ramp() const noexcept { return ramp_; }            ///< [s]
     /// [m/s^2]; infinite without a ramp.
@@ -78,85 +83,73 @@ private:
     std::vector<Joints> m_;  // the slope at each knot
 };
 
-/// The inverse kinematics the planner calls: the joint positions [rad] that put
-/// the TCP at `pose`, chosen near `reference`. Robot::inverse_kinematics is one.
-using InverseKinematics = std::function<std::expected<Joints, Error>(const Pose& pose, const Joints& reference)>;
-
-/// How finely a path is solved.
-struct PlanOptions {
-    double spacing = 0.003;  ///< [m] of path between solved points; both ends are always solved
-    /// [rad]: neighbouring solutions further apart than this on any joint are
-    /// refused: the arm would change configuration, or pass a singularity.
-    double max_joint_step = deg_to_rad(10.0);
-    std::size_t max_points = 5'000;  ///< a path that needs more points is refused
+/// A TCP pose at a time: one point of a planned path.
+struct TimedPose {
+    double time = 0.0;                                       ///< [s] from the path's start
+    Eigen::Isometry3d pose = Eigen::Isometry3d::Identity();  ///< T_base_tcp
 };
 
-/// A path solved into joint positions: the spline's parameter is the distance
-/// along the path [m], from 0 to its length.
-struct JointPath {
-    JointSpline joints;
-    std::vector<Pose> poses{};  ///< the pose solved at each knot
-
-    [[nodiscard]] double length() const noexcept { return joints.knots().back(); }
-};
-
-/// Solves `poses`, at distances `s` [m] along a path (increasing from 0), by
-/// `ik`: the first near `start`, each next one near the one before (a solution
-/// given within one turn is taken to the nearest turn). Fails with
-/// Kind::Invalid if a pose has no solution or neighbouring solutions are more
-/// than options.max_joint_step apart on a joint.
-[[nodiscard]] std::expected<JointPath, Error> solve(std::vector<double> s, std::vector<Pose> poses, const Joints& start,
-                                                    const InverseKinematics& ik, const PlanOptions& options = {});
-
-/// Solves `path` at every options.spacing of its length and at its end (see
-/// above). One inverse-kinematics call per point.
+/// The poses of `path` timed by `profile` (made over the path's length): a pose
+/// every `step` [m] of path, and more often where the path is slow, so that no
+/// two are further apart in time than `step` takes at the cruise speed; and
+/// one at the end. Dense enough for plan() to interpolate between them in time.
 template <CartesianPath P>
-[[nodiscard]] std::expected<JointPath, Error> solve(const P& path, const Joints& start, const InverseKinematics& ik,
-                                                    const PlanOptions& options = {}) {
-    const double total = length(path);
-    if (!(std::isfinite(total) && total > 0.0))
-        return std::unexpected(Error{Error::Kind::Invalid, std::format("the path's length is {} m", total), {}});
-    if (!(options.spacing > 0.0))
-        return std::unexpected(Error{Error::Kind::Invalid, "the spacing must be positive", {}});
-    const double steps = std::ceil(total / options.spacing);
-    if (steps + 1.0 > static_cast<double>(options.max_points))
-        return std::unexpected(Error{Error::Kind::Invalid,
-                                     std::format("the path needs {} points at {} mm spacing, more than {}", steps + 1.0,
-                                                 options.spacing * 1000.0, options.max_points),
-                                     {}});
-    const auto n = static_cast<std::size_t>(steps);
-    std::vector<double> s(n + 1);
-    std::vector<Pose> poses(n + 1);
-    for (std::size_t k = 0; k <= n; ++k) {
-        s[k] = k == n ? total : total * static_cast<double>(k) / static_cast<double>(n);
-        poses[k] = pose_at(path, s[k]);
+[[nodiscard]] std::vector<TimedPose> sample(const P& path, const SpeedProfile& profile, double step) {
+    const double end = profile.duration();
+    const double longest = profile.cruise_speed() > 0.0 ? step / profile.cruise_speed() : end;
+    std::vector<TimedPose> out{{.time = 0.0, .pose = pose_at(path, 0.0)}};
+    for (double t = 0.0;;) {
+        t = std::min(t + longest, profile.time_at(profile.distance(t) + step));
+        if (!(t < end - 1e-9)) break;
+        out.push_back({.time = t, .pose = pose_at(path, profile.distance(t))});
     }
-    return solve(std::move(s), std::move(poses), start, ik, options);
+    if (end > 0.0) out.push_back({.time = end, .pose = pose_at(path, profile.total())});
+    return out;
 }
 
-/// A solved path with its timing: positions and velocities at any time.
-class TimedPath {
-public:
-    /// Times `path` with a SpeedProfile over its length; fails (Kind::Invalid)
-    /// on a speed or ramp SpeedProfile::make() refuses.
-    [[nodiscard]] static std::expected<TimedPath, Error> make(JointPath path, double speed, double ramp);
+/// The inverse kinematics plan() calls: the joint positions [rad] that put the
+/// TCP at T_base_tcp, chosen near `near`. Robot::ik is one.
+using InverseKinematics =
+    std::function<std::expected<Joints, Error>(const Eigen::Isometry3d& T_base_tcp, const Joints& near)>;
 
-    [[nodiscard]] double duration() const noexcept { return profile_.duration(); }
-    [[nodiscard]] Joints position(double t) const noexcept;  ///< [rad] at time t [s]
-    [[nodiscard]] Joints velocity(double t) const noexcept;  ///< [rad/s] at time t [s]
-    [[nodiscard]] const JointPath& path() const noexcept { return path_; }
-    [[nodiscard]] const SpeedProfile& profile() const noexcept { return profile_; }
-
-    /// Positions every `period` [s] from 0, ending exactly at the duration (the
-    /// last interval between half a period and one and a half): a trajectory to
-    /// play (PlayTrajectory) or follow (FollowTrajectory).
-    [[nodiscard]] JointTrajectory sample(double period) const;
-
-private:
-    TimedPath(JointPath path, SpeedProfile profile) : path_(std::move(path)), profile_(profile) {}
-
-    JointPath path_;
-    SpeedProfile profile_;
+/// How plan() solves and checks a path.
+struct PlanOptions {
+    /// [m]: neighbouring points further apart are joined by a straight line,
+    /// solved every max_step along it.
+    double max_step = 0.003;
+    double max_turn = deg_to_rad(1.0);  ///< [rad]: the same for the orientation, turned evenly (slerp)
+    /// [rad]: neighbouring solutions further apart than this on a joint are
+    /// refused: the arm would change configuration, or pass close to a singularity.
+    double max_joint_step = deg_to_rad(10.0);
+    /// [rad]: how far J5 (the wrist) and J3 (the elbow) must stay from 0 and 180
+    /// deg, where the EC series' arm is singular (its layout is Universal Robots').
+    double singularity_margin = deg_to_rad(5.0);
+    double period = 0.02;             ///< [s] between the trajectory's points
+    TrajectoryLimits limits{};        ///< joint positions, speeds, accelerations
+    std::size_t max_points = 10'000;  ///< solved points at most
 };
+
+/// Turns a timed TCP path into a joint trajectory. The path's times start at 0
+/// and increase; its first and last points should be at rest (the trajectory
+/// runs from rest to rest). Steps: points further apart than max_step or
+/// max_turn are joined by straight lines and filled in; every point is solved by
+/// `ik`, the first near `start`, each next one near the one before (a solution
+/// given within one turn taken to the nearest turn); the solutions are
+/// interpolated over time (JointSpline) and sampled every `period`, ending
+/// exactly at the last time. Fails with Kind::Invalid, naming the point, if a
+/// pose has no solution, if neighbouring solutions differ by more than
+/// max_joint_step, if J5 or J3 comes within singularity_margin of 0 or 180 deg,
+/// or if the trajectory breaks the limits; other kinds (Disconnected, ...) pass
+/// through from `ik`. Every point costs one call of `ik`.
+[[nodiscard]] std::expected<JointTrajectory, Error> plan(std::span<const TimedPose> path, const Joints& start,
+                                                         const InverseKinematics& ik, const PlanOptions& options = {});
+
+/// How close joint positions come to the EC series' wrist and elbow
+/// singularities: the least distance of J5, and of J3, from 0 or 180 deg [rad].
+struct SingularityMargins {
+    double wrist = std::numbers::pi / 2.0;
+    double elbow = std::numbers::pi / 2.0;
+};
+[[nodiscard]] SingularityMargins singularity_margins(std::span<const Joints> positions) noexcept;
 
 }  // namespace ec::motion

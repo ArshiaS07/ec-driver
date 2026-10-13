@@ -310,6 +310,21 @@ TEST(ControlLoop, AFrameArrivingDuringTheCycleIsFresh) {
     EXPECT_TRUE(result) << describe(result.error());
 }
 
+TEST(ControlLoop, CallsAreAnsweredBetweenCyclesNotAtThem) {
+    Rig rig(ControlOptions{.period = std::chrono::milliseconds{50}});
+    const auto started = std::chrono::steady_clock::now();
+    for (int i = 0; i < 10; ++i)
+        ASSERT_TRUE(rig.loop->call(ec::command::to_request(ec::command::GetRobotMode{}), ec::command::Kind::Query));
+    EXPECT_LT(std::chrono::steady_clock::now() - started, 250ms);  // a cycle each would take 500 ms
+    const auto job = rig.loop->run(Pinger{.cycles = 0});           // gated as before while an activity runs
+    std::this_thread::sleep_for(120ms);
+    const auto busy =
+        rig.loop->call(ec::command::to_request(ec::command::SetSpeed{.value_pct = 50}), ec::command::Kind::Setting);
+    EXPECT_EQ(busy.error().kind, Error::Kind::Refused);
+    job.cancel();
+    EXPECT_EQ(job.wait().error().kind, Error::Kind::Cancelled);
+}
+
 TEST(ControlLoop, NextStatusWaitsForTheNextCycle) {
     Rig rig;
     const auto first = rig.loop->next_status(0, 1s);

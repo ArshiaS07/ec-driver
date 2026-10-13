@@ -44,14 +44,15 @@ by the layers above; a lower layer knows nothing of the layers above it.
 | `ec::command` | `AllCommands`, `all_commands()` | every typed call, as a type list and as a table of names and kinds | yes |
 | `ec::command` | `Client` | one call at a time: send, wait for the response with its id, decode | no |
 | `ec` | `RobotState`, `RobotMode`, `CycleMode` | status values both ports report | yes |
-| `ec` | `Joints`, `Pose`, unit conversions | SI types, and deg/mm conversion where commands are built | yes |
-| `ec` | `CartesianPath`, `Circle` | paths of the TCP: a length and a pose at every distance along it | yes |
+| `ec` | `Joints`, unit conversions | SI types, and deg/mm conversion where commands are built | yes |
+| `ec` | poses (`Eigen::Isometry3d`, T_ab), `from_mm_rad`, `to_mm_rad` | poses in SI, converted to the controller's mm and rx, ry, rz only at the wire | yes |
+| `ec` | `CartesianPath`, `Circle`, `Line` | paths of the TCP: a length and a pose at every distance along it | yes |
 | `ec::motion` | `observe`, `Conditions` | the newest state → which conditions for motion hold | yes |
 | `ec::motion` | `Activity`, `AnyActivity`, `Spec` | the contract of everything the control thread runs; its type erasure | yes |
 | `ec::motion` | `Executor` | supervision: one activity at a time, conditions checked every cycle, close always run, faults latched | yes |
-| `ec::motion` | `MoveJoint`, `MoveLine`, `MoveLineToPose`, `MoveArc`, `MovePath`, `PlayTrajectory`, `Sequence`, `BringUp` | planned motion and procedures, as specs and the activities that run them | yes |
-| `ec::motion` | `SpeedProfile`, `JointSpline`, `solve()`, `TimedPath` | a Cartesian path into a timed joint trajectory, solved by a given inverse kinematics (the controller's) | yes |
-| `ec::motion` | `ServoLink`, `ServoStream`, `PoseServoStream`, `FollowTrajectory`, `VelocityStream`, `JogStream`, `RateLimiter` | streamed motion: the transparent-transmission protocol; newest target (joints or a pose), watchdog, shaping, one command per cycle; a planned trajectory streamed point by point | yes (reads a mailbox) |
+| `ec::motion` | `MoveJoint`, `PlayTrajectory`, `Sequence`, `BringUp` | planned motion and procedures, in joint space, as specs and the activities that run them | yes |
+| `ec::motion` | `SpeedProfile`, `sample()`, `TimedPose`, `plan()`, `JointSpline` | timed TCP poses solved by a given inverse kinematics (the controller's) into a checked joint trajectory | yes |
+| `ec::motion` | `ServoStream`, `VelocityStream`, `RateLimiter` | streamed motion in joint space: newest target, watchdog, shaping, one command per cycle | yes (reads a mailbox) |
 | `ec::motion` | `ControlLoop`, `Job`, `Session` | the control thread (the only user of 8055) and the applications' handles | no |
 | `ec` | `Robot` | the facade: receiver, newest state and control loop composed; what applications use | no |
 
@@ -60,7 +61,7 @@ records it (raw and/or HDF5) or converts a raw recording; `ec_query` sends one
 SDK call (queries and computations; anything else needs `--write`), lists
 every call, or checks every query's reply against its type; `ec_move` moves
 the arm through `ec::Robot` (bring-up, joint moves, a streamed sine, a circle
-of the TCP in seven ways, stop), printing its plan unless given `--yes`, and
+of the TCP planned in joint space, stop), printing its plan unless given `--yes`, and
 records 8056 while it runs with `--record`. File formats: `docs/log-format.md`.
 The motion design and its reasons: `docs/motion.md`.
 
@@ -129,11 +130,11 @@ step ends with something testable.
 | 10 | Done: point-to-point motion through the control loop | first move at 10 % speed; a stop mid-move |
 | 11 | Experiments: stop latency, two 8055 connections, close sequences; tuning the numbers in `docs/motion.md` §7.2 | numbers for timeouts |
 | 12 | Done: `JointTrajectory`, `validate()` | bad trajectories rejected |
-| 13 | Done differently: the controller's own kinematics are used (ADR 0016, proposed); `ec_move circle` checks them against the reported TCP | `ec_move circle MODE --radius R` without `--yes` |
-| 14 | Done without the tracking monitor: `PlayTrajectory` | a planned trajectory on the robot |
+| 13 | Done differently: the controller's own kinematics, in joint-space planning (ADR 0017, proposed); `ec_move circle` checks them against the reported TCP | `ec_move circle --radius R` without `--yes` |
+| 14 | Done without the tracking monitor: `PlayTrajectory`, `plan()` for TCP paths | a planned circle on the robot |
 | 15 | Logging of commands, setpoints and events (the feedback stream is done: raw and HDF5) | commanded against actual |
 | 16 | Transparent-transmission experiments (`docs/motion.md` §7: underrun, step response, round trip) | numbers for the loop design |
-| 17 | Done: `ServoStream`, sessions, the watchdog; `FollowTrajectory`, `PoseServoStream` (`docs/motion.md` 5.11) | `ec_move --yes sine 6 2 4`, then `ec_move --yes circle follow --radius 30` on the robot |
+| 17 | Done: `ServoStream`, sessions, the watchdog; TCP targets solved by the application (`docs/motion.md` 5.11) | `ec_move --yes sine 6 2 4`, then `ec_move --yes circle --radius 30 --stream` on the robot |
 | 18 | Done for joints (speedj): `VelocityStream`; speedl later | velocity commands that stop on timeout |
 | 19 | Done: `ec::Robot`; examples and a guide still to write | |
 | 20 | Extras as needed: force control, Python bindings, ROS 2 | |
@@ -145,8 +146,8 @@ Proposed changes to this draft, not decided either:
   streamed motion as sessions the application pushes targets into, with a
   watchdog on the age of the newest target.
 
-- Orientation stays the controller's rx/ry/rz until its convention is checked
-  on the robot, so a math library (Eigen) waits for kinematics.
+- Poses are Eigen isometries since the convention was measured (ADR 0012) and
+  planning needed them (ADR 0017); rx/ry/rz stay at the wire.
 - The motion lease enforced by a sender above the command client, not inside
   the command layer.
 - The supervisor's states built step by step; observe-only needs only a few.
