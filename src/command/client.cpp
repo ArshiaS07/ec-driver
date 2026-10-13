@@ -46,6 +46,17 @@ void Client::disconnect() noexcept {
 
 std::expected<Json, Error> Client::call(const Request& request) { return call(request, reply_timeout_); }
 
+std::expected<void, Error> Client::send_only(const Request& request) {
+    if (!socket_.is_open()) return std::unexpected(Error{Error::Kind::Disconnected, 0, "not connected"});
+    ++stats_.calls;
+    const std::string line = encode(request, next_id_++);
+    if (const auto sent = socket_.send_all(as_bytes(line), reply_timeout_); !sent) {
+        disconnect();
+        return std::unexpected(disconnected(sent.error()));
+    }
+    return {};
+}
+
 std::expected<Json, Error> Client::call(const Request& request, Timeout timeout) {
     if (!socket_.is_open()) return std::unexpected(Error{Error::Kind::Disconnected, 0, "not connected"});
 

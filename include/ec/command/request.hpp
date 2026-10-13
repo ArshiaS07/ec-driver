@@ -17,6 +17,39 @@ namespace ec::command {
 /// Joint positions as the controller sends and expects them: J1..J6 [deg].
 using JointsDeg = std::array<double, 6>;
 
+/// A pose as the commands here send and receive it: x, y, z [mm], then rx, ry,
+/// rz [rad], composed as R = Rz(rz) * Ry(ry) * Rx(rx) (ADR 0012). Every command
+/// with a `unit_type` parameter sends 1 (radians), so this is also what replies hold.
+using PoseMmRad = std::array<double, 6>;
+
+/// What a call does to the controller; decides what may be sent when. From
+/// docs/sdk_calls.md, except that a motion family's queries (state, progress,
+/// validity checks) count as queries here.
+enum class Kind {
+    Query,    ///< reads; changes nothing
+    Compute,  ///< a computation on the controller (kinematics); changes nothing
+    Setting,  ///< changes stored or selected configuration (tool, frames, payload, speed, IO, variables)
+    Action,   ///< a one-shot change of controller state (servo on, clear alarm, backdrive, ...)
+    Motion,   ///< part of a motion family's protocol; moves the arm or prepares to
+    Session,  ///< part of a non-motion open/data/close protocol (serial ports, force data)
+};
+
+/// Queries and computations: safe to send at any time.
+[[nodiscard]] constexpr bool is_read_only(Kind k) noexcept { return k == Kind::Query || k == Kind::Compute; }
+
+/// Lower-case name, e.g. "query".
+[[nodiscard]] constexpr std::string_view to_string(Kind k) noexcept {
+    switch (k) {
+        case Kind::Query: return "query";
+        case Kind::Compute: return "compute";
+        case Kind::Setting: return "setting";
+        case Kind::Action: return "action";
+        case Kind::Motion: return "motion";
+        case Kind::Session: return "session";
+    }
+    return "?";
+}
+
 /// The command has a params() member.
 template <typename C>
 concept HasParams = requires(const C& c) { c.params(); };
@@ -29,6 +62,7 @@ concept HasDecode = requires(const Json& result) {
 
 /// One SDK call, described as a type. Required:
 ///   - `static constexpr std::string_view method`: the JSON-RPC method name;
+///   - `static constexpr Kind kind`: what the call does;
 ///   - `using Reply = ...`: what the call returns.
 /// Optional:
 ///   - `Json params() const`: the request's "params"; without it, none are sent;
@@ -39,6 +73,7 @@ template <typename C>
 concept Command =
     requires {
         { C::method } -> std::convertible_to<std::string_view>;
+        { C::kind } -> std::convertible_to<Kind>;
         typename C::Reply;
     } && (!HasParams<C> || requires(const C& c) {
         { c.params() } -> std::same_as<Json>;

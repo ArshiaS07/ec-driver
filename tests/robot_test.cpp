@@ -1,0 +1,236 @@
+// ec::Robot against a minimal controller on 127.0.0.1: a command port that
+// answers every call, and a monitor port that sends a frame every 8 ms. Checks
+// the wiring: connecting, state, typed calls, a planned move, a servo session,
+// stop from another thread, and stopping on destruction.
+
+#include "ec/robot.hpp"
+
+#include <gtest/gtest.h>
+
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <map>
+#include <mutex>
+#include <optional>
+#include <string>
+#include <thread>
+#include <vector>
+
+#include "ec/command/movement.hpp"
+#include "ec/command/param.hpp"
+#include "ec/motion/point_to_point.hpp"
+#include "support/frame_builder.hpp"
+#include "support/loopback_server.hpp"
+
+namespace {
+
+using namespace std::chrono_literals;
+using ec::command::Json;
+using ec::motion::Error;
+
+// Ports 8055 and 8056 of a robot that accepts everything and stands still.
+class MiniController {
+public:
+    MiniController() {
+        commands_thread_ = std::jthread([this](const std::stop_token& stop) { serve_commands(stop); });
+        frames_thread_ = std::jthread([this](const std::stop_token& stop) { send_frames(stop); });
+    }
+    ~MiniController() {
+        stop_.store(true);
+        // Both threads end once the robot's connections close, or at once if none came.
+    }
+    MiniController(const MiniController&) = delete;
+    MiniController& operator=(const MiniController&) = delete;
+
+    ec::RobotOptions options() const {
+        return ec::RobotOptions{.host = "127.0.0.1",
+                                .command_port = commands_.port(),
+                                .monitor_port = frames_.port(),
+                                .first_state_within = 2s};
+    }
+    std::vector<std::string> seen() const {
+        const std::lock_guard lock(mutex_);
+        return seen_;
+    }
+    std::size_t count(const std::string& method) const {
+        const auto s = seen();
+        return static_cast<std::size_t>(std::count(s.begin(), s.end(), method));
+    }
+
+private:
+    void serve_commands(const std::stop_token& stop) {
+        while (auto connection = accept_or_quit(commands_, stop)) {
+            ec::test::Peer& peer = *connection;
+            for (;;) {
+                const std::string line = peer.receive_line();
+                if (line.empty()) break;
+                const Json request = Json::parse(line);
+                const std::string method = request["method"].get<std::string>();
+                {
+                    const std::lock_guard lock(mutex_);
+                    seen_.push_back(method);
+                }
+                std::string result = "true";
+                if (method == "getRobotMode") result = "2";
+                if (method == "getSpeed") result = "100";
+                peer.send(Json{{"jsonrpc", "2.0"}, {"result", result}, {"id", request["id"]}}.dump() + "\n");
+            }
+        }
+    }
+
+    void send_frames(const std::stop_token& stop) {
+        while (auto connection = accept_or_quit(frames_, stop)) {
+            ec::test::Peer& peer = *connection;
+            const auto frame = ec::test::make_frame(ec::test::FrameFields{});
+            const std::string bytes(reinterpret_cast<const char*>(frame.data()), frame.size());
+            try {
+                while (!stop.stop_requested()) {
+                    peer.send(bytes);
+                    std::this_thread::sleep_for(8ms);
+                }
+            } catch (const std::runtime_error&) {
+                peer.close();  // the robot closed the monitor connection: wait for the next one
+            }
+        }
+    }
+
+    // Waits for the robot to connect, in slices so that a stop is seen; nullopt once stopped.
+    std::optional<ec::test::Peer> accept_or_quit(ec::test::LoopbackServer& server, const std::stop_token& stop) {
+        while (!stop.stop_requested() && !stop_.load()) {
+            try {
+                return server.accept(100ms);
+            } catch (const std::runtime_error&) {
+                continue;  // nothing yet: look again
+            }
+        }
+        return std::nullopt;
+    }
+
+    ec::test::LoopbackServer commands_;
+    ec::test::LoopbackServer frames_;
+    mutable std::mutex mutex_;
+    std::vector<std::string> seen_;
+    std::atomic<bool> stop_{false};
+    std::jthread commands_thread_;
+    std::jthread frames_thread_;
+};
+
+TEST(Robot, ConnectFailsWithoutTheCommandPort) {
+    std::uint16_t closed = 0;
+    {
+        const ec::test::LoopbackServer gone;
+        closed = gone.port();
+    }
+    const auto robot =
+        ec::Robot::connect(ec::RobotOptions{.host = "127.0.0.1", .command_port = closed, .connect_timeout = 500ms});
+    ASSERT_FALSE(robot);
+    EXPECT_EQ(robot.error().kind, Error::Kind::Disconnected);
+    EXPECT_NE(robot.error().message.find("command port"), std::string::npos);
+}
+
+TEST(Robot, ConnectFailsWithoutMonitorFrames) {
+    ec::test::LoopbackServer commands;
+    ec::test::LoopbackServer silent;  // accepts, never sends
+    const auto robot = ec::Robot::connect(ec::RobotOptions{.host = "127.0.0.1",
+                                                           .command_port = commands.port(),
+                                                           .monitor_port = silent.port(),
+                                                           .first_state_within = 200ms});
+    ASSERT_FALSE(robot);
+    EXPECT_NE(robot.error().message.find("no frame"), std::string::npos);
+}
+
+TEST(Robot, ConnectsAndReportsTheState) {
+    MiniController controller;
+    auto robot = ec::Robot::connect(controller.options());
+    ASSERT_TRUE(robot) << describe(robot.error());
+    const auto s = robot->state();
+    ASSERT_TRUE(s);
+    EXPECT_GT(s->seq, 0u);
+    EXPECT_EQ(s->state.robot_mode, ec::RobotMode::Remote);
+    EXPECT_LT(s->age(), 1s);
+    const auto next = robot->next_state(s->seq, 1s);
+    ASSERT_TRUE(next);
+    EXPECT_GT(next->seq, s->seq);
+    for (int i = 0; i < 100 && robot->status().cycles == 0; ++i) std::this_thread::sleep_for(5ms);
+    const auto status = robot->status();
+    EXPECT_EQ(status.mode, ec::motion::Mode::Idle);
+    EXPECT_TRUE(status.connected);
+    EXPECT_TRUE(status.conditions.contains(ec::motion::kCanStartMotion));
+    EXPECT_TRUE(robot->feedback_status().connected);
+}
+
+TEST(Robot, TypedCallsGoThroughTheControlLoop) {
+    MiniController controller;
+    auto robot = ec::Robot::connect(controller.options());
+    ASSERT_TRUE(robot);
+    EXPECT_EQ(robot->call(ec::command::GetRobotMode{}), ec::RobotMode::Remote);
+    const auto refused = robot->call(ec::command::MoveByJoint{});
+    ASSERT_FALSE(refused);
+    EXPECT_EQ(refused.error().kind, Error::Kind::Refused);
+    EXPECT_EQ(controller.count("moveByJoint"), 0u);
+}
+
+TEST(Robot, RunsAPlannedMove) {
+    MiniController controller;
+    auto robot = ec::Robot::connect(controller.options());
+    ASSERT_TRUE(robot);
+    const auto here = robot->state()->state.joint_position;
+    const auto result = robot->run(ec::motion::MoveJoint{.target = here, .speed = 0.1}).wait();
+    EXPECT_TRUE(result) << describe(result.error());
+    EXPECT_EQ(controller.count("moveByJoint"), 1u);
+}
+
+TEST(Robot, AServoSessionOpensStreamsAndClosesGracefully) {
+    MiniController controller;
+    auto robot = ec::Robot::connect(controller.options());
+    ASSERT_TRUE(robot);
+    auto session = robot->servo(ec::motion::ServoOptions{.lookahead = 24ms});
+    ASSERT_TRUE(session) << describe(session.error());
+    EXPECT_TRUE(session->running());
+    auto target = robot->state()->state.joint_position;
+    target[5] += ec::deg_to_rad(1.0);
+    for (int i = 0; i < 20; ++i) {
+        session->target(target);
+        std::this_thread::sleep_for(8ms);
+    }
+    const auto closed = session->close();
+    EXPECT_TRUE(closed) << describe(closed.error());
+    EXPECT_EQ(controller.count("transparent_transmission_init"), 1u);
+    EXPECT_GT(controller.count("tt_put_servo_joint_to_buf"), 10u);
+    EXPECT_EQ(controller.count("tt_clear_servo_joint_buf"), 1u);
+    EXPECT_EQ(controller.count("stop"), 0u);
+}
+
+TEST(Robot, StopFromAnotherThreadEndsAStreamAtOnce) {
+    MiniController controller;
+    auto robot = ec::Robot::connect(controller.options());
+    ASSERT_TRUE(robot);
+    auto session = robot->servo();
+    ASSERT_TRUE(session);
+    std::jthread([&] { robot->stop(); }).join();
+    const auto ended = session->job().wait_for(2s);
+    ASSERT_TRUE(ended);
+    ASSERT_FALSE(*ended);
+    EXPECT_EQ(ended->error().kind, Error::Kind::Stopped);
+    EXPECT_EQ(controller.count("stop"), 1u);
+    EXPECT_EQ(controller.count("tt_clear_servo_joint_buf"), 1u);
+    EXPECT_FALSE(session->running());
+}
+
+TEST(Robot, DestroyingTheRobotStopsWhatRuns) {
+    MiniController controller;
+    ec::motion::Job job;
+    {
+        auto robot = ec::Robot::connect(controller.options());
+        ASSERT_TRUE(robot);
+        auto session = robot->servo();
+        ASSERT_TRUE(session);
+        job = session->job();
+        session->close_wait = 0ms;  // leave it to the robot
+        // the session is destroyed first, then the robot
+    }
+    ASSERT_TRUE(job.done());
+}
+
+}  // namespace

@@ -15,11 +15,12 @@ and cross-compiles for 64-bit ARM Linux.
 |---|---|
 | `ec::net::TcpSocket` (Linux + Windows) | done, tested against a loopback server |
 | `ec::feedback` (port 8056: framing, decoding, reader, SI values) | done, tested |
-| `ec::command` (port 8055: codec, typed calls, client) | done, tested against real replies; 7 of 184 calls typed |
+| `ec::command` (port 8055: codec, typed calls, client) | done, tested; all 184 calls typed, replies checked against the EA66 for a few (`ec_query --check-all` checks the rest) |
 | `ec::log` (raw recordings; HDF5 logs in the optional `ec::hdf5`) | done, tested |
-| `apps/ec_monitor`, `apps/ec_record`, `apps/ec_query` | done, tested end to end against the fake servers |
 | live state: `feedback::Receiver` (8056 thread, reconnects), `ec::Latest` (newest value) | done, tested; not yet on the robot |
-| everything else | the draft roadmap in `docs/architecture.md` §5 |
+| `ec::motion` (supervision, planned and streamed motion, the control thread) and `ec::Robot` | done, tested against loopback servers and a simulated arm; not yet on the robot (`docs/motion.md`) |
+| `apps/ec_monitor`, `apps/ec_record`, `apps/ec_query`, `apps/ec_move` | done, tested end to end against the fake servers |
+| still open | the robot checks in `docs/motion.md` §7; logging of commands and events; preflight; Cartesian streams; a guide |
 
 ## Try it
 
@@ -35,11 +36,22 @@ Recording the stream (formats in `docs/log-format.md`):
     ./build/linux-debug/apps/ec_record --h5 run.h5 --seconds 60
     ./build/linux-debug/apps/ec_record --replay run.ecraw --h5 run.h5       # a raw recording, converted later
 
-One SDK call from the command line (read-only by default; `--write` for
-anything else):
+One SDK call from the command line (queries and computations; `--write` for
+anything else), every call listed, or every query's reply checked against its
+type:
 
     ./build/linux-debug/apps/ec_query getRobotMode
     ./build/linux-debug/apps/ec_query getDH index=0
+    ./build/linux-debug/apps/ec_query --list
+    ./build/linux-debug/apps/ec_query --check-all
+
+Moving the arm through the driver (remote mode; nothing moves without
+`--yes`, Ctrl+C stops it):
+
+    ./build/linux-debug/apps/ec_move status
+    ./build/linux-debug/apps/ec_move --yes bring-up
+    ./build/linux-debug/apps/ec_move --yes nudge 6 5               # J6 by +5 deg at 10 % speed
+    ./build/linux-debug/apps/ec_move --yes sine 6 2 4               # stream 2 deg x sin(2 pi t / 4 s) on J6
 
 Without the robot, run the fake servers (Python 3, standard library only) in a
 second terminal and point the tools at them:
@@ -49,6 +61,9 @@ second terminal and point the tools at them:
 
     python3 tools/fake_8055.py --split --stale
     ./build/linux-debug/apps/ec_query --host 127.0.0.1 getRobotMode
+
+    python3 tools/fake_robot.py                  # a simulated arm on 8055 and 8056 (control port 8057)
+    ./build/linux-debug/apps/ec_move --host 127.0.0.1 --yes bring-up
 
 On Windows the binary is `build\windows-debug\apps\ec_monitor.exe`.
 
@@ -144,11 +159,12 @@ working tree, on both systems, regardless of each user's `core.autocrlf`.
       feedback/           port 8056: frame, framer, reader, receiver thread, SI state
       command/            port 8055: one type per SDK call, codec, client
       log/                sinks: raw recordings, HDF5 logs (optional)
-      motion/             motion families                                     (later)
+      motion/             supervision, planned and streamed motion, the control thread
+      robot.hpp           ec::Robot, the facade applications use
     src/                  mirrors include/ec/; detail/ holds private headers
-    apps/                 command-line tools (ec_monitor, ec_record, ec_query), on CLI11
+    apps/                 command-line tools (ec_monitor, ec_record, ec_query, ec_move), on CLI11
     tests/                GoogleTest; support/ shared helpers; apps/ end-to-end tool tests
-    tools/                fake controller ports (fake_8055.py, fake_8056.py); measurements on the robot
+    tools/                fake controller ports (fake_8055.py, fake_8056.py, fake_robot.py); measurements on the robot
                           (rotation_convention.py; robot_checks.py, read-only)
     docs/
     cmake/                warnings, cross toolchains

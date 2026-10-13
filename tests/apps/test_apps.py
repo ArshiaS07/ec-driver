@@ -3,7 +3,7 @@
 
 Run by ctest (tests/CMakeLists.txt) on native builds:
 
-    test_apps.py --ec-query PATH --ec-monitor PATH --ec-record PATH --tools DIR
+    test_apps.py --ec-query PATH --ec-monitor PATH --ec-record PATH --ec-move PATH --tools DIR
 
 Every invocation names 127.0.0.1 explicitly, so not even a command line that
 parses by mistake can reach the robot's default address. Standard library only.
@@ -53,6 +53,49 @@ class FakeServer:
         self.proc.stdout.close()
 
 
+class FakeRobot:
+    """tools/fake_robot.py on free ports: a simulated arm on its command,
+    monitor and control ports."""
+
+    def __init__(self, *options: str):
+        self.proc = subprocess.Popen(
+            [sys.executable, str(PATHS.tools / "fake_robot.py"), "--host", LOCAL, "--port", "0", *options],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        first = self.proc.stdout.readline()  # "fake robot on 127.0.0.1: command P, monitor P, control P, ..."
+        match = re.search(r"command (\d+), monitor (\d+), control (\d+)", first)
+        if not match:
+            self.proc.kill()
+            self.proc.wait()
+            self.proc.stdout.close()
+            raise RuntimeError(f"fake_robot.py did not start: {first!r}")
+        self.command, self.monitor, self.control_port = map(int, match.groups())
+        self.drain = threading.Thread(target=self.proc.stdout.read, daemon=True)
+        self.drain.start()
+
+    def control(self, line: str) -> str:
+        with socket.create_connection((LOCAL, self.control_port), timeout=5) as s:
+            s.sendall((line + "\n").encode())
+            answer = b""
+            while not answer.endswith(b"\n"):
+                chunk = s.recv(4096)
+                if not chunk:
+                    break
+                answer += chunk
+        return answer.decode().strip()
+
+    def state(self) -> dict:
+        return json.loads(self.control("state"))
+
+    def stop(self) -> None:
+        self.proc.kill()
+        self.proc.wait()
+        self.drain.join(timeout=5)
+        self.proc.stdout.close()
+
+
 def run(tool: Path, *args: str, timeout: float = 20.0) -> subprocess.CompletedProcess:
     return subprocess.run([str(tool), *args], capture_output=True, text=True, timeout=timeout)
 
@@ -88,9 +131,37 @@ class EcQuery(unittest.TestCase):
                 self.assertEqual(r.stdout.strip(), "95.431")
 
     def test_controller_error_is_a_failure(self):
-        r = self.query("getNothing")
+        r = self.query("--untyped", "--write", "getNothing")
         self.assertEqual(r.returncode, 1)
         self.assertIn("method not found", r.stderr)
+
+    def test_unknown_methods_are_refused_before_sending(self):
+        r = self.query("getNothing")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("not a call of the SDK manual", r.stderr)
+        r = self.query("--untyped", "getNothing")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("--write", r.stderr)
+
+    def test_lists_every_call_of_the_catalog(self):
+        r = run(PATHS.ec_query, "--list")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        listed = dict(line.split("\t") for line in r.stdout.splitlines())
+        self.assertEqual(len(listed), 184)
+        self.assertEqual(listed["getRobotState"], "query")
+        self.assertEqual(listed["moveByJoint"], "motion")
+        self.assertEqual(listed["poseMul"], "compute")
+        catalog = (PATHS.tools.parent / "docs" / "sdk_calls.md").read_text(encoding="utf-8")
+        documented = set(re.findall(r"^\| 2\.2\.[0-9.]+ \| `([A-Za-z_0-9]+)`", catalog, re.M))
+        self.assertEqual(set(listed), documented)
+
+    def test_checks_every_query_against_its_type(self):
+        r = self.query("--check-all")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("ok        getSoftVersion", r.stdout)
+        self.assertIn("ok        get_joint_pos", r.stdout)
+        self.assertRegex(r.stdout, r"\d+ fit their types, 0 did not, \d+ failed")
+        self.assertNotIn("moveByJoint", r.stdout)  # queries only
 
     def test_computations_are_read_only(self):
         r = self.query("poseMul", "pose1=[100,0,0,0,0,90]", "pose2=[10,0,0,0,0,0]", "unit_type=0")
@@ -321,11 +392,91 @@ class RobotChecks(unittest.TestCase):
                 self.assertEqual(self.check(*args).returncode, 2)
 
 
+class EcMove(unittest.TestCase):
+    """ec_move against the moving fake: plans, refusals, bring-up, moves, a
+    streamed sine, and an emergency stop in the middle of a move."""
+
+    def robot(self, *options: str) -> FakeRobot:
+        fake = FakeRobot(*options)
+        self.addCleanup(fake.stop)
+        return fake
+
+    def move(self, fake: FakeRobot, *args: str, timeout: float = 30.0) -> subprocess.CompletedProcess:
+        return run(PATHS.ec_move, "--host", LOCAL, "--command-port", str(fake.command), "--monitor-port",
+                   str(fake.monitor), *args, timeout=timeout)
+
+    def test_status_reads_only(self):
+        fake = self.robot()
+        r = self.move(fake, "status")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("mode remote, state stop, servos off", r.stdout)
+        self.assertIn("conditions:", r.stdout)
+
+    def test_a_move_without_yes_only_prints_its_plan(self):
+        fake = self.robot("--ready")
+        r = self.move(fake, "joint", "10", "-90", "0", "-90", "90", "0")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("nothing moved", r.stdout)
+        self.assertAlmostEqual(fake.state()["q"][0], 0.0)
+
+    def test_a_move_before_bring_up_is_refused_naming_what_is_missing(self):
+        fake = self.robot()
+        r = self.move(fake, "--yes", "joint", "10", "-90", "0", "-90", "90", "0")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("cannot start without: servo on, encoders synchronised", r.stderr)
+
+    def test_bring_up_then_move(self):
+        fake = self.robot()
+        r = self.move(fake, "--yes", "bring-up")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(fake.state()["servo"])
+        r = self.move(fake, "--yes", "joint", "10", "-90", "0", "-90", "90", "0", "--speed", "0.3")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertAlmostEqual(fake.state()["q"][0], 10.0, places=3)
+
+    def test_nudge_and_a_streamed_sine(self):
+        fake = self.robot("--ready")
+        r = self.move(fake, "--yes", "nudge", "6", "5")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertAlmostEqual(fake.state()["q"][5], 5.0, places=3)
+        r = self.move(fake, "--yes", "sine", "6", "2", "0.5", "--seconds", "1")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("sine: done", r.stdout)
+        state = fake.state()
+        self.assertFalse(state["streaming"])  # the stream was cleared
+        self.assertLess(abs(state["q"][5] - 5.0), 3.0)  # stopped near where the sine was
+
+    def test_an_emergency_stop_ends_a_move(self):
+        fake = self.robot("--ready")
+        timer = threading.Timer(0.5, lambda: fake.control("estop on"))
+        timer.start()
+        self.addCleanup(timer.cancel)
+        r = self.move(fake, "--yes", "joint", "60", "-90", "0", "-90", "90", "0", "--speed", "0.02")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("condition lost", r.stderr)
+        self.assertIn("no emergency stop", r.stderr)
+        self.assertLess(fake.state()["q"][0], 60.0)
+
+    def test_teach_mode_refuses_motion(self):
+        fake = self.robot("--ready")
+        fake.control("mode teach")
+        r = self.move(fake, "--yes", "nudge", "1", "2")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("remote mode", r.stderr)
+
+    def test_bad_command_lines(self):
+        fake = self.robot()
+        for args in (["nudge", "7", "5"], ["nudge", "1", "45"], ["sine", "6", "25", "1"], ["joint", "1", "2"], []):
+            with self.subTest(args=args):
+                self.assertEqual(self.move(fake, *args).returncode, 2)
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--ec-query", type=Path, required=True)
     p.add_argument("--ec-monitor", type=Path, required=True)
     p.add_argument("--ec-record", type=Path, required=True)
+    p.add_argument("--ec-move", type=Path, required=True)
     p.add_argument("--tools", type=Path, required=True)
     args, rest = p.parse_known_args()
     vars(PATHS).update(vars(args))

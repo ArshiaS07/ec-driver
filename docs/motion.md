@@ -1,8 +1,9 @@
 # Motion and control
 
-**Status:** proposal, 2026-10-12. Sections 1–4 describe the controller and
-the field; sections 5–6 propose a design, none of it built yet. Once agreed,
-its decisions go into an ADR that replaces ADRs 0009 and 0010.
+**Status:** built, 2026-10-13 (ADR 0014, accepted). Sections 1–4 describe the
+controller and the field; sections 5–6 the design, as built, with the
+refinements listed in §5.10; section 7 what is assumed until measured on the
+robot. Nothing of sections 5–6 has run on the robot yet.
 
 **Sources**, in order of authority (§5.1): the vendor's manuals, cited as
 [S] SDK socket manual 3.19.2 (English) / 3.11.2 (Chinese original),
@@ -214,7 +215,7 @@ between, applications of any kind. That points to the third option.
 
 ---
 
-## 5. Proposed design
+## 5. Design
 
 ### 5.1 Order of authority
 
@@ -261,20 +262,24 @@ compositions and an application's own motions.
 ```cpp
 namespace ec::motion {
 
-struct Cycle {                         // one cycle's inputs, copied at its start
-    std::chrono::steady_clock::time_point now;
-    const feedback::State& state;      // newest 8056 state, SI
+struct Cycle {                             // one cycle's inputs, copied at its start
+    Clock::time_point now;
+    std::chrono::nanoseconds period;       // the loop's nominal period
+    feedback::State state;                 // newest 8056 state, SI
+    std::uint64_t state_seq;
     std::chrono::nanoseconds state_age;
-    std::span<const Reply> replies;    // to the commands sent in the previous cycle, in order
+    Conditions conditions;                 // observe(state, state_age, thresholds)
+    std::span<const Reply> replies;        // to the commands sent in the previous cycle, in order
 };
 
 enum class Phase { Running, Done };
 enum class End { Done, Cancelled, Stopped, Faulted };  // why close() is called
+struct Needs { Conditions to_start; Conditions while_running; };
 
 template <class A>
-concept Activity = std::movable<A> && requires(A& a, const Cycle& c, Outbox& out, End why) {
-    { A::needs } -> std::convertible_to<Conditions>;                   // must hold while it runs
-    { a.step(c, out) } -> std::same_as<std::expected<Phase, Fault>>;   // opens, then runs
+concept Activity = std::move_constructible<A> && requires(A& a, const A& ca, const Cycle& c, Outbox& out, End why) {
+    { ca.needs() } -> std::convertible_to<Needs>;                       // may change as it advances
+    { a.step(c, out) } -> std::same_as<std::expected<Phase, Error>>;   // opens, then runs
     { a.close(c, out, why) } -> std::same_as<bool>;                    // true once closed
 };
 
@@ -287,19 +292,23 @@ concept Activity = std::movable<A> && requires(A& a, const Cycle& c, Outbox& out
   like `finally`. Its contract: **leave the arm at rest and the controller's
   protocol clean**, whatever the reason. Opening and closing are phases, not
   single calls, because they wait for replies or for standstill.
-- **Outbox**: activities write typed commands (`out.send(MoveByJoint{...})`).
-  Whether the control thread then sends them one by one, pipelined, without
-  replies, or over a second connection is its own business; activities do not
-  change.
+- **Outbox**: activities write typed commands (`out.send(MoveByJoint{...})`,
+  or `out.send_without_reply(...)` after asking the controller not to answer).
+  Whether the control thread then sends them one by one, pipelined, or over a
+  second connection is its own business; activities do not change.
+- **Specs**: the library's motions are plain data, like the command structs
+  (`MoveJoint{.target = q, .speed = 0.2}`); `make_activity(spec)`, found by
+  argument-dependent lookup, builds the activity that runs one.
 - **AnyActivity**: the control thread holds the current activity in a
-  type-erased wrapper (§5.8).
+  type-erased wrapper (§5.8); it accepts activities and specs alike.
 
 ### 5.4 Planned motion: jobs
 
 ```cpp
-ec::Job job = robot.run(ec::motion::MoveJoint{.target = q, .speed = 0.2});  // returns at once
-if (auto done = job.wait(10s); !done) report(done.error());  // arrival seen in 8056, a fault, or a timeout
-job.cancel();                                                 // stop the arm, then close
+ec::motion::Job job = robot.run(ec::motion::MoveJoint{.target = q, .speed = 0.2});  // returns at once
+if (auto done = job.wait(); !done) report(done.error());  // arrival seen in 8056, or why not
+auto maybe = job.wait_for(10s);                            // nullopt: still running
+job.cancel();                                              // stop the arm, then close
 ```
 
 - `run` accepts any `Activity`; the job is its handle (busy, then done, failed
@@ -314,18 +323,21 @@ job.cancel();                                                 // stop the arm, t
 ### 5.5 Streamed motion: sessions the application pushes into
 
 ```cpp
-auto servo = robot.servo({.lookahead = 40ms, .smoothness = 0.1}).value();
+auto servo = robot.servo({.lookahead = 40ms, .smoothness = 0.1}).value();  // a motion::Session<Joints>
 servo.target(q);           // any thread, any time: the newest wins, stamped on arrival
-servo.follow(trajectory);  // or a timed reference, sampled by the loop on its own clock (later)
 servo.close();             // decelerate, let the queue drain, clear it; the destructor does the same
 ```
+
+`robot.servo()` returns once the controller has accepted the stream (or with
+why it did not). Following a timed reference inside a stream (`follow`) is
+not built yet.
 
 Each cycle, the stream activity:
 
 1. takes the newest reference (a target, or a trajectory) from the mailbox;
-2. **guards** it: once its age passes `timeout`, the reference becomes "stop
-   where you are" (hold); after `hold_for` more, the activity fails with
-   `Starved` and closes. This is the watchdog, and all it checks is that the
+2. **guards** it: once its age passes `watchdog.target_timeout`, the reference
+   becomes "stop where you are" (hold); after `watchdog.hold_for` more, the
+   activity fails with `Starved` and closes. This is the watchdog, and all it checks is that the
    application keeps pushing;
 3. **shapes** it: the next setpoint moves toward the reference within velocity
    and acceleration limits. A rate limiter is the default; online trajectory
@@ -363,10 +375,15 @@ with t of a few periods; a stale target becomes zero velocity, then
   The activity's close runs, the arm is stopped if the controller has not done
   so, and further runs are refused.
 - **Recovery is manual by design**: a person fixes the cause, the application
-  calls `acknowledge()` (refused while the cause is still visible, such as a
-  pressed E-stop), then `bring_up()`, itself an activity: clear alarm, reset
-  collision, synchronise, servo on, each confirmed in 8056. No automatic
-  retries, no retreat moves.
+  calls `acknowledge()`, then `bring_up()`, itself an activity: clear alarm,
+  reset collision, synchronise, servo on, each confirmed in 8056. No automatic
+  retries, no retreat moves. `acknowledge()` clears the latch whatever the
+  state shows: it records a person's decision, while the start conditions keep
+  guarding what may run. (Refusing it while the cause is visible, as first
+  proposed, would deadlock after a collision: the collision flag clears only
+  through bring-up, which could not start while the fault was latched.)
+  Bring-up needs only a fresh state, remote mode and no emergency stop; every
+  motion still needs everything else.
 - `robot.stop()`, from any thread: an atomic flag, seen at the next cycle
   (within T). The activity's close then sends its family's fastest stop
   (`stop`, `stopj`, `stop_trajectory`, ...).
@@ -402,12 +419,13 @@ wrapping an existing activity (a decorator [R15]):
 
 ```cpp
 struct MoveUntilContact {                   // satisfies ec::motion::Activity; no base class
-    ec::motion::MoveLine move;
-    double force_limit_n;
-    static constexpr auto needs = ec::motion::MoveLine::needs;
+    ec::motion::PointToPoint move;          // make_activity(ec::motion::MoveLine{...})
+    double force_limit_n = 20.0;
 
-    std::expected<Phase, Fault> step(const Cycle& c, Outbox& out) {
-        if (norm(c.state.tcp_force) > force_limit_n) return Phase::Done;  // contact: close() stops the arm
+    ec::motion::Needs needs() const { return move.needs(); }
+    std::expected<Phase, Error> step(const Cycle& c, Outbox& out) {
+        const auto& f = c.state.tcp_force;
+        if (std::hypot(f[0], f[1], f[2]) > force_limit_n) return Phase::Done;  // contact: close() stops the arm
         return move.step(c, out);
     }
     bool close(const Cycle& c, Outbox& out, End why) { return move.close(c, out, why); }
@@ -476,6 +494,37 @@ A control law synchronous with the robot remains possible: the application
 waits for each new state (`robot.next_state`) and pushes its output, which the
 loop picks up within one period (§6.2 b).
 
+### 5.10 As built
+
+| Part | Where | Notes |
+|---|---|---|
+| Conditions, errors | `ec/motion/conditions.hpp`, `error.hpp` | `AtRest` (joints still, any state) was added next to `Standstill` (at rest and state stop): closing waits for rest, starting for standstill |
+| The contract | `ec/motion/activity.hpp` | `Activity`, `Spec`, `AnyActivity`, `Cycle`, `Outbox`, `Reply` |
+| Supervision | `ec/motion/executor.hpp` | idle, running, closing, fault; a close that does not finish within 2 s ends with a last-resort stop and a fault |
+| Planned motion | `point_to_point.hpp`, `trajectory.hpp`, `sequence.hpp`, `bring_up.hpp` | `MoveJoint`, `MoveLine`, `MoveLineToPose`, `PlayTrajectory` (with `JointTrajectory` and `validate()`), `Sequence`, `BringUp` |
+| Streamed motion | `stream.hpp`, `shaper.hpp`, `session.hpp` | `ServoStream`, `VelocityStream`, `JogStream`; `RateLimiter`; the application's `Session<T>` |
+| The control thread | `ec/motion/control_loop.hpp` | `ControlLoop`, `Job`, `Status` |
+| The facade | `ec/robot.hpp` | `ec::Robot`: `connect`, `state`, `next_state`, `status`, `run`, `bring_up`, `servo`, `velocity`, `jog`, `stop`, `acknowledge`, `call<C>` |
+| Tool | `apps/ec_move.cpp` | status, bring-up, joint, nudge, sine, stop, acknowledge; nothing moves without `--yes` |
+| Test bench | `tools/fake_robot.py` | a simulated arm on 8055 and 8056, with fault injection |
+
+Refinements of the design above, each for a reason:
+
+- `Needs` has two sets (to start, while running) and is asked every cycle, so
+  an activity can need standstill to start but not while it moves.
+- `close()`'s contract is "leave the arm at rest and the protocol clean,
+  whatever the reason": a wrapper that ends its inner activity early (the
+  decorator example in §5.7) then gets a stop for free.
+- A one-off call (`robot.call(command)`) is refused for motion commands, and
+  for settings, actions and sessions while an activity runs: the command kind
+  (ADR 0015) decides.
+- The loop counts a cycle as late when it starts more than half a period after
+  its deadline; three in a row while an activity runs are an overrun fault.
+
+Not built yet: following a timed reference inside a stream, Cartesian
+streams, slaving the stream to the controller's clock, an online trajectory
+generator as the shaper, logging of commands and events.
+
 ---
 
 ## 6. The control loop, idiomatically
@@ -543,7 +592,7 @@ auto stream = robot.servo({}).value();                   // opens at standstill,
 // d) A recorded path: played by the controller, or streamed by the driver.
 robot.run(ec::motion::MoveJoint{.target = path.front(), .speed = 0.2}).wait().value();
 robot.run(ec::motion::PlayTrajectory{.path = path}).wait().value();  // timestamped upload
-// or: servo.follow(path)                                            // streamed, can be changed on the fly
+// or, later: servo.follow(path)                                     // streamed, can be changed on the fly
 ```
 
 ---
@@ -563,7 +612,7 @@ moving fake first.
 | 3 | Drift between the controller's clock and the PC's | No correction. A stream measures the skew from the 8056 timestamps while it runs and reports it; the tracking check sees a growing lag. | The cycle timer trims its period by the measured skew. | `ec_record --seconds 600`, then `robot_checks.py drift` |
 | 4 | Two 8055 connections at once | One connection, owned by the control thread. `stop()` is handled first in every cycle, ahead of anything queued, so it waits at most one cycle and one round trip. | A second connection as an independent stop path, inside the control thread's I/O. | `robot_checks.py connections` |
 | 5 | Stop latency per family | Numbers only: the options in §7.2. | Tuned values. | motion |
-| 6 | Does the speed setting scale streams and timestamped trajectories? | Not relied on. Its value is logged when a stream or trajectory starts; trajectory time limits assume it applies (the slower case); streams are bounded by the driver's own limits. | If it slows the queue's consumption, streams require 100 %: one more condition. | motion |
+| 6 | Does the speed setting scale streams and timestamped trajectories? (It scales point-to-point speeds of types VJ, V and VR, not AV and AVR [J 2.4]; the linear moves send AV.) | Not relied on. Its value is logged when a stream or trajectory starts; trajectory time limits assume it applies (the slower case); streams are bounded by the driver's own limits. | If it slows the queue's consumption, streams require 100 %: one more condition. | motion |
 | 7 | Does a timestamped trajectory run on if the PC disconnects? | Yes, the cautious assumption: trajectories are validated before upload (joint limits, speeds, a start at the current position), and first runs use a low `speed_percent`. | Nothing. | motion |
 | 8 | Does V3.15.3 accept `targetPose` in a stream? | Joint targets only. | Cartesian streams arrive as a new reference type. | motion, without moving: stream the current pose |
 | 9 | Step response for several L, T and smoothness | The defaults in §7.2. | Tuned values, and the lag the tracking check expects. | motion |
@@ -587,8 +636,8 @@ is a roadmap step (11 and 16), not a code change.
 | Number | Default | Used by |
 |---|---|---|
 | Cycle period T | 8 ms, the 8056 rate | control thread; stream sampling period |
-| Network time per cycle | 4 ms (T/2) | the deadline of every call in a cycle |
-| Late cycles before a fault | 3 in a row, each later than T/2 | control thread |
+| Reply timeout | 50 ms per command: a reply that takes longer fails it | control thread |
+| Late cycles before a fault | 3 in a row, each starting later than T/2, while an activity runs | control thread |
 | State freshness | 50 ms, about 6 frames | condition Fresh |
 | Standstill | every joint below 0.5 °/s for 5 frames | condition Standstill |
 | Stream lookahead L | 40 ms (5 T) | position stream |

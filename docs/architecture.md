@@ -40,14 +40,26 @@ by the layers above; a lower layer knows nothing of the layers above it.
 | `ec::log` (target `ec::hdf5`, optional) | `H5File`, `H5FeedbackWriter` | HDF5 logs: one dataset per field, SI units | no |
 | `ec::command` | `LineFramer` | 8055 byte stream → lines | yes |
 | `ec::command` | `encode`, `parse_response` | request → JSON-RPC line; response line → id, and result or error | yes |
-| `ec::command` | command structs, `ReplyDecoder` | one type per SDK call: method, parameters, reply type and its decoding | yes |
+| `ec::command` | command structs, `ReplyDecoder` | one type per SDK call (all 184): method, kind, parameters, reply type and its decoding | yes |
+| `ec::command` | `AllCommands`, `all_commands()` | every typed call, as a type list and as a table of names and kinds | yes |
 | `ec::command` | `Client` | one call at a time: send, wait for the response with its id, decode | no |
 | `ec` | `RobotState`, `RobotMode`, `CycleMode` | status values both ports report | yes |
+| `ec` | `Joints`, `Pose`, unit conversions | SI types, and deg/mm conversion where commands are built | yes |
+| `ec::motion` | `observe`, `Conditions` | the newest state → which conditions for motion hold | yes |
+| `ec::motion` | `Activity`, `AnyActivity`, `Spec` | the contract of everything the control thread runs; its type erasure | yes |
+| `ec::motion` | `Executor` | supervision: one activity at a time, conditions checked every cycle, close always run, faults latched | yes |
+| `ec::motion` | `MoveJoint`, `MoveLine`, `MoveLineToPose`, `PlayTrajectory`, `Sequence`, `BringUp` | planned motion and procedures, as specs and the activities that run them | yes |
+| `ec::motion` | `ServoStream`, `VelocityStream`, `JogStream`, `RateLimiter` | streamed motion: newest target, watchdog, shaping, one command per cycle | yes (reads a mailbox) |
+| `ec::motion` | `ControlLoop`, `Job`, `Session` | the control thread (the only user of 8055) and the applications' handles | no |
+| `ec` | `Robot` | the facade: receiver, newest state and control loop composed; what applications use | no |
 
 Command-line tools (`apps/`): `ec_monitor` prints the 8056 stream; `ec_record`
 records it (raw and/or HDF5) or converts a raw recording; `ec_query` sends one
-SDK call (read-only methods only, unless `--write`). File formats:
-`docs/log-format.md`.
+SDK call (queries and computations; anything else needs `--write`), lists
+every call, or checks every query's reply against its type; `ec_move` moves
+the arm through `ec::Robot` (bring-up, joint moves, a streamed sine, stop),
+printing its plan unless given `--yes`. File formats: `docs/log-format.md`.
+The motion design and its reasons: `docs/motion.md`.
 
 ---
 
@@ -71,6 +83,12 @@ SDK call (read-only methods only, unless `--write`). File formats:
   connection closes the connection for good.
 - A status value the manual does not define fails a reply that carries it; in a
   frame it is kept, and `is_valid()` reports it.
+- Every command declares its kind (query, compute, setting, action, motion,
+  session); what may be sent when follows from it (ADR 0015).
+- Only the control thread uses the command connection. Applications push
+  targets and requests; none of their code runs in the loop (ADR 0014).
+- Activities do no I/O and read no clock: they get each cycle's inputs and
+  write the commands to send, so they are tested cycle by cycle without a robot.
 
 ---
 
@@ -78,10 +96,14 @@ SDK call (read-only methods only, unless `--write`). File formats:
 
 - GoogleTest unit tests for every pure component, and real-socket tests against
   a loopback server (`tests/support/loopback_server.hpp`).
-- Both tools end to end against the fake servers (`tests/apps/test_apps.py`,
-  run by ctest).
-- Fake servers (`tools/`): replay the EA66's recorded replies and stream
-  synthetic frames, with fault injection.
+- Activities on a bench (`tests/support/bench.hpp`) that answers their
+  commands and plays the state cycle by cycle; the control loop and
+  `ec::Robot` against loopback servers.
+- Every tool end to end against the fake servers (`tests/apps/test_apps.py`,
+  run by ctest), `ec_move` against a simulated arm (`tools/fake_robot.py`) with
+  injected faults (emergency stop, teach mode).
+- Fake servers (`tools/`): replay the EA66's recorded replies, stream
+  synthetic frames, or simulate a moving arm, with fault injection.
 - CI: format check; all six presets built and tested; AddressSanitizer and
   UndefinedBehaviorSanitizer in `linux-debug`, ThreadSanitizer in `linux-tsan`;
   clang-tidy.
@@ -96,29 +118,29 @@ step ends with something testable.
 | # | Step | Test |
 |---|---|---|
 | 4 | Done: `feedback::Receiver` (8056 thread), `ec::Latest` (newest value); also `Reader`, `to_si`, and the recording of step 15 | on the robot: pull the cable, staleness detected and the stream back after plugging in |
-| 5 | Typed commands for supervision: servo, sync, alarm, tool and user frame, payload, safety limits | typed queries |
-| 6 | `supervisor::step`: the pure state machine with its condition tables | unit tests |
-| 7 | The supervisor, observe-only | pendant mode change, E-stop, pushing the arm: each detected and named |
+| 5 | Done: all 184 calls typed, with kinds and a registry | `ec_query --check-all` on the robot |
+| 6 | Done: the executor and the conditions (`docs/motion.md` 5.6) | unit tests |
+| 7 | The supervisor, observe-only (status without moving: `ec_move status`) | pendant mode change, E-stop, pushing the arm: each detected and named |
 | 8 | Preflight: identity and configuration checked against a config file | a changed tool: refuses to start |
-| 9 | Bring-up: clear alarm → sync → servo on, each step confirmed from feedback | servos on and off from code |
-| 10 | Motion lease and point-to-point motion through the supervisor | first move at 10 % speed; a stop mid-move |
+| 9 | Done: bring-up (`BringUp`), each step confirmed from feedback | `ec_move --yes bring-up` on the robot |
+| 10 | Done: point-to-point motion through the control loop | first move at 10 % speed; a stop mid-move |
 | 11 | Experiments: stop latency, two 8055 connections, close sequences; tuning the numbers in `docs/motion.md` §7.2 | numbers for timeouts |
-| 12 | Trajectory type and validator | bad trajectories rejected |
+| 12 | Done: `JointTrajectory`, `validate()` | bad trajectories rejected |
 | 13 | Kinematics checked against the controller's `positiveKinematic` | forward-kinematics error statistics |
-| 14 | Timestamped trajectories with a tracking monitor | a planned trajectory on the robot |
+| 14 | Done without the tracking monitor: `PlayTrajectory` | a planned trajectory on the robot |
 | 15 | Logging of commands, setpoints and events (the feedback stream is done: raw and HDF5) | commanded against actual |
 | 16 | Transparent-transmission experiments (`docs/motion.md` §7: underrun, step response, round trip) | numbers for the loop design |
-| 17 | Streamed setpoints with a real-time loop | a streamed sine, one joint, then all |
-| 18 | Velocity control (speedj / speedl) | velocity commands that stop on timeout |
-| 19 | `ec::Robot`, one object for applications; examples and a guide | |
+| 17 | Done: `ServoStream`, sessions, the watchdog | `ec_move --yes sine 6 2 4` on the robot |
+| 18 | Done for joints (speedj): `VelocityStream`; speedl later | velocity commands that stop on timeout |
+| 19 | Done: `ec::Robot`; examples and a guide still to write | |
 | 20 | Extras as needed: force control, Python bindings, ROS 2 | |
 
 Proposed changes to this draft, not decided either:
 
-- Steps 6–10 and 16–19 follow the design proposed in `docs/motion.md`: one
-  control thread running activities (I/O-free state machines), planned motion
-  as jobs, streamed motion as sessions the application pushes targets into,
-  with a watchdog on the age of the newest target.
+- Steps 6–10 and 16–19 follow `docs/motion.md` (ADR 0014): one control thread
+  running activities (I/O-free state machines), planned motion as jobs,
+  streamed motion as sessions the application pushes targets into, with a
+  watchdog on the age of the newest target.
 
 - Orientation stays the controller's rx/ry/rz until its convention is checked
   on the robot, so a math library (Eigen) waits for kinematics.

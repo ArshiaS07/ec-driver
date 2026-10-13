@@ -23,13 +23,24 @@ struct Ok {
     bool operator==(const Ok&) const = default;
 };
 
+/// A yes/no answer that the controller sends as the number 0 or 1, not as
+/// true/false (e.g. "collision occurred: 1; no collision: 0").
+enum class Flag : std::uint8_t {
+    Off = 0,  ///< 0: no, not enabled, not present
+    On = 1,   ///< 1: yes, enabled, present
+};
+
+[[nodiscard]] constexpr bool is_valid(Flag f) noexcept { return f == Flag::Off || f == Flag::On; }
+[[nodiscard]] constexpr bool is_on(Flag f) noexcept { return f == Flag::On; }
+
 /// Decodes a call's result (already unwrapped from the controller's JSON string)
 /// into T. Every check happens before any conversion, so decoding never throws: a
 /// result of the wrong type or range is Error::Kind::BadReply.
 ///
 /// Specialized below for Ok, bool, integers, floating point, std::string, enums
 /// with an is_valid() overload, and std::array / std::vector of any of these.
-/// A command whose reply has another shape defines its own decode().
+/// A command whose reply has another shape defines its own decode(); one whose
+/// shape the manual leaves unclear uses Json and passes the result on as it came.
 template <typename T>
 struct ReplyDecoder;
 
@@ -82,6 +93,12 @@ struct ReplyDecoder<T> {
         if (!r.is_number()) return bad_reply(std::format("expected a number, got {}", r.dump()));
         return r.get<T>();
     }
+};
+
+/// The result as it came: for replies whose shape the manual leaves unclear.
+template <>
+struct ReplyDecoder<Json> {
+    static std::expected<Json, Error> decode(const Json& r) { return r; }
 };
 
 template <>

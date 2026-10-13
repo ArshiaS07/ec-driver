@@ -74,4 +74,62 @@ inline feedback::RawFrame make_frame(std::uint64_t timestamp_ms = 1791200688449u
     return out;
 }
 
+// The fields the motion layer's conditions read; the rest as make_frame().
+struct FrameFields {
+    std::int32_t robot_state = 0;  // stop
+    bool servo = true;
+    bool synced = true;
+    std::int32_t robot_mode = 2;  // remote
+    bool collision = false;
+    bool estop = false;
+    std::array<double, 6> joints_deg{0, -90, 0, -90, 90, 0};
+    std::array<double, 6> joint_speed_deg_s{};
+};
+
+// A valid frame of a robot as `f` describes: by default remote, servos on,
+// synchronised, stopped, at rest.
+inline feedback::RawFrame make_frame(const FrameFields& f, std::uint64_t timestamp_ms = 1791200688449ull) {
+    WireWriter w;
+    // clang-format off
+    w.put<std::uint32_t>(1024);
+    w.put<std::uint64_t>(timestamp_ms);
+    w.put<std::uint8_t>(2);
+    for (double q : f.joints_deg) w.put<double>(q);
+    w.put<double>(0.0); w.put<double>(0.0);   // external axes
+    w.put_seq<double>(100.0, 6);
+    w.put_seq<double>(200.0, 6);
+    w.put_seq<double>(300.0, 8);
+    w.put<std::int32_t>(f.robot_state);
+    w.put<std::int32_t>(f.servo ? 1 : 0);
+    w.put<std::int32_t>(f.synced ? 1 : 0);
+    w.put_seq<std::int32_t>(0, 8);
+    w.put<std::int32_t>(f.robot_mode);
+    w.put_seq<double>(1.0, 3);
+    w.put_seq<double>(5.0, 5);
+    w.put<std::uint64_t>(0);
+    w.put<std::uint64_t>(0);
+    w.put<std::uint8_t>(f.collision ? 1 : 0);
+    w.put_seq<double>(400.0, 6);
+    w.put_seq<double>(500.0, 6);
+    w.put<std::uint8_t>(f.estop ? 1 : 0);
+    w.put<double>(0.0);
+    for (double v : f.joint_speed_deg_s) w.put<double>(v);
+    w.put<double>(0.0); w.put<double>(0.0);
+    w.put<double>(0.0);
+    w.put_seq<double>(0.0, 8);
+    w.put_seq<double>(30.0, 6);
+    w.put_seq<double>(0.0, 6);
+    w.put_seq<double>(0.0, 6);
+    w.put_seq<double>(0.0, 6);
+    w.put<std::uint8_t>(0);
+    w.put<std::uint8_t>(0);
+    w.bytes.resize(feedback::kMatchOffset, 0);
+    w.put<std::uint32_t>(feedback::kMatchingWord);
+    // clang-format on
+
+    feedback::RawFrame out{};
+    std::copy(w.bytes.begin(), w.bytes.end(), out.begin());
+    return out;
+}
+
 }  // namespace ec::test

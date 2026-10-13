@@ -3,6 +3,7 @@ find_package(Threads REQUIRED)
 include(GoogleTest)
 
 add_executable(ec_tests
+    command/calls_test.cpp
     command/client_test.cpp
     command/codec_test.cpp
     command/commands_test.cpp
@@ -15,7 +16,13 @@ add_executable(ec_tests
     feedback/state_test.cpp
     latest_test.cpp
     log/raw_test.cpp
+    motion/conditions_test.cpp
+    motion/control_loop_test.cpp
+    motion/executor_test.cpp
+    motion/planned_test.cpp
+    motion/stream_test.cpp
     net/tcp_socket_test.cpp
+    robot_test.cpp
     status_test.cpp
 )
 target_include_directories(ec_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -36,10 +43,12 @@ gtest_discover_tests(ec_tests DISCOVERY_MODE PRE_TEST)
 # The command-line tools, end to end against the fake servers (Python 3,
 # standard library only). Native builds only: cross-compiled tools do not run here.
 find_package(Python3 COMPONENTS Interpreter)
-if(Python3_FOUND AND TARGET ec_query AND TARGET ec_monitor AND TARGET ec_record AND NOT CMAKE_CROSSCOMPILING)
+if(Python3_FOUND AND TARGET ec_query AND TARGET ec_monitor AND TARGET ec_record AND TARGET ec_move
+   AND NOT CMAKE_CROSSCOMPILING)
     add_test(NAME apps
              COMMAND Python3::Interpreter ${CMAKE_CURRENT_SOURCE_DIR}/apps/test_apps.py
                      --ec-query $<TARGET_FILE:ec_query> --ec-monitor $<TARGET_FILE:ec_monitor>
                      --ec-record $<TARGET_FILE:ec_record>
+                     --ec-move $<TARGET_FILE:ec_move>
                      --tools ${PROJECT_SOURCE_DIR}/tools)
 endif()

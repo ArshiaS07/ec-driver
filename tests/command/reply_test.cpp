@@ -104,16 +104,19 @@ TEST(ReplyDecoder, NestedContainers) {
 
 struct Plain {
     static constexpr std::string_view method = "plain";
+    static constexpr Kind kind = Kind::Query;
     using Reply = int;
 };
 struct WithParams {
     static constexpr std::string_view method = "withParams";
+    static constexpr Kind kind = Kind::Query;
     using Reply = Ok;
     int index = 3;
     [[nodiscard]] Json params() const { return Json{{"index", index}}; }
 };
 struct WithDecode {
     static constexpr std::string_view method = "withDecode";
+    static constexpr Kind kind = Kind::Query;
     using Reply = std::pair<int, int>;  // no ReplyDecoder for pairs: needs its own decode()
     static std::expected<Reply, Error> decode(const Json& r) {
         if (!r.is_array() || r.size() != 2) return bad_reply("expected a pair");
@@ -122,18 +125,26 @@ struct WithDecode {
 };
 struct NoReplyType {
     static constexpr std::string_view method = "x";
+    static constexpr Kind kind = Kind::Query;
+};
+struct NoKind {
+    static constexpr std::string_view method = "x";
+    using Reply = Ok;
 };
 struct UndecodableReply {
     static constexpr std::string_view method = "x";
+    static constexpr Kind kind = Kind::Query;
     using Reply = std::pair<int, int>;
 };
 struct ParamsNotJson {
     static constexpr std::string_view method = "x";
+    static constexpr Kind kind = Kind::Query;
     using Reply = Ok;
     [[nodiscard]] int params() const { return 0; }
 };
 struct DecodeWithWrongSignature {
     static constexpr std::string_view method = "x";
+    static constexpr Kind kind = Kind::Query;
     using Reply = int;
     static int decode(const Json&) { return 0; }  // must return std::expected<Reply, Error>
 };
@@ -142,6 +153,7 @@ static_assert(Command<Plain>);
 static_assert(Command<WithParams>);
 static_assert(Command<WithDecode>);
 static_assert(!Command<NoReplyType>);
+static_assert(!Command<NoKind>);
 static_assert(!Command<UndecodableReply>);
 static_assert(!Command<ParamsNotJson>);
 static_assert(!Command<DecodeWithWrongSignature>);

@@ -72,6 +72,11 @@ public:
     [[nodiscard]] std::expected<Json, Error> call(const Request& request);
     [[nodiscard]] std::expected<Json, Error> call(const Request& request, Timeout timeout);
 
+    /// Sends `request` without waiting for a reply: for commands the controller
+    /// was told not to answer (response_enable 0, ret_flag 0). A reply that comes
+    /// anyway is discarded by a later call, as stale. Fails with Kind::Disconnected.
+    [[nodiscard]] std::expected<void, Error> send_only(const Request& request);
+
     /// False once the connection has been closed after an error.
     [[nodiscard]] bool is_connected() const noexcept { return socket_.is_open(); }
 

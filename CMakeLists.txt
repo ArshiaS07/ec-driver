@@ -15,6 +15,7 @@ include(cmake/Sanitizers.cmake)
 # motion) only when something needs one layer without the others.
 add_library(ec_driver
     src/status.cpp
+    src/command/all.cpp
     src/command/client.cpp
     src/command/codec.cpp
     src/command/line_framer.cpp
@@ -24,7 +25,16 @@ add_library(ec_driver
     src/feedback/receiver.cpp
     src/feedback/state.cpp
     src/log/raw.cpp
+    src/motion/bring_up.cpp
+    src/motion/conditions.cpp
+    src/motion/control_loop.cpp
+    src/motion/executor.cpp
+    src/motion/point_to_point.cpp
+    src/motion/sequence.cpp
+    src/motion/stream.cpp
+    src/motion/trajectory.cpp
     src/net/tcp_socket.cpp
+    src/robot.cpp
 )
 
 add_library(ec::driver ALIAS ec_driver)
@@ -41,7 +51,7 @@ find_package(nlohmann_json CONFIG REQUIRED)
 find_package(Threads REQUIRED)
 target_link_libraries(ec_driver PUBLIC nlohmann_json::nlohmann_json Threads::Threads)
 if(WIN32)
-    target_link_libraries(ec_driver PRIVATE ws2_32)
+    target_link_libraries(ec_driver PRIVATE ws2_32 winmm)  # winmm: timeBeginPeriod for the control loop
 endif()
 
 # Optional and separate, so that code which does not log never needs HDF5.
