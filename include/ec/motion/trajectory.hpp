@@ -1,17 +1,14 @@
 #pragma once
 /// @file
-/// Trajectories with timing, and playing one on the controller's own clock
-/// through the timestamp service (SDK manual 2.2.9; docs/motion.md 2.3).
+/// Joint trajectories: positions at increasing times, the limits they are
+/// checked against, and their peak rates. Pure. The timestamp service plays
+/// them (ec/motion/timestamped.hpp).
 
-#include <chrono>
 #include <cstddef>
 #include <expected>
-#include <optional>
 #include <string>
-#include <string_view>
 #include <vector>
 
-#include "ec/motion/activity.hpp"
 #include "ec/units.hpp"
 
 namespace ec::motion {
@@ -53,64 +50,5 @@ struct TrajectoryLimits {
 /// The position at time `s` [s] of a valid trajectory, interpolated linearly
 /// between its points; the first or last point outside its times.
 [[nodiscard]] Joints position_at(const JointTrajectory& t, double s) noexcept;
-
-/// Uploads a trajectory, has the controller check it, and runs it, timed by the
-/// controller: the PC's timing does not matter once it runs. The arm must
-/// already rest at the first point (e.g. MoveJoint first, in a Sequence). Done
-/// when the arm rests at the last point. Its time limit is the duration scaled
-/// by `speed` and by the controller's speed setting (in case that scales the
-/// trajectory too; docs/motion.md 7), plus `margin`.
-struct PlayTrajectory {
-    JointTrajectory path{};
-    double speed = 1.0;  ///< time scale, (0, 1]: 0.5 plays at half speed
-    TrajectoryLimits limits{};
-    double start_tolerance = deg_to_rad(0.5);  ///< [rad]: how close to the first point the arm must be
-    double tolerance = deg_to_rad(0.2);        ///< [rad]: arrival at the last point
-    /// Uploaded per cycle, each confirmed (ret_flag 1, as the manual's first
-    /// example): the controller takes them at its own pace. Unconfirmed, they
-    /// backed up on the EA66 and blocked the loop (first robot run).
-    int points_per_cycle = 5;
-    std::chrono::milliseconds margin{5'000};
-};
-
-class PlayTrajectoryActivity {
-public:
-    explicit PlayTrajectoryActivity(PlayTrajectory spec) : spec_(std::move(spec)) {}
-
-    [[nodiscard]] Needs needs() const noexcept { return {kCanStartMotion, kCanMove}; }
-    [[nodiscard]] std::string_view name() const noexcept { return "play_trajectory"; }
-    [[nodiscard]] std::expected<Phase, Error> step(const Cycle& c, Outbox& out);
-    [[nodiscard]] bool close(const Cycle& c, Outbox& out, End why);
-
-private:
-    enum class Stage { Check, AwaitSpeed, AwaitBegin, Upload, Settle, AwaitSeal, AwaitCheck, AwaitStart, Running };
-    enum class Closing { Begin, AwaitRest, Flush, AwaitFlush };
-
-    // The reply to `method` in this cycle: nullopt while none has come, else ok or the error.
-    std::optional<std::expected<void, Error>> await(const Cycle& c, std::string_view method) const;
-
-    PlayTrajectory spec_;
-    Stage stage_ = Stage::Check;
-    Closing closing_ = Closing::Begin;
-    Clock::time_point sent_at_{};
-    Clock::time_point started_at_{};
-    std::chrono::nanoseconds shortest_{};  // the trajectory's own time, at the speed asked for
-    std::chrono::nanoseconds limit_{};
-    double setting_ = 1.0;  // the controller's speed setting, as a fraction
-    std::size_t uploaded_ = 0;
-    Clock::time_point paused_since_{};  // the pauses around the upload start here
-    bool uploading_ = false;            // start_push_pos was accepted: the buffer needs flushing
-    bool start_sent_ = false;           // start_trajectory went out: the arm may move
-    bool stationary_ = false;           // the whole trajectory stays within `tolerance` of its first point
-    bool moved_ = false;
-    int short_cycles_ = 0;
-    Clock::time_point stop_sent_at_{};
-};
-
-[[nodiscard]] inline PlayTrajectoryActivity make_activity(const PlayTrajectory& spec) {
-    return PlayTrajectoryActivity(spec);
-}
-
-static_assert(Spec<PlayTrajectory>);
 
 }  // namespace ec::motion

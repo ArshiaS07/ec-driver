@@ -118,7 +118,7 @@ Joints JointSpline::slope(double x) const noexcept {
 namespace {
 
 std::unexpected<Error> invalid(std::string message) {
-    return std::unexpected(Error{Error::Kind::Invalid, std::move(message), {}});
+    return std::unexpected(Error{Error::Kind::Invalid, std::move(message)});
 }
 
 // A pose of the motion, or one filled in between two, at its time [s].
@@ -223,7 +223,7 @@ std::expected<JointTrajectory, Error> plan(const PoseTrajectory& motion, const J
         }
         const Joints solution = nearest_turn(*q, reference, o.limits.joint_limit);
         // The first point is checked where it is; it must be near `start` for the
-        // trajectory to be played from there, which PlayTrajectory checks.
+        // trajectory to be played from there, which Timestamped::upload checks.
         if (auto ok = k == 0 ? check_point(solution, o) : check_step(reference, solution, o); !ok)
             return invalid(std::format("the pose {}: {}", where(p), ok.error()));
         reference = solution;

@@ -413,7 +413,7 @@ class EcMove(unittest.TestCase):
         r = self.move(fake, "status")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("mode remote, state stop, servos off", r.stdout)
-        self.assertIn("conditions:", r.stdout)
+        self.assertIn("joints [", r.stdout)
 
     def test_a_move_without_yes_only_prints_its_plan(self):
         fake = self.robot("--ready")
@@ -426,7 +426,7 @@ class EcMove(unittest.TestCase):
         fake = self.robot()
         r = self.move(fake, "--yes", "joint", "10", "-90", "0", "-90", "90", "0")
         self.assertEqual(r.returncode, 1)
-        self.assertIn("cannot start without: servo on, encoders synchronised", r.stderr)
+        self.assertIn("moveByJoint: controller returned false", r.stderr)  # the controller refuses
 
     def test_bring_up_then_move(self):
         fake = self.robot()
@@ -456,8 +456,7 @@ class EcMove(unittest.TestCase):
         self.addCleanup(timer.cancel)
         r = self.move(fake, "--yes", "joint", "60", "-90", "0", "-90", "90", "0", "--speed", "0.02")
         self.assertEqual(r.returncode, 1)
-        self.assertIn("condition lost", r.stderr)
-        self.assertIn("no emergency stop", r.stderr)
+        self.assertIn("fault: emergency stop", r.stderr)
         self.assertLess(fake.state()["q"][0], 60.0)
 
     def test_teach_mode_refuses_motion(self):

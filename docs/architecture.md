@@ -47,14 +47,10 @@ by the layers above; a lower layer knows nothing of the layers above it.
 | `ec` | `Joints`, unit conversions | SI types, and deg/mm conversion where commands are built | yes |
 | `ec` | poses (`Eigen::Isometry3d`, T_ab), `from_mm_rad`, `to_mm_rad` | poses in SI, converted to the controller's mm and rx, ry, rz only at the wire | yes |
 | `ec` | `Clock`, `Stamped`, `PoseTrajectory` | the one (steady) clock; a value stamped with its time; a motion of the TCP as poses stamped with their time since the start | yes |
-| `ec::motion` | `observe`, `Conditions` | the newest state → which conditions for motion hold | yes |
-| `ec::motion` | `Activity`, `AnyActivity`, `Spec` | the contract of everything the control thread runs; its type erasure | yes |
-| `ec::motion` | `Executor` | supervision: one activity at a time, conditions checked every cycle, close always run, faults latched | yes |
-| `ec::motion` | `MoveJoint`, `PlayTrajectory`, `Sequence`, `BringUp` | planned motion and procedures, in joint space, as specs and the activities that run them | yes |
-| `ec::motion` | `plan()`, `check_step()`, `JointSpline` | a motion of the TCP solved by a given inverse kinematics (the controller's) into a checked joint trajectory | yes |
-| `ec::motion` | `ServoStream`, `VelocityStream`, `RateLimiter` | streamed motion in joint space: newest target, watchdog, shaping, one command per cycle | yes (reads a mailbox) |
-| `ec::motion` | `ControlLoop`, `Job`, `Session` | the control thread (the only user of 8055) and the applications' handles | no |
-| `ec` | `Robot` | the facade: receiver, newest state and control loop composed; what applications use | no |
+| `ec` | `Error` | the driver's error: a kind and what was observed | yes |
+| `ec::motion` | `plan()`, `check_step()`, `JointSpline`, `JointTrajectory` | a motion of the TCP solved by a given inverse kinematics (the controller's) into a checked joint trajectory | yes |
+| `ec::motion` | `Move`, `Timestamped`, `ServoStream`, `move_along` | motion families (ADR 0018): each sends its family's sequence from the manual over the robot's connection; one open at a time | no |
+| `ec` | `Robot` | one controller: the command connection (one call at a time, each answered), the newest monitoring frame, the controller's kinematics, bring-up, stop; what applications use | no |
 
 Command-line tools (`apps/`): `ec_monitor` prints the 8056 stream; `ec_record`
 records it (raw and/or HDF5) or converts a raw recording; `ec_query` sends one
@@ -91,10 +87,11 @@ The motion design and its reasons: `docs/motion.md`.
   frame it is kept, and `is_valid()` reports it.
 - Every command declares its kind (query, compute, setting, action, motion,
   session); what may be sent when follows from it (ADR 0015).
-- Only the control thread uses the command connection. Applications push
-  targets and requests; none of their code runs in the loop (ADR 0014).
-- Activities do no I/O and read no clock: they get each cycle's inputs and
-  write the commands to send, so they are tested cycle by cycle without a robot.
+- One connection to 8055 per robot: calls go one at a time, each answered
+  before the next, and the motion families send their manual's sequences;
+  nothing is sent unconfirmed (ADR 0018, after the first robot runs).
+- The driver starts no thread but the optional 8056 receiver; streams are
+  paced by the application, waits poll `getRobotState`.
 
 ---
 
@@ -126,28 +123,27 @@ step ends with something testable.
 |---|---|---|
 | 4 | Done: `feedback::Receiver` (8056 thread), `ec::Latest` (newest value); also `Reader`, `to_si`, and the recording of step 15 | on the robot: pull the cable, staleness detected and the stream back after plugging in |
 | 5 | Done: all 184 calls typed, with kinds and a registry | `ec_query --check-all` on the robot |
-| 6 | Done: the executor and the conditions (`docs/motion.md` 5.6) | unit tests |
+| 6 | Built, then replaced (ADR 0018): no executor or conditions gate; the controller's own refusals | unit tests |
 | 7 | The supervisor, observe-only (status without moving: `ec_move status`) | pendant mode change, E-stop, pushing the arm: each detected and named |
 | 8 | Preflight: identity and configuration checked against a config file | a changed tool: refuses to start |
-| 9 | Done: bring-up (`BringUp`), each step confirmed from feedback | `ec_move --yes bring-up` on the robot |
-| 10 | Done: point-to-point motion through the control loop | first move at 10 % speed; a stop mid-move |
+| 9 | Done: `Robot::bring_up()`, the manual's sequence, waiting for the servos | `ec_move --yes bring-up` on the robot |
+| 10 | Done: `motion::Move` (moveByJoint) | first move at 10 % speed; a stop mid-move |
 | 11 | Experiments: stop latency, two 8055 connections, close sequences; tuning the numbers in `docs/motion.md` §7.2 | numbers for timeouts |
 | 12 | Done: `JointTrajectory`, `validate()` | bad trajectories rejected |
 | 13 | Done differently: the controller's own kinematics, in joint-space planning (ADR 0017, proposed); checked on the robot with `ec_query positiveKinematic` against `ec_monitor` | `sbx_trajectory` |
-| 14 | Done without the tracking monitor: `PlayTrajectory`, `plan()` for motions of the TCP (`PoseTrajectory`) | a planned circle on the robot (`sbx_trajectory`) |
+| 14 | Done: `motion::Timestamped`, `plan()`, `move_along`; the circle ran on the robot, 2026-10-14 | a planned circle on the robot (`sbx_trajectory`) |
 | 15 | Logging of commands, setpoints and events (the feedback stream is done: raw and HDF5) | commanded against actual |
 | 16 | Transparent-transmission experiments (`docs/motion.md` §7: underrun, step response, round trip) | numbers for the loop design |
-| 17 | Done: `ServoStream`, sessions, the watchdog; TCP targets solved and checked by the application (`docs/motion.md` 5.11) | `ec_move --yes sine 6 2 4`, then a streamed TCP motion on the robot |
-| 18 | Done for joints (speedj): `VelocityStream`; speedl later | velocity commands that stop on timeout |
-| 19 | Done: `ec::Robot`; examples and a guide still to write | |
+| 17 | Done in part: `motion::ServoStream`, paced by the application, no watchdog yet (ADR 0018) | `ec_move --yes sine 6 2 4`, then a streamed TCP motion on the robot |
+| 18 | Removed for now; returns as a family in milestone B (ADR 0018) | velocity commands that stop on timeout |
+| 19 | Done: `ec::Robot` (ADR 0018); examples and a guide still to write | |
 | 20 | Extras as needed: force control, Python bindings, ROS 2 | |
 
 Proposed changes to this draft, not decided either:
 
-- Steps 6–10 and 16–19 follow `docs/motion.md` (ADR 0014): one control thread
-  running activities (I/O-free state machines), planned motion as jobs,
-  streamed motion as sessions the application pushes targets into, with a
-  watchdog on the age of the newest target.
+- Steps 6–10 and 16–19 followed ADR 0014 (one control thread running
+  activities), replaced on 2026-10-14 by ADR 0018 (proposed): one class per
+  motion family on one connection, no control thread (`docs/motion.md` §5.0).
 
 - Poses are Eigen isometries since the convention was measured (ADR 0012) and
   planning needed them (ADR 0017); rx/ry/rz stay at the wire.

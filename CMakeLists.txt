@@ -25,14 +25,12 @@ add_library(ec_driver
     src/feedback/receiver.cpp
     src/feedback/state.cpp
     src/log/raw.cpp
-    src/motion/bring_up.cpp
-    src/motion/conditions.cpp
-    src/motion/control_loop.cpp
-    src/motion/executor.cpp
+    src/detail/connection.cpp
+    src/motion/move.cpp
+    src/motion/move_along.cpp
     src/motion/planning.cpp
-    src/motion/point_to_point.cpp
-    src/motion/sequence.cpp
-    src/motion/stream.cpp
+    src/motion/servo_stream.cpp
+    src/motion/timestamped.cpp
     src/motion/trajectory.cpp
     src/net/tcp_socket.cpp
     src/pose.cpp

@@ -19,9 +19,9 @@
 namespace {
 
 using namespace std::chrono_literals;
+using ec::Error;
 using ec::Joints;
 using ec::PoseTrajectory;
-using ec::motion::Error;
 using ec::motion::JointSpline;
 
 constexpr double kPi = std::numbers::pi;
@@ -261,7 +261,7 @@ TEST(Plan, RefusesMotionsItCannotTrust) {
 
 TEST(Plan, NamesThePoseWhoseInverseKinematicsFailedAndKeepsTheKind) {
     const auto unreachable = [](const Eigen::Isometry3d&, const Joints&) -> std::expected<Joints, Error> {
-        return std::unexpected(Error{Error::Kind::Command, "inverseKinematic: rejected: no solution", {}});
+        return std::unexpected(Error{Error::Kind::Command, "inverseKinematic: rejected: no solution"});
     };
     const auto t = ec::motion::plan(circle(), Joints{}, unreachable);
     ASSERT_FALSE(t);
@@ -270,7 +270,7 @@ TEST(Plan, NamesThePoseWhoseInverseKinematicsFailedAndKeepsTheKind) {
               "inverse kinematics failed for the pose at 0.000 s (600.0, 0.0, 300.0 mm): inverseKinematic: rejected: "
               "no solution");
     const auto lost = [](const Eigen::Isometry3d&, const Joints&) -> std::expected<Joints, Error> {
-        return std::unexpected(Error{Error::Kind::Disconnected, "the command connection was lost", {}});
+        return std::unexpected(Error{Error::Kind::Disconnected, "the command connection was lost"});
     };
     EXPECT_EQ(ec::motion::plan(circle(), Joints{}, lost).error().kind, Error::Kind::Disconnected);
 }

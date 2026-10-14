@@ -1,10 +1,12 @@
 # Motion and control
 
-**Status:** built, 2026-10-13 (ADR 0014, accepted); motion in joint space, with
-TCP poses solved by the controller, the same day (§5.11, ADR 0017 proposed).
-Sections 1–4 describe the controller and the field; sections 5–6 the design,
-as built, with the refinements listed in §5.10; section 7 what is assumed
-until measured on the robot. Nothing of sections 5–6 has run on the robot yet.
+**Status:** motion families on one connection, no control thread (ADR 0018,
+proposed), 2026-10-14, after the first runs on the robot (§5.0). Sections
+1-4 describe the controller and the field and still hold. §5.0 is the design
+as built now. §5.1-5.10 and §6 describe the earlier runtime (ADR 0014: one
+control thread, activities, jobs, sessions), superseded and kept for its
+reasoning. §5.11 (TCP targets, planned in joint space) still holds. Section 7
+is what is assumed until measured on the robot.
 
 **Sources**, in order of authority (§5.1): the vendor's manuals, cited as
 [S] SDK socket manual 3.19.2 (English) / 3.11.2 (Chinese original),
@@ -21,23 +23,16 @@ A citation like [S 2.2.7.1] names a manual section.
   (point-to-point, waypoints, timestamped trajectories, programs).
   **Streamed** (online): the PC decides while the arm moves (position
   streaming, velocity, jog).
-- Position streaming is a queue that the controller empties at a fixed rate:
-  one point per sampling period. The application's targets come at its own
-  rate, so something must convert them into that regular sequence. In this
-  design, the driver does it.
-- The application **pushes**: it hands over a target, or a trajectory, whenever
-  it has one, from any thread. The driver's control loop runs at the
-  controller's pace, takes the newest target, limits it and feeds the queue.
-  The watchdog is a guard in that loop: a target that gets too old makes the
-  stream hold, then stop.
-- One **control thread** owns the command connection and runs a fixed-period
-  cycle (read, decide, act), like a PLC scan. Whatever it runs (a move, a
-  stream, bring-up) is an **activity**: a small state machine without I/O,
-  behind one C++ concept. Adding a motion adds an activity; the loop does not
-  change.
-- **Supervision** remembers three things (idle, busy, fault) and recomputes
-  everything else from the newest state every cycle. Faults latch; a person
-  fixes the cause, acknowledges, and runs bring-up again.
+- Each motion family has its own ceremony in the SDK manual (set-up, its
+  calls, its stop, its tear-down). The driver has one small class per family
+  that sends exactly that sequence over one connection, every call answered
+  before the next (§5.0).
+- `ec::Robot` is one controller: the command connection, the monitoring
+  stream's newest frame, the controller's kinematics, bring-up, and a stop
+  callable from any thread. One motion is open at a time.
+- No control thread: set-up calls block, waits poll `getRobotState` as the
+  manual's examples do, and streams are paced by the application's loop.
+  Safety is the controller's (E-stop, pendant) as much as the driver's.
 
 ---
 
@@ -219,6 +214,44 @@ between, applications of any kind. That points to the third option.
 ---
 
 ## 5. Design
+
+### 5.0 Motion families (ADR 0018), as built
+
+**Why the change.** The first runs on the EA66 (2026-10-14) met three
+problems, all from the runtime of §5.1-5.10 rather than the controller:
+
+- `set_servo_status` answered later than the loop's 50 ms reply timeout, so
+  bring-up failed.
+- The timestamp upload ran inside the 8 ms cycle. Confirmed points made
+  cycles late, and the late-cycle rule, made for streams, stopped a planned
+  motion.
+- Unconfirmed points backed up on the controller. The clean-up and the
+  disconnect then left both ports refusing connections until the
+  controller's power was cut.
+
+The manual's own example, sent call by call, drew the circle.
+
+**The design.**
+
+| Part | Where | What |
+|---|---|---|
+| `ec::Robot` | `ec/robot.hpp` | `connect` (8055; 8056 if `monitor`), `call<C>` (one typed call, answered; while a motion is open, queries and computations only), `feedback`/`next_feedback` (the newest frame, decoded; `on_feedback` with every frame), `ik`, `fk`, `joints`, `bring_up` (the manual's sequence, waiting for the servos), `stop` (any thread: the open motion's stop, then `stop`) |
+| Errors | `ec/error.hpp` | one `ec::Error` (invalid, busy, command failed, fault, stopped, timeout, disconnected) |
+| Point-to-point | `ec/motion/move.hpp` | `Move::joints` (moveByJoint); `wait_for`, `wait` (until it rests at the target), `stop` |
+| Timestamped trajectory | `ec/motion/timestamped.hpp` | `Timestamped::upload`: checked, the arm at the first point; start_push_pos, 0.2 s, push_pos per point, 1 s, stop_push_pos, check_trajectory. Then `start`, `pause`, `resume`, `wait_for`, `wait`, `stop` (stop_trajectory) |
+| Servo streaming | `ec/motion/servo_stream.hpp` | `ServoStream::open`: a stream left open cleared first, then transparent_transmission_init. Then `add_point` (tt_put_servo_joint_to_buf) and `close` (tt_clear_servo_joint_buf); paced by the application, no watchdog yet |
+| TCP motions | `ec/motion/move_along.hpp` | `plan(robot, poses)` (§5.11); `move_along`: plan, a joint move to the first pose, the timestamped run |
+
+Each family's factory does the manual's set-up and returns the motion or
+why not. A failed set-up sends nothing to clean up. Waits ask
+`getRobotState` every 10 ms. Until the motion is seen running, a stop
+counts only a second after the start, since a motion just started may not
+show yet. The only thread in the driver is the optional 8056 receiver.
+`apps/interrupt.hpp` turns Ctrl+C into `Robot::stop()` for the tools.
+
+Following, in milestone B: the waypoint queue, jog, velocity streaming,
+stored programs, `Move` line and arc, a watchdog for `ServoStream`, and a
+log of every call and answer.
 
 ### 5.1 Order of authority
 
@@ -563,13 +596,13 @@ wire do they become the controller's x, y, z [mm] and rx, ry, rz [rad], with
 R = Rz·Ry·Rx (ADR 0012).
 
 ```cpp
-Joints q = robot.ik(T_base_tcp, near).value();           // inverseKinematic, nearest `near`
-robot.move_joints({.target = q, .speed = 0.2}).wait();   // moveByJoint
+Joints q = robot.ik(T_base_tcp, near).value();               // inverseKinematic, nearest `near`
+ec::motion::Move::joints(robot, q, {.speed = 0.2})->wait();  // moveByJoint
 ec::PoseTrajectory motion{{0s, T_base_tcp}, {2s, T_base_goal}};  // poses stamped with their time
-auto trajectory = robot.plan(motion).value();            // solved, checked, every 20 ms
-robot.play(trajectory).wait();                           // the timestamp service, joint points
-auto servo = robot.servo().value();                      // live: solve each target, check_step(), push joints
-servo.target(robot.ik(T_base_tcp, q).value());
+auto trajectory = ec::motion::plan(robot, motion).value();   // solved, checked, every 20 ms
+ec::motion::move_along(robot, motion);                       // plan, move to the start, run timestamped
+auto servo = ec::motion::ServoStream::open(robot).value();   // live: solve each target, check_step(), add_point()
+servo.add_point(robot.ik(T_base_tcp, q).value());
 ```
 
 **A motion** of the TCP is a `PoseTrajectory`: poses, each stamped with its time
@@ -617,13 +650,12 @@ Servo uses) needs a kinematic model; the controller's 12 DH values (`getDH`),
 checked against `positiveKinematic`, would give one.
 
 **Streams** of TCP targets are the application's loop: `robot.ik()` per target,
-checked with `check_step()` against the solution before, the joints into
-`robot.servo()`. The stream's rate limiter plans to be able to stop at each
-target, so it trails a moving one by the braking distance, v²/2a per joint, and
-the joints trail by different amounts: the path bends. On the fake the
-sandbox's 30 mm circle (10 s) strays 0.4 mm when streamed, 0.01 mm when played.
-An online trajectory generator that takes the target's velocity would remove
-the lag.
+checked with `check_step()` against the solution before, the joints into a
+`ServoStream` with `add_point()`, one every period. Since ADR 0018 the driver
+neither shapes nor resamples them: the application sends smooth targets, as
+the manual's example does. (The earlier stream's rate limiter trailed a moving
+target by its braking distance: on the fake a 30 mm circle strayed 0.4 mm
+streamed, 0.01 mm played.)
 
 **Tools and frames** [S 2.2.2, U 6.11]: the controller keeps 8 tools (a TCP
 offset from the flange, x, y, z within ±500 mm and rx, ry, rz, with the payload's
@@ -645,7 +677,7 @@ arm.
 
 ---
 
-## 6. The control loop, idiomatically
+## 6. The control loop, idiomatically (the superseded runtime, ADR 0014)
 
 ### 6.1 The driver's loop
 

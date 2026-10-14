@@ -3,7 +3,7 @@
 /// Planned motion in joint space (docs/motion.md 5.11, ADR 0017): a motion of
 /// the TCP, a PoseTrajectory (ec/pose.hpp), is solved by inverse kinematics
 /// into joint positions, checked, and sampled into a JointTrajectory, which the
-/// controller's timestamp service plays (PlayTrajectory). Pure, apart from the
+/// controller's timestamp service plays (Timestamped). Pure, apart from the
 /// inverse kinematics the caller supplies (the controller's, through Robot::ik).
 
 #include <Eigen/Geometry>
@@ -16,7 +16,7 @@
 #include <utility>
 #include <vector>
 
-#include "ec/motion/error.hpp"
+#include "ec/error.hpp"
 #include "ec/motion/trajectory.hpp"
 #include "ec/pose.hpp"
 #include "ec/units.hpp"
