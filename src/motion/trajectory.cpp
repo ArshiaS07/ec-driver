@@ -14,6 +14,9 @@ namespace ec::motion {
 namespace {
 
 constexpr auto kReplyTimeout = std::chrono::seconds{2};
+// The pauses around an upload, as in the manual's examples (2.2.9.10, 2.2.9.11).
+constexpr auto kBeforeUpload = std::chrono::milliseconds{200};
+constexpr auto kBeforeSeal = std::chrono::milliseconds{1'000};
 constexpr int kShortCycles = 3;
 
 }  // namespace
@@ -139,7 +142,7 @@ std::expected<Phase, Error> PlayTrajectoryActivity::step(const Cycle& c, Outbox&
                                            .point_type = command::PointType::Joint,
                                            .reference = rad_to_deg(spec_.path.position.front()),
                                            .frame = {},
-                                           .replies = true});
+                                           .replies = false});
             sent_at_ = c.now;
             stage_ = Stage::AwaitBegin;
             return Phase::Running;
@@ -150,36 +153,34 @@ std::expected<Phase, Error> PlayTrajectoryActivity::step(const Cycle& c, Outbox&
             if (!r) return Phase::Running;
             if (!*r) return std::unexpected(r->error());
             uploading_ = true;
+            paused_since_ = c.now;
             stage_ = Stage::Upload;
-            [[fallthrough]];
+            return Phase::Running;
         }
 
         case Stage::Upload: {
-            std::size_t replies = 0;
-            for (const Reply& reply : c.replies) {
-                if (reply.method != command::PushPos::method) continue;
-                ++replies;
-                if (!reply.result) return std::unexpected(command_failed(reply.method, reply.result.error()));
-                if (const auto ok = command::ReplyDecoder<command::Ok>::decode(*reply.result); !ok)
-                    return std::unexpected(command_failed(reply.method, ok.error()));
-            }
-            if (replies < awaited_) {
-                if (c.now - sent_at_ > kReplyTimeout) return fail(Error::Kind::Timeout, "push_pos replies missing");
-                return Phase::Running;
-            }
-            if (uploaded_ == spec_.path.size()) {
-                out.send(command::StopPushPos{});
-                sent_at_ = c.now;
-                stage_ = Stage::AwaitSeal;
-                return Phase::Running;
-            }
+            // As the manual's examples (2.2.9.10, 11): a pause after start_push_pos,
+            // then the points, each without a reply.
+            if (c.now - paused_since_ < kBeforeUpload) return Phase::Running;
             const auto batch =
                 std::min(spec_.path.size() - uploaded_, static_cast<std::size_t>(spec_.points_per_cycle));
             for (std::size_t k = uploaded_; k < uploaded_ + batch; ++k)
-                out.send(command::PushPos{.time_s = spec_.path.time[k], .point = rad_to_deg(spec_.path.position[k])});
+                out.send_without_reply(
+                    command::PushPos{.time_s = spec_.path.time[k], .point = rad_to_deg(spec_.path.position[k])});
             uploaded_ += batch;
-            awaited_ = batch;
+            if (uploaded_ == spec_.path.size()) {
+                paused_since_ = c.now;
+                stage_ = Stage::Settle;
+            }
+            return Phase::Running;
+        }
+
+        case Stage::Settle: {
+            // And a pause before stop_push_pos, which confirms that every point was right.
+            if (c.now - paused_since_ < kBeforeSeal) return Phase::Running;
+            out.send(command::StopPushPos{});
             sent_at_ = c.now;
+            stage_ = Stage::AwaitSeal;
             return Phase::Running;
         }
 

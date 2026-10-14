@@ -760,7 +760,8 @@ is a roadmap step (11 and 16), not a code change.
 | Number | Default | Used by |
 |---|---|---|
 | Cycle period T | 8 ms, the 8056 rate | control thread; stream sampling period |
-| Reply timeout | 50 ms per command: a reply that takes longer fails it | control thread |
+| Reply timeout | 2 s per command: a reply that takes longer fails it (50 ms was too short for the EA66's `set_servo_status`, first robot run) | control thread |
+| Trajectory upload | 20 points per cycle without replies (`ret_flag` 0); 0.2 s after `start_push_pos` and 1 s before `stop_push_pos`, as the manual's examples (2.2.9.10, 11) | `PlayTrajectory` |
 | Late cycles before a fault | 3 in a row, each starting later than T/2, while an activity runs | control thread |
 | State freshness | 50 ms, about 6 frames | condition Fresh |
 | Standstill | every joint below 0.5 °/s for 5 frames | condition Standstill |

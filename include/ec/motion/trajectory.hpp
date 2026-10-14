@@ -66,7 +66,9 @@ struct PlayTrajectory {
     TrajectoryLimits limits{};
     double start_tolerance = deg_to_rad(0.5);  ///< [rad]: how close to the first point the arm must be
     double tolerance = deg_to_rad(0.2);        ///< [rad]: arrival at the last point
-    int points_per_cycle = 5;                  ///< uploaded per cycle, each confirmed (ret_flag 1)
+    /// Uploaded per cycle, without a reply each (ret_flag 0, as the manual's
+    /// second example does): stop_push_pos then confirms them all.
+    int points_per_cycle = 20;
     std::chrono::milliseconds margin{5'000};
 };
 
@@ -80,7 +82,7 @@ public:
     [[nodiscard]] bool close(const Cycle& c, Outbox& out, End why);
 
 private:
-    enum class Stage { Check, AwaitSpeed, AwaitBegin, Upload, AwaitSeal, AwaitCheck, AwaitStart, Running };
+    enum class Stage { Check, AwaitSpeed, AwaitBegin, Upload, Settle, AwaitSeal, AwaitCheck, AwaitStart, Running };
     enum class Closing { Begin, AwaitRest, Flush, AwaitFlush };
 
     // The reply to `method` in this cycle: nullopt while none has come, else ok or the error.
@@ -95,10 +97,10 @@ private:
     std::chrono::nanoseconds limit_{};
     double setting_ = 1.0;  // the controller's speed setting, as a fraction
     std::size_t uploaded_ = 0;
-    std::size_t awaited_ = 0;  // PushPos replies due this cycle
-    bool uploading_ = false;   // start_push_pos was accepted: the buffer needs flushing
-    bool start_sent_ = false;  // start_trajectory went out: the arm may move
-    bool stationary_ = false;  // the whole trajectory stays within `tolerance` of its first point
+    Clock::time_point paused_since_{};  // the pauses around the upload start here
+    bool uploading_ = false;            // start_push_pos was accepted: the buffer needs flushing
+    bool start_sent_ = false;           // start_trajectory went out: the arm may move
+    bool stationary_ = false;           // the whole trajectory stays within `tolerance` of its first point
     bool moved_ = false;
     int short_cycles_ = 0;
     Clock::time_point stop_sent_at_{};

@@ -38,8 +38,9 @@ namespace ec::motion {
 struct ControlOptions {
     std::chrono::milliseconds period{8};  ///< the cycle, and a stream's sampling period
     /// Per command: a reply that takes longer fails it. Generous on purpose: the
-    /// cycle's timing is watched separately (max_late_cycles).
-    std::chrono::milliseconds reply_timeout{50};
+    /// EA66 takes longer than 50 ms to answer some actions (set_servo_status), and
+    /// the cycle's timing is watched separately (max_late_cycles).
+    std::chrono::milliseconds reply_timeout{2'000};
     /// While an activity runs, this many consecutive cycles starting more than
     /// half a period late are a fault (Kind::Overrun).
     int max_late_cycles = 3;

@@ -29,6 +29,7 @@ with "ok" (or the state, as JSON):
     freeze on | freeze off      stop / resume sending monitor frames
     drop                        close every command connection
     reject METHOD               answer METHOD with false from now on
+    delay METHOD SECONDS        answer METHOD that much later from now on (its effect is at once)
     ready                       servos on, synchronised, no alarm (skips bring-up)
     joints J1 .. J6             put the arm there [deg] (while it stands still)
     trace start | trace         record the TCP pose every period from now | the poses recorded, as JSON
@@ -232,6 +233,7 @@ class Arm:
         self.speedj = None
         self.trajectory = Trajectory()
         self.rejected = set()
+        self.delays = {}  # method -> seconds before its reply
         self.pending = []  # (when, function): delayed effects
         self.estop_at = None
         self.pose = kinematics.forward(self.q)  # the TCP: the flange [mm, rad]
@@ -497,6 +499,9 @@ class Arm:
         if cmd == "reject":
             self.rejected.add(arg)
             return "ok"
+        if cmd == "delay":
+            self.delays[arg] = float(words[2]) if len(words) > 2 else 0.0
+            return "ok"
         if cmd == "ready":
             self.servo = self.synced = True
             self.collision = self.estop = False
@@ -568,12 +573,15 @@ class Robot:
                     except ValueError:
                         continue
                     request_id = request.get("id")
+                    method = request.get("method", "")
                     try:
                         with self.arm.lock:
-                            result = self.arm.handle(request.get("method", ""), request.get("params"),
-                                                     time.monotonic())
+                            result = self.arm.handle(method, request.get("params"), time.monotonic())
+                            delay = self.arm.delays.get(method, 0.0)
                         if result is None:
                             continue  # asked not to reply
+                        if delay > 0.0:
+                            time.sleep(delay)  # a slow answer: this connection waits
                         reply = {"jsonrpc": "2.0", "result": json.dumps(result), "id": request_id}
                     except RpcError as e:
                         reply = {"jsonrpc": "2.0", "error": {"code": e.code, "message": e.message}, "id": request_id}

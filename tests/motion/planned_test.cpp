@@ -254,7 +254,18 @@ TEST(PlayTrajectory, UploadsChecksRunsAndFlushes) {
     const auto path = ramp(12);
     auto a = make_activity(ec::motion::PlayTrajectory{.path = path, .speed = 0.5});
 
-    for (int i = 0; i < 20 && b.count("start_trajectory") == 0; ++i) ASSERT_EQ(b.step(a), Phase::Running);
+    // As the manual's examples: 0.2 s after start_push_pos, the points without
+    // replies; 1 s after them, stop_push_pos.
+    const auto steps_until = [&](std::string_view method) {
+        int n = 0;
+        for (; n < 400 && b.count(method) == 0; ++n) EXPECT_EQ(b.step(a), Phase::Running);
+        return n;
+    };
+    steps_until("start_push_pos");
+    EXPECT_GE(steps_until("push_pos"), 200 / 8);
+    EXPECT_EQ(b.count("push_pos"), 12u);  // all in one cycle
+    EXPECT_GE(steps_until("stop_push_pos"), 1000 / 8);
+    steps_until("start_trajectory");
     EXPECT_EQ(b.count("getSpeed"), 1u);
     EXPECT_EQ(b.count("start_push_pos"), 1u);
     EXPECT_EQ(b.count("push_pos"), 12u);
@@ -263,7 +274,7 @@ TEST(PlayTrajectory, UploadsChecksRunsAndFlushes) {
     for (const auto& s : b.sent) {
         if (s.method == "start_push_pos") {
             EXPECT_EQ(s.params["path_lenth"], 12);
-            EXPECT_EQ(s.params["ret_flag"], 1);
+            EXPECT_EQ(s.params["ret_flag"], 0);
         }
         if (s.method == "start_trajectory") {
             EXPECT_DOUBLE_EQ(s.params["speed_percent"].get<double>(), 50.0);
@@ -306,7 +317,7 @@ TEST(PlayTrajectory, AnUploadTheControllerRejectsIsFlushed) {
     b.answers["check_trajectory"] = [](const auto&) -> std::expected<Json, ec::command::Error> { return Json(-3); };
     auto a = make_activity(ec::motion::PlayTrajectory{.path = ramp(4)});
     std::expected<Phase, Error> r = Phase::Running;
-    for (int i = 0; i < 20 && r; ++i) r = b.step(a);
+    for (int i = 0; i < 400 && r; ++i) r = b.step(a);
     ASSERT_FALSE(r);
     EXPECT_EQ(r.error().kind, Error::Kind::Command);
     EXPECT_EQ(b.count("start_trajectory"), 0u);
@@ -334,7 +345,7 @@ TEST(PlayTrajectory, AClosedPathIsDoneOnlyAfterTheArmMoved) {
     Bench b;
     answer_upload(b);
     auto a = make_activity(ec::motion::PlayTrajectory{.path = there_and_back(), .margin = 500ms});
-    for (int i = 0; i < 20 && b.count("start_trajectory") == 0; ++i) ASSERT_TRUE(b.step(a));
+    for (int i = 0; i < 400 && b.count("start_trajectory") == 0; ++i) ASSERT_TRUE(b.step(a));
     // The arm never moves: at rest at the first point, which is also the last.
     std::expected<Phase, Error> r = Phase::Running;
     for (int i = 0; i < 400 && r && *r == Phase::Running; ++i) r = b.step(a);
@@ -349,7 +360,7 @@ TEST(PlayTrajectory, ATrajectoryThatStaysPutIsDoneAfterItsTime) {
     still.time = {0.0, 0.1, 0.2};
     still.position = {Joints{}, Joints{}, Joints{}};
     auto a = make_activity(ec::motion::PlayTrajectory{.path = still});
-    for (int i = 0; i < 20 && b.count("start_trajectory") == 0; ++i) ASSERT_TRUE(b.step(a));
+    for (int i = 0; i < 400 && b.count("start_trajectory") == 0; ++i) ASSERT_TRUE(b.step(a));
     int cycles = 0;
     std::expected<Phase, Error> r = Phase::Running;
     while (r && *r == Phase::Running && cycles < 100) {
@@ -365,7 +376,7 @@ TEST(PlayTrajectory, AStopRightAfterTheStartStopsTheArm) {
     Bench b;
     answer_upload(b);
     auto a = make_activity(ec::motion::PlayTrajectory{.path = ramp(6)});
-    for (int i = 0; i < 20 && b.count("start_trajectory") == 0; ++i) ASSERT_TRUE(b.step(a));
+    for (int i = 0; i < 400 && b.count("start_trajectory") == 0; ++i) ASSERT_TRUE(b.step(a));
     // start_trajectory went out and its reply has not been looked at: the arm may move.
     EXPECT_FALSE(b.close(a, End::Stopped));
     EXPECT_EQ(b.count("stop_trajectory"), 1u);
@@ -381,7 +392,7 @@ TEST(PlayTrajectory, CancelWhileRunningStopsItThenFlushes) {
     b.answers["check_trajectory"] = [](const auto&) -> std::expected<Json, ec::command::Error> { return Json(0); };
     const auto path = ramp(6);
     auto a = make_activity(ec::motion::PlayTrajectory{.path = path});
-    for (int i = 0; i < 20 && b.count("start_trajectory") == 0; ++i) ASSERT_TRUE(b.step(a));
+    for (int i = 0; i < 400 && b.count("start_trajectory") == 0; ++i) ASSERT_TRUE(b.step(a));
     ASSERT_TRUE(b.step(a));
     moving(b, path.position[2]);
     ASSERT_TRUE(b.step(a));
