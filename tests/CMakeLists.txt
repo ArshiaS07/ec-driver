@@ -51,6 +51,6 @@ if(Python3_FOUND AND TARGET ec_query AND TARGET ec_monitor AND TARGET ec_record 
              COMMAND Python3::Interpreter ${CMAKE_CURRENT_SOURCE_DIR}/apps/test_apps.py
                      --ec-query $<TARGET_FILE:ec_query> --ec-monitor $<TARGET_FILE:ec_monitor>
                      --ec-record $<TARGET_FILE:ec_record>
-                     --ec-move $<TARGET_FILE:ec_move> --sbx-path $<TARGET_FILE:sbx_path>
+                     --ec-move $<TARGET_FILE:ec_move> --sbx-trajectory $<TARGET_FILE:sbx_trajectory>
                      --tools ${PROJECT_SOURCE_DIR}/tools)
 endif()

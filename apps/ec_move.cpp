@@ -14,7 +14,7 @@
 // Anything that moves the arm prints its plan and does nothing unless --yes is
 // given. Ctrl+C stops the arm. The controller must be in remote mode.
 // --record FILE writes every monitoring frame while the tool runs, as ec_record --raw does.
-// Motions of the TCP are code, not options: apps/sbx_path.cpp.
+// Motions of the TCP are code, not options: apps/sbx_trajectory.cpp.
 //
 // Exit codes: 0 done (or a plan printed); 1 refused, failed or stopped; 2 bad command line.
 
