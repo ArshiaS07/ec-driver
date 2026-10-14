@@ -10,6 +10,7 @@
 //    (against the fake robot: python3 tools/fake_robot.py, then --host 127.0.0.1)
 
 #include <Eigen/Geometry>
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <csignal>
@@ -48,18 +49,35 @@ ec::PoseTrajectory circle() {
     const Eigen::Vector3d center(130.0, -315.0, 585.0);  // [mm], read on the pendant
     const Eigen::Vector3d rxyz(180.0, 0.0, -180.0);      // [deg], read on the pendant: the tool's orientation
 
-    const double radius = 30.0;                                   // [mm]
-    const double speed = 10.0;                                    // [mm/s] along the circle
-    const int n = 200;                                            // number of poses
-    const double turn = 2.0 * std::numbers::pi * radius / speed;  // [s] once round
+    const double radius = 200.0;                              // [mm]
+    const double speed = 40.0;                                // [mm/s] along the circle
+    const double length = 2.0 * std::numbers::pi * radius;    // [mm] once round
+    const int n = static_cast<int>(std::ceil(length / 2.0));  // number of poses: one every 2 mm
+    // [s] to reach the speed at the start, and to stop at the end: at most 1 s,
+    // less if the circle is too short to reach the speed in 1 s.
+    const double ramp = std::min(1.0, length / speed);
+    const double duration = length / speed + ramp;  // [s]: each ramp covers half of what the speed would
+
+    // The distance [mm] along the circle t seconds after the start: the speed
+    // rises as a half cosine over the ramp, holds, and falls the same way.
+    const auto ramped = [&](double u) {
+        return speed / 2.0 * (u - ramp / std::numbers::pi * std::sin(std::numbers::pi * u / ramp));
+    };
+    const auto distance = [&](double t) {
+        if (t < ramp) return ramped(t);
+        if (t > duration - ramp) return length - ramped(duration - t);
+        return speed * ramp / 2.0 + speed * (t - ramp);
+    };
+
     ec::PoseTrajectory poses;
     for (int k = 0; k <= n; ++k) {
-        const double a = 2.0 * std::numbers::pi * k / n;
+        const double t = duration * k / n;
+        const double a = distance(t) / radius;  // [rad] round the circle
         Eigen::Isometry3d T = Eigen::Isometry3d::Identity();
         T.linear() =
             ec::rotation_from_rxyz(ec::deg_to_rad(rxyz.x()), ec::deg_to_rad(rxyz.y()), ec::deg_to_rad(rxyz.z()));
         T.translation() = (center + radius * Eigen::Vector3d(std::cos(a), std::sin(a), 0.0)) / 1000.0;  // [m]
-        poses.push_back({at_seconds(turn * k / n), T});
+        poses.push_back({at_seconds(t), T});
     }
     return poses;
 }
