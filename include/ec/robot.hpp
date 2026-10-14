@@ -6,14 +6,16 @@
 /// command connection and runs one activity at a time.
 ///
 /// Motion is in joint space; TCP poses become joints through the controller's
-/// inverse kinematics (ADR 0017):
+/// inverse kinematics (ADR 0017). Planned, the whole motion is given at once;
+/// streamed, targets are pushed as they come:
 ///
 ///     Joints q = robot.ik(T_base_tcp, near).value();         // the controller's IK
 ///     robot.move_joints({.target = q, .speed = 0.2}).wait();  // moveByJoint
-///     auto trajectory = robot.plan(timed_poses).value();      // IK, checks, a joint trajectory
+///     PoseTrajectory motion{{0s, T_base_tcp}, {2s, T_base_goal}};
+///     auto trajectory = robot.plan(motion).value();           // IK, checks, a joint trajectory
 ///     robot.play(trajectory).wait();                          // the timestamp service
 ///     auto servo = robot.servo().value();                     // live: push joints
-///     servo.target(robot.ik(T_base_tcp, q).value());
+///     servo.target(robot.ik(T_base_tcp, q).value());          // (check_step() each)
 
 #include <Eigen/Geometry>
 #include <chrono>
@@ -22,7 +24,6 @@
 #include <functional>
 #include <memory>
 #include <optional>
-#include <span>
 #include <string>
 #include <utility>
 
@@ -112,9 +113,9 @@ public:
 
     /// Moves in joint space to joint positions (moveByJoint).
     [[nodiscard]] motion::Job move_joints(const motion::MoveJoint& move);
-    /// A timed TCP path solved into a joint trajectory from where the arm is now:
-    /// motion::plan() with ik(). Computations only: nothing moves.
-    [[nodiscard]] std::expected<motion::JointTrajectory, motion::Error> plan(std::span<const motion::TimedPose> path,
+    /// A motion of the TCP solved into a joint trajectory from where the arm is
+    /// now: motion::plan() with ik(). Computations only: nothing moves.
+    [[nodiscard]] std::expected<motion::JointTrajectory, motion::Error> plan(const PoseTrajectory& motion,
                                                                              const motion::PlanOptions& options = {});
     /// Plays a joint trajectory through the controller's timestamp service
     /// (motion::PlayTrajectory), checked against `limits` (pass the ones plan()

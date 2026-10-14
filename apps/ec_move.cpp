@@ -8,24 +8,13 @@
 //   nudge JOINT DEGREES          move one joint (1..6) by up to 30 deg    (--speed F)
 //   sine JOINT AMPLITUDE PERIOD  stream a sine [deg, s] on one joint, from where it is
 //                                (--seconds S, default two periods; --lookahead MS, default 40)
-//   circle --radius MM           the TCP draws a circle (see below)
 //   stop                         stop whatever moves the arm
 //   acknowledge                  clear a latched fault, once a person has dealt with its cause
 //
 // Anything that moves the arm prints its plan and does nothing unless --yes is
 // given. Ctrl+C stops the arm. The controller must be in remote mode.
 // --record FILE writes every monitoring frame while the tool runs, as ec_record --raw does.
-//
-// circle: around --center X Y Z [mm, base frame] (default: where the TCP is),
-// in the plane normal to --normal (default 0 0 1: parallel to the ground),
-// counter-clockwise about it, starting toward --start-toward (default: the TCP),
-// keeping the tool's orientation. It is planned in joint space: the controller
-// solves a pose every 3 mm, and the plan is checked for jumps, singularities
-// (J5, J3) and joint limits. Without --yes the plan is printed with points to
-// check by hand, and nothing moves. With --yes the arm moves in a straight line
-// to the first point, then draws the circle: both are joint trajectories played
-// by the controller's timestamp service; with --stream the circle's poses are
-// instead pushed live, each solved by the controller, as joint targets.
+// Motions of the TCP are code, not options: apps/sbx_path.cpp.
 //
 // Exit codes: 0 done (or a plan printed); 1 refused, failed or stopped; 2 bad command line.
 
@@ -38,7 +27,6 @@
 #include <thread>
 #include <vector>
 
-#include "circle.hpp"
 #include "cli.hpp"
 #include "ec/log/raw.hpp"
 #include "ec/motion/point_to_point.hpp"
@@ -84,8 +72,7 @@ void print_status(const ec::Robot& robot) {
 std::expected<void, ec::motion::Error> follow(ec::Robot& robot, const ec::motion::Job& job) {
     for (;;) {
         if (auto result = job.wait_for(20ms)) return *result;
-        if (g_interrupted != 0) {
-            g_interrupted = 0;
+        if (interrupted()) {
             cli::err("stopping\n");
             robot.stop();
         }
@@ -136,12 +123,6 @@ int stream_sine(ec::Robot& robot, int joint, double amplitude_deg, double period
 int act(ec::Robot& robot, const CLI::App& app, bool yes, double speed, const std::vector<double>& positions, int joint,
         double amount, double period, double seconds, int lookahead_ms);
 
-// Turns three numbers from the command line into a vector, if given.
-std::optional<Eigen::Vector3d> vec3(const std::vector<double>& v) {
-    if (v.size() != 3) return std::nullopt;
-    return Eigen::Vector3d(v[0], v[1], v[2]);
-}
-
 int run(int argc, char** argv) {
     std::string host = "192.168.0.200";  // this tool's default; the library has none
     std::uint16_t command_port = 8055;
@@ -188,45 +169,9 @@ int run(int argc, char** argv) {
     sine->add_option("--lookahead", lookahead_ms, "[ms] the controller's queue delay")
         ->capture_default_str()
         ->check(CLI::Range(10, 1000));
-    circle::Options drawing;
-    std::vector<double> center;
-    std::vector<double> normal;
-    std::vector<double> start_toward;
-    auto* circ = app.add_subcommand("circle", "The TCP draws a circle, planned in joint space");
-    circ->add_option("--radius", drawing.radius_mm, "[mm]")->required()->check(CLI::Range(1.0, 500.0));
-    circ->add_option("--center", center, "X Y Z [mm] in the base frame (default: where the TCP is)")->expected(3);
-    circ->add_option("--normal", normal, "NX NY NZ: the axis it turns counter-clockwise about (default 0 0 1)")
-        ->expected(3);
-    circ->add_option("--start-toward", start_toward,
-                     "DX DY DZ: from the centre toward the first point (default: "
-                     "toward the TCP)")
-        ->expected(3);
-    circ->add_option("--speed", drawing.speed_mm_s, "TCP speed [mm/s]")
-        ->capture_default_str()
-        ->check(CLI::Range(1.0, 250.0));
-    circ->add_option("--turns", drawing.turns, "How many times around")
-        ->capture_default_str()
-        ->check(CLI::Range(0.05, 20.0));
-    circ->add_option("--ramp", drawing.ramp_s, "[s] to reach the speed, and to stop")
-        ->capture_default_str()
-        ->check(CLI::Range(0.0, 10.0));
-    circ->add_option("--approach-speed", drawing.approach_speed_mm_s, "[mm/s] to the first point")
-        ->capture_default_str()
-        ->check(CLI::Range(1.0, 250.0));
-    circ->add_option("--max-approach", drawing.max_approach_mm, "[mm]: a first point further away is refused")
-        ->capture_default_str()
-        ->check(CLI::Range(0.0, 2000.0));
-    circ->add_flag("--stream", drawing.stream, "Push the poses live, each solved, instead of playing the plan");
-    circ->add_option("--save", drawing.save, "Write the plan as CSV, a row per trajectory point");
     app.add_subcommand("stop", "Stop whatever moves the arm");
     app.add_subcommand("acknowledge", "Clear a latched fault");
     if (const auto code = cli::parse(app, argc, argv)) return *code;
-    if (circ->parsed()) {
-        drawing.center_mm = vec3(center);
-        if (auto n = vec3(normal)) drawing.normal = *n;
-        drawing.start_toward = vec3(start_toward);
-        drawing.yes = yes;
-    }
 
     // The recording outlives the robot, whose receiver thread writes to it.
     std::optional<ec::log::RawWriter> recording;
@@ -249,9 +194,7 @@ int run(int argc, char** argv) {
         } else {
             std::signal(SIGINT, on_signal);
             std::signal(SIGTERM, on_signal);
-            code = circ->parsed()
-                       ? circle::run(*robot, drawing, interrupted)
-                       : act(*robot, app, yes, speed, positions, joint, amount, period, seconds, lookahead_ms);
+            code = act(*robot, app, yes, speed, positions, joint, amount, period, seconds, lookahead_ms);
         }
     }
     if (recording) {
@@ -264,7 +207,7 @@ int run(int argc, char** argv) {
     return code;
 }
 
-// The subcommands other than circle, with the robot connected.
+// The subcommand, with the robot connected.
 int act(ec::Robot& robot, const CLI::App& app, bool yes, double speed, const std::vector<double>& positions, int joint,
         double amount, double period, double seconds, int lookahead_ms) {
     const auto* status = app.get_subcommand("status");

@@ -1,14 +1,12 @@
 #pragma once
 /// @file
-/// Planned paths in joint space (docs/motion.md 5.11, ADR 0017): timed TCP
-/// poses are solved by inverse kinematics into joint positions, checked, and
-/// sampled into a JointTrajectory, which the controller's timestamp service
-/// plays (PlayTrajectory). Pure, apart from the inverse kinematics the caller
-/// supplies (the controller's, through Robot::ik). Poses follow ec/pose.hpp.
+/// Planned motion in joint space (docs/motion.md 5.11, ADR 0017): a motion of
+/// the TCP, a PoseTrajectory (ec/pose.hpp), is solved by inverse kinematics
+/// into joint positions, checked, and sampled into a JointTrajectory, which the
+/// controller's timestamp service plays (PlayTrajectory). Pure, apart from the
+/// inverse kinematics the caller supplies (the controller's, through Robot::ik).
 
 #include <Eigen/Geometry>
-#include <algorithm>
-#include <cmath>
 #include <cstddef>
 #include <expected>
 #include <functional>
@@ -20,55 +18,25 @@
 
 #include "ec/motion/error.hpp"
 #include "ec/motion/trajectory.hpp"
-#include "ec/path.hpp"
+#include "ec/pose.hpp"
 #include "ec/units.hpp"
 
 namespace ec::motion {
 
-/// Rest-to-rest timing along a distance: the speed rises for `ramp` seconds as
-/// a half cosine (so the acceleration starts and ends at zero), stays at the
-/// cruise speed, and falls the same way. A distance too short to reach the
-/// speed asked for lowers the cruise speed.
-class SpeedProfile {
-public:
-    /// The profile, or why the numbers do not make one: `distance` [m] >= 0,
-    /// `speed` [m/s] > 0, `ramp` [s] >= 0, all finite.
-    [[nodiscard]] static std::expected<SpeedProfile, std::string> make(double distance, double speed, double ramp);
-
-    [[nodiscard]] double duration() const noexcept;          ///< [s]
-    [[nodiscard]] double distance(double t) const noexcept;  ///< [m] covered at time t [s], within [0, total()]
-    [[nodiscard]] double speed(double t) const noexcept;     ///< [m/s] at time t; 0 outside [0, duration()]
-    /// [s] when `distance` [m] is reached: the inverse of distance(t), clamped
-    /// to [0, duration()].
-    [[nodiscard]] double time_at(double distance) const noexcept;
-    [[nodiscard]] double total() const noexcept { return total_; }          ///< [m]
-    [[nodiscard]] double cruise_speed() const noexcept { return cruise_; }  ///< [m/s]
-    [[nodiscard]] double ramp() const noexcept { return ramp_; }            ///< [s]
-    /// [m/s^2]; infinite without a ramp.
-    [[nodiscard]] double peak_acceleration() const noexcept;
-
-private:
-    SpeedProfile(double total, double cruise, double ramp) : total_(total), cruise_(cruise), ramp_(ramp) {}
-    [[nodiscard]] double ramped(double t) const noexcept;  // distance covered t seconds into a ramp
-
-    double total_;
-    double cruise_;
-    double ramp_;
-};
-
 /// Joint positions interpolated over an increasing parameter by cubic Hermite
 /// segments, the slope at each inner knot taken from the parabola through it and
 /// its neighbours (Bessel's method): positions and slopes are continuous, and
-/// quadratics are reproduced exactly. Outside the knots the end positions hold.
+/// quadratics are reproduced exactly. Where all the positions at two neighbouring
+/// knots are the same (a pause), the motion rests at both, instead of passing
+/// through; next to a knot at rest the slopes are kept within three times their
+/// segment's secant, so that no segment overshoots into or out of rest (Fritsch
+/// and Carlson). Outside the knots the end positions hold.
 class JointSpline {
 public:
     /// The slopes at the first and last knot.
     enum class Ends {
         Parabola,  ///< from the parabola through the three end knots: exact for quadratics
-        /// zero: the motion starts and ends at rest; the slopes next to them are
-        /// kept within three times their segment's secant, so that the end
-        /// segments do not overshoot (Fritsch and Carlson)
-        Rest,
+        Rest,      ///< zero: the motion starts and ends at rest
     };
 
     /// The spline, or why not: at least 2 knots, strictly increasing and
@@ -93,41 +61,14 @@ private:
     std::vector<Joints> m_;  // the slope at each knot
 };
 
-/// A TCP pose at a time: one point of a planned path.
-struct TimedPose {
-    double time = 0.0;                                       ///< [s] from the path's start
-    Eigen::Isometry3d pose = Eigen::Isometry3d::Identity();  ///< T_base_tcp
-};
-
-/// The poses of `path` timed by `profile` (made over the path's length): a pose
-/// every `step` [m] of path, and more often where the path is slow, so that no
-/// two are further apart in time than `step` takes at the cruise speed; and
-/// one at the end. Dense enough for plan() to interpolate between them in time.
-/// Empty for a `step` that is not positive, or that would make more than a
-/// million poses (plan() then refuses the empty path).
-template <CartesianPath P>
-[[nodiscard]] std::vector<TimedPose> sample(const P& path, const SpeedProfile& profile, double step) {
-    if (!(step > 0.0) || !std::isfinite(step) || length(path) / step > 1e6) return {};
-    const double end = profile.duration();
-    const double longest = profile.cruise_speed() > 0.0 ? step / profile.cruise_speed() : end;
-    std::vector<TimedPose> out{{.time = 0.0, .pose = pose_at(path, 0.0)}};
-    for (double t = 0.0;;) {
-        t = std::min(t + longest, profile.time_at(profile.distance(t) + step));
-        if (!(t < end - 1e-9)) break;
-        out.push_back({.time = t, .pose = pose_at(path, profile.distance(t))});
-    }
-    if (end > 0.0) out.push_back({.time = end, .pose = pose_at(path, profile.total())});
-    return out;
-}
-
 /// The inverse kinematics plan() calls: the joint positions [rad] that put the
 /// TCP at T_base_tcp, chosen near `near`. Robot::ik is one.
 using InverseKinematics =
     std::function<std::expected<Joints, Error>(const Eigen::Isometry3d& T_base_tcp, const Joints& near)>;
 
-/// How plan() solves and checks a path.
+/// How plan() solves and checks a motion.
 struct PlanOptions {
-    /// [m]: neighbouring points further apart are joined by a straight line,
+    /// [m]: neighbouring poses further apart are joined by a straight line,
     /// solved every max_step along it.
     double max_step = 0.003;
     double max_turn = deg_to_rad(1.0);  ///< [rad]: the same for the orientation, turned evenly (slerp)
@@ -142,20 +83,34 @@ struct PlanOptions {
     std::size_t max_points = 10'000;  ///< solved points at most
 };
 
-/// Turns a timed TCP path into a joint trajectory. The path's times start at 0
-/// and increase; its first and last points should be at rest (the trajectory
-/// runs from rest to rest). Steps: points further apart than max_step or
-/// max_turn are joined by straight lines and filled in; every point is solved by
-/// `ik`, the first near `start`, each next one near the one before (a solution
-/// given within one turn taken to the nearest turn); the solutions are
-/// interpolated over time (JointSpline, at rest at both ends) and sampled every
-/// `period`, ending exactly at the last time. Fails with Kind::Invalid, naming
-/// the point, if neighbouring solutions differ by more than max_joint_step, if J5
-/// or J3 comes within singularity_margin of 0 or 180 deg, or if the trajectory
-/// breaks the limits; a failure of `ik` keeps its kind (the controller found no
-/// solution, or did not answer, ...) and gains the pose in its message. Every
-/// point costs one call of `ik`.
-[[nodiscard]] std::expected<JointTrajectory, Error> plan(std::span<const TimedPose> path, const Joints& start,
+/// Why the arm should not be at joint positions `q` [rad] on a planned or
+/// streamed motion, or nothing: a joint beyond limits.joint_limit, or J5 or J3
+/// within singularity_margin of 0 or 180 deg (the wrist and elbow singularities).
+[[nodiscard]] std::expected<void, std::string> check_point(const Joints& q, const PlanOptions& options);
+
+/// Why the arm should not go from joint positions `from` to `to` [rad] as one
+/// step of a motion, or nothing: a joint turning more than max_joint_step (a
+/// change of configuration, or a pass close to a singularity), or what
+/// check_point(to) finds. plan() checks every point so; a stream of TCP poses
+/// should check each target's solution so too.
+[[nodiscard]] std::expected<void, std::string> check_step(const Joints& from, const Joints& to,
+                                                          const PlanOptions& options);
+
+/// Turns a motion of the TCP into a joint trajectory. The motion must be valid
+/// (ec::validate) and start where the arm is: its first pose is solved near
+/// `start`. The trajectory runs from rest to rest and passes through every pose
+/// at its time without stopping, except where a pose is stamped twice (a pause:
+/// the arm rests there). Steps: poses further apart than max_step or max_turn are
+/// joined by straight lines and filled in; every point is solved by `ik`, each
+/// near the one before (a solution given within one turn taken to the nearest
+/// turn) and checked (check_point, check_step); the solutions are interpolated
+/// over time (JointSpline) and sampled every `period`, ending exactly at the last
+/// time. Fails with Kind::Invalid, naming the pose, for an invalid motion, a
+/// failed check, or a trajectory beyond the limits (too fast for the joints); a
+/// failure of `ik` keeps its kind (the controller found no solution, or did not
+/// answer, ...) and gains the pose in its message. Every point but a pause costs
+/// one call of `ik`.
+[[nodiscard]] std::expected<JointTrajectory, Error> plan(const PoseTrajectory& motion, const Joints& start,
                                                          const InverseKinematics& ik, const PlanOptions& options = {});
 
 /// How close joint positions come to the EC series' wrist and elbow

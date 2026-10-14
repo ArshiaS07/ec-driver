@@ -110,7 +110,7 @@ std::expected<Phase, Error> ServoStream::step(const Cycle& c, Outbox& out) {
             if (channel_->close_requested()) return Phase::Done;
             Joints setpoint{};
             if (const auto target = channel_->newest()) {
-                const auto age = c.now - target->at;
+                const auto age = c.now - target->stamp;
                 if (age > options_.watchdog.target_timeout + options_.watchdog.hold_for)
                     return std::unexpected(starved("servo_stream", age));
                 if (age > options_.watchdog.target_timeout) {
@@ -225,7 +225,7 @@ std::expected<Phase, Error> VelocityStream::step(const Cycle& c, Outbox& out) {
     if (!target) return Phase::Running;  // nothing pushed yet: nothing sent
     pushed_ = true;
     Joints v{};
-    const auto age = c.now - target->at;
+    const auto age = c.now - target->stamp;
     if (age > options_.watchdog.target_timeout + options_.watchdog.hold_for)
         return std::unexpected(starved("velocity_stream", age));
     if (age <= options_.watchdog.target_timeout) {

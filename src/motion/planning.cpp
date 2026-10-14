@@ -1,74 +1,15 @@
 #include "ec/motion/planning.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <format>
-#include <limits>
 #include <numbers>
 #include <utility>
 
 #include "ec/pose.hpp"
 
 namespace ec::motion {
-
-// ------------------------------------------------------------------ SpeedProfile
-
-std::expected<SpeedProfile, std::string> SpeedProfile::make(double distance, double speed, double ramp) {
-    if (!(std::isfinite(distance) && distance >= 0.0))
-        return std::unexpected(std::format("the distance must be finite and not negative, not {} m", distance));
-    if (!(std::isfinite(speed) && speed > 0.0))
-        return std::unexpected(std::format("the speed must be positive, not {} m/s", speed));
-    if (!(std::isfinite(ramp) && ramp >= 0.0))
-        return std::unexpected(std::format("the ramp must be finite and not negative, not {} s", ramp));
-    // Each ramp covers cruise * ramp / 2: two of them must fit into the distance.
-    const double cruise = ramp > 0.0 ? std::min(speed, distance / ramp) : speed;
-    return SpeedProfile(distance, cruise, ramp);
-}
-
-double SpeedProfile::duration() const noexcept {
-    if (total_ == 0.0 || cruise_ == 0.0) return 0.0;
-    return ramp_ + total_ / cruise_;
-}
-
-double SpeedProfile::ramped(double t) const noexcept {
-    if (ramp_ == 0.0) return 0.0;
-    return cruise_ / 2.0 * (t - ramp_ / std::numbers::pi * std::sin(std::numbers::pi * t / ramp_));
-}
-
-double SpeedProfile::distance(double t) const noexcept {
-    const double end = duration();
-    if (!(t > 0.0)) return 0.0;
-    if (t >= end) return total_;
-    if (t < ramp_) return ramped(t);
-    if (t <= end - ramp_) return cruise_ * ramp_ / 2.0 + cruise_ * (t - ramp_);
-    return std::clamp(total_ - ramped(end - t), 0.0, total_);
-}
-
-double SpeedProfile::speed(double t) const noexcept {
-    const double end = duration();
-    if (!(t > 0.0) || t >= end) return 0.0;
-    if (t < ramp_) return cruise_ / 2.0 * (1.0 - std::cos(std::numbers::pi * t / ramp_));
-    if (t <= end - ramp_) return cruise_;
-    return cruise_ / 2.0 * (1.0 - std::cos(std::numbers::pi * (end - t) / ramp_));
-}
-
-double SpeedProfile::time_at(double d) const noexcept {
-    const double end = duration();
-    if (!(d > 0.0)) return 0.0;
-    if (d >= total_) return end;
-    double lo = 0.0;  // distance(lo) < d <= distance(hi)
-    double hi = end;
-    for (int k = 0; k < 60; ++k) {
-        const double mid = (lo + hi) / 2.0;
-        (distance(mid) < d ? lo : hi) = mid;
-    }
-    return hi;
-}
-
-double SpeedProfile::peak_acceleration() const noexcept {
-    if (ramp_ == 0.0) return cruise_ > 0.0 ? std::numeric_limits<double>::infinity() : 0.0;
-    return cruise_ * std::numbers::pi / (2.0 * ramp_);
-}
 
 // ------------------------------------------------------------------- JointSpline
 
@@ -109,19 +50,24 @@ std::expected<JointSpline, std::string> JointSpline::make(std::vector<double> kn
             slopes[n - 1][j] = secant[n - 2][j] + (secant[n - 2][j] - secant[n - 3][j]) * b1 / (b0 + b1);
         }
     }
-    if (ends == Ends::Rest) {
-        slopes.front() = slopes.back() = Joints{};
-        // From rest, an end segment overshoots backwards unless the slope at its
-        // other knot stays within three times its secant (Fritsch and Carlson):
-        // keep it there, so that motion from rest starts forwards.
-        const auto limit = [](double& slope, double chord) {
-            slope = chord >= 0.0 ? std::clamp(slope, 0.0, 3.0 * chord) : std::clamp(slope, 3.0 * chord, 0.0);
-        };
-        if (n >= 3) {
-            for (std::size_t j = 0; j < kJointCount; ++j) {
-                limit(slopes[1][j], secant[0][j]);
-                limit(slopes[n - 2][j], secant[n - 2][j]);
-            }
+    // At rest: the ends, if asked, and both knots of a pause (the same positions
+    // twice). A segment into or out of rest overshoots unless the slope at its
+    // other knot stays within three times its secant (Fritsch and Carlson): keep
+    // it there, so that motion from rest starts forwards and comes to rest
+    // without going past.
+    std::vector<bool> rest(n, false);
+    if (ends == Ends::Rest) rest.front() = rest.back() = true;
+    for (std::size_t k = 0; k + 1 < n; ++k)
+        if (positions[k] == positions[k + 1]) rest[k] = rest[k + 1] = true;
+    const auto limit = [](double& slope, double chord) {
+        slope = chord >= 0.0 ? std::clamp(slope, 0.0, 3.0 * chord) : std::clamp(slope, 3.0 * chord, 0.0);
+    };
+    for (std::size_t k = 0; k < n; ++k) {
+        if (!rest[k]) continue;
+        slopes[k] = Joints{};
+        for (std::size_t j = 0; j < kJointCount; ++j) {
+            if (k > 0 && !rest[k - 1]) limit(slopes[k - 1][j], secant[k - 1][j]);
+            if (k + 1 < n && !rest[k + 1]) limit(slopes[k + 1][j], secant[k][j]);
         }
     }
     return JointSpline(std::move(knots), std::move(positions), std::move(slopes));
@@ -175,42 +121,43 @@ std::unexpected<Error> invalid(std::string message) {
     return std::unexpected(Error{Error::Kind::Invalid, std::move(message), {}});
 }
 
-std::string where(const TimedPose& p) {
+// A pose of the motion, or one filled in between two, at its time [s].
+struct Point {
+    double time = 0.0;
+    Eigen::Isometry3d pose = Eigen::Isometry3d::Identity();
+};
+
+std::string where(const Point& p) {
     const Eigen::Vector3d r = p.pose.translation() * 1000.0;
     return std::format("at {:.3f} s ({:.1f}, {:.1f}, {:.1f} mm)", p.time, r.x(), r.y(), r.z());
 }
 
-bool is_rotation(const Eigen::Matrix3d& r) {
-    return r.allFinite() && (r.transpose() * r - Eigen::Matrix3d::Identity()).cwiseAbs().maxCoeff() < 1e-6 &&
-           r.determinant() > 0.0;
+// Whether two poses are the same: within a nanometre and a nanoradian.
+bool same_pose(const Eigen::Isometry3d& a, const Eigen::Isometry3d& b) {
+    return (a.translation() - b.translation()).norm() <= 1e-9 && angle_between(a.linear(), b.linear()) <= 1e-9;
 }
 
 // How far a joint angle is from the nearest multiple of pi [rad].
 double from_singular(double q) noexcept { return std::abs(std::remainder(q, std::numbers::pi)); }
 
-// The path with points inserted, along straight lines and even turns, so that no
-// two neighbours are further apart than max_step or max_turn.
-std::expected<std::vector<TimedPose>, Error> fill_in(std::span<const TimedPose> path, const PlanOptions& o) {
-    std::vector<TimedPose> points{path.front()};
-    for (std::size_t k = 1; k < path.size(); ++k) {
-        const TimedPose& a = path[k - 1];
-        const TimedPose& b = path[k];
+// The motion with points inserted, along straight lines and even turns, so that
+// no two neighbours are further apart than max_step or max_turn.
+std::expected<std::vector<Point>, Error> fill_in(const PoseTrajectory& motion, const PlanOptions& o) {
+    const auto seconds = [](Clock::duration d) { return std::chrono::duration<double>(d).count(); };
+    std::vector<Point> points{{.time = seconds(motion.front().stamp), .pose = motion.front().value}};
+    for (std::size_t k = 1; k < motion.size(); ++k) {
+        const Point a = points.back();
+        const Point b{.time = seconds(motion[k].stamp), .pose = motion[k].value};
         const double gap = (b.pose.translation() - a.pose.translation()).norm();
         const double turn = angle_between(a.pose.linear(), b.pose.linear());
         const double pieces = std::max({1.0, std::ceil(gap / o.max_step), std::ceil(turn / o.max_turn)});
         if (static_cast<double>(points.size()) + pieces > static_cast<double>(o.max_points))
-            return invalid(std::format("the path needs more than {} points {} mm and {} deg apart", o.max_points,
+            return invalid(std::format("the motion needs more than {} points {} mm and {} deg apart", o.max_points,
                                        o.max_step * 1000.0, rad_to_deg(o.max_turn)));
         const auto n = static_cast<std::size_t>(pieces);
-        const Eigen::Quaterniond qa(a.pose.linear());
-        const Eigen::Quaterniond qb(b.pose.linear());
         for (std::size_t i = 1; i < n; ++i) {
             const double u = static_cast<double>(i) / static_cast<double>(n);
-            TimedPose p;
-            p.time = a.time + (b.time - a.time) * u;
-            p.pose.translation() = a.pose.translation() + (b.pose.translation() - a.pose.translation()) * u;
-            p.pose.linear() = qa.slerp(u, qb).toRotationMatrix();
-            points.push_back(p);
+            points.push_back({.time = a.time + (b.time - a.time) * u, .pose = interpolate(a.pose, b.pose, u)});
         }
         points.push_back(b);
     }
@@ -219,31 +166,55 @@ std::expected<std::vector<TimedPose>, Error> fill_in(std::span<const TimedPose> 
 
 }  // namespace
 
-std::expected<JointTrajectory, Error> plan(std::span<const TimedPose> path, const Joints& start,
+std::expected<void, std::string> check_point(const Joints& q, const PlanOptions& o) {
+    for (std::size_t j = 0; j < kJointCount; ++j)
+        if (!(std::abs(q[j]) <= o.limits.joint_limit))
+            return std::unexpected(
+                std::format("joint {} at {:.1f} deg: beyond the joint limit", j + 1, rad_to_deg(q[j])));
+    if (from_singular(q[4]) < o.singularity_margin)
+        return std::unexpected(
+            std::format("J5 at {:.1f} deg: within {:.1f} deg of the wrist singularity (J5 at 0 or 180 deg)",
+                        rad_to_deg(q[4]), rad_to_deg(o.singularity_margin)));
+    if (from_singular(q[2]) < o.singularity_margin)
+        return std::unexpected(
+            std::format("J3 at {:.1f} deg: within {:.1f} deg of the elbow singularity (the arm stretched or folded, "
+                        "J3 at 0 or 180 deg)",
+                        rad_to_deg(q[2]), rad_to_deg(o.singularity_margin)));
+    return {};
+}
+
+std::expected<void, std::string> check_step(const Joints& from, const Joints& to, const PlanOptions& o) {
+    for (std::size_t j = 0; j < kJointCount; ++j)
+        if (!(std::abs(to[j] - from[j]) <= o.max_joint_step))
+            return std::unexpected(std::format(
+                "joint {} turns {:.1f} deg in one step: the arm would change configuration, or pass close to a "
+                "singularity",
+                j + 1, rad_to_deg(std::abs(to[j] - from[j]))));
+    return check_point(to, o);
+}
+
+std::expected<JointTrajectory, Error> plan(const PoseTrajectory& motion, const Joints& start,
                                            const InverseKinematics& ik, const PlanOptions& o) {
-    if (path.size() < 2) return invalid(std::format("{} poses; a path needs at least 2", path.size()));
+    if (auto ok = ec::validate(motion); !ok) return invalid("not a motion: " + ok.error());
     if (!ik) return invalid("no inverse kinematics given");
     if (!(o.max_step > 0.0 && o.max_turn > 0.0 && o.period > 0.0))
         return invalid("max_step, max_turn and period must be positive");
-    if (path.front().time != 0.0) return invalid(std::format("the path starts at {} s, not 0", path.front().time));
-    for (std::size_t k = 0; k < path.size(); ++k) {
-        const TimedPose& p = path[k];
-        if (!std::isfinite(p.time) || (k > 0 && !(p.time > path[k - 1].time)))
-            return invalid(std::format("point {}: its time, {} s, does not increase", k, p.time));
-        if (!p.pose.translation().allFinite() || !is_rotation(p.pose.linear()))
-            return invalid(std::format("point {}: not a pose (a finite position and a rotation)", k));
-    }
-    auto points = fill_in(path, o);
+    auto points = fill_in(motion, o);
     if (!points) return std::unexpected(points.error());
 
-    // Solve every point, each near the one before.
+    // Solve every point, each near the one before, and check it.
     std::vector<double> times;
     std::vector<Joints> solutions;
     times.reserve(points->size());
     solutions.reserve(points->size());
     Joints reference = start;
     for (std::size_t k = 0; k < points->size(); ++k) {
-        const TimedPose& p = (*points)[k];
+        const Point& p = (*points)[k];
+        if (k > 0 && same_pose(p.pose, (*points)[k - 1].pose)) {  // a pause: the same joints, held
+            times.push_back(p.time);
+            solutions.push_back(reference);
+            continue;
+        }
         auto q = ik(p.pose, reference);
         if (!q) {  // no solution, or no answer: the message says which
             Error e = std::move(q.error());
@@ -251,26 +222,10 @@ std::expected<JointTrajectory, Error> plan(std::span<const TimedPose> path, cons
             return std::unexpected(std::move(e));
         }
         const Joints solution = nearest_turn(*q, reference, o.limits.joint_limit);
-        for (std::size_t j = 0; j < kJointCount; ++j) {
-            if (k > 0 && std::abs(solution[j] - reference[j]) > o.max_joint_step)
-                return invalid(std::format(
-                    "joint {} turns {:.1f} deg between {:.3f} and {:.3f} s: the arm would "
-                    "change configuration or pass close to a singularity",
-                    j + 1, rad_to_deg(std::abs(solution[j] - reference[j])), (*points)[k - 1].time, p.time));
-            if (std::abs(solution[j]) > o.limits.joint_limit)
-                return invalid(std::format("joint {} at {:.1f} deg {}: beyond the joint limit", j + 1,
-                                           rad_to_deg(solution[j]), where(p)));
-        }
-        if (from_singular(solution[4]) < o.singularity_margin)
-            return invalid(
-                std::format("J5 at {:.1f} deg {}: within {:.1f} deg of the wrist singularity (J5 at 0 or "
-                            "180 deg)",
-                            rad_to_deg(solution[4]), where(p), rad_to_deg(o.singularity_margin)));
-        if (from_singular(solution[2]) < o.singularity_margin)
-            return invalid(
-                std::format("J3 at {:.1f} deg {}: within {:.1f} deg of the elbow singularity (the arm "
-                            "stretched or folded, J3 at 0 or 180 deg)",
-                            rad_to_deg(solution[2]), where(p), rad_to_deg(o.singularity_margin)));
+        // The first point is checked where it is; it must be near `start` for the
+        // trajectory to be played from there, which PlayTrajectory checks.
+        if (auto ok = k == 0 ? check_point(solution, o) : check_step(reference, solution, o); !ok)
+            return invalid(std::format("the pose {}: {}", where(p), ok.error()));
         reference = solution;
         times.push_back(p.time);
         solutions.push_back(solution);

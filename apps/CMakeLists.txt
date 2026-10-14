@@ -16,7 +16,7 @@ if(EC_WITH_HDF5)
 endif()
 ec_set_warnings(ec_record)
 
-add_executable(ec_move ec_move.cpp circle.cpp)
+add_executable(ec_move ec_move.cpp)
 target_link_libraries(ec_move PRIVATE ec::driver CLI11::CLI11)
 ec_set_warnings(ec_move)
 

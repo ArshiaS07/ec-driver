@@ -46,12 +46,12 @@ by the layers above; a lower layer knows nothing of the layers above it.
 | `ec` | `RobotState`, `RobotMode`, `CycleMode` | status values both ports report | yes |
 | `ec` | `Joints`, unit conversions | SI types, and deg/mm conversion where commands are built | yes |
 | `ec` | poses (`Eigen::Isometry3d`, T_ab), `from_mm_rad`, `to_mm_rad` | poses in SI, converted to the controller's mm and rx, ry, rz only at the wire | yes |
-| `ec` | `CartesianPath`, `Circle`, `Line` | paths of the TCP: a length and a pose at every distance along it | yes |
+| `ec` | `Clock`, `Stamped`, `PoseTrajectory` | the one (steady) clock; a value stamped with its time; a motion of the TCP as poses stamped with their time since the start | yes |
 | `ec::motion` | `observe`, `Conditions` | the newest state → which conditions for motion hold | yes |
 | `ec::motion` | `Activity`, `AnyActivity`, `Spec` | the contract of everything the control thread runs; its type erasure | yes |
 | `ec::motion` | `Executor` | supervision: one activity at a time, conditions checked every cycle, close always run, faults latched | yes |
 | `ec::motion` | `MoveJoint`, `PlayTrajectory`, `Sequence`, `BringUp` | planned motion and procedures, in joint space, as specs and the activities that run them | yes |
-| `ec::motion` | `SpeedProfile`, `sample()`, `TimedPose`, `plan()`, `JointSpline` | timed TCP poses solved by a given inverse kinematics (the controller's) into a checked joint trajectory | yes |
+| `ec::motion` | `plan()`, `check_step()`, `JointSpline` | a motion of the TCP solved by a given inverse kinematics (the controller's) into a checked joint trajectory | yes |
 | `ec::motion` | `ServoStream`, `VelocityStream`, `RateLimiter` | streamed motion in joint space: newest target, watchdog, shaping, one command per cycle | yes (reads a mailbox) |
 | `ec::motion` | `ControlLoop`, `Job`, `Session` | the control thread (the only user of 8055) and the applications' handles | no |
 | `ec` | `Robot` | the facade: receiver, newest state and control loop composed; what applications use | no |
@@ -60,9 +60,11 @@ Command-line tools (`apps/`): `ec_monitor` prints the 8056 stream; `ec_record`
 records it (raw and/or HDF5) or converts a raw recording; `ec_query` sends one
 SDK call (queries and computations; anything else needs `--write`), lists
 every call, or checks every query's reply against its type; `ec_move` moves
-the arm through `ec::Robot` (bring-up, joint moves, a streamed sine, a circle
-of the TCP planned in joint space, stop), printing its plan unless given `--yes`, and
-records 8056 while it runs with `--record`. File formats: `docs/log-format.md`.
+the arm through `ec::Robot` (bring-up, joint moves, a streamed sine, stop),
+printing its plan unless given `--yes`, and records 8056 while it runs with
+`--record`; `sbx_path`, a sandbox to read and change, moves the TCP along a
+motion written as code (a `PoseTrajectory`), planned in joint space, then played
+or streamed. File formats: `docs/log-format.md`.
 The motion design and its reasons: `docs/motion.md`.
 
 ---
@@ -104,8 +106,9 @@ The motion design and its reasons: `docs/motion.md`.
   commands and plays the state cycle by cycle; the control loop and
   `ec::Robot` against loopback servers.
 - Every tool end to end against the fake servers (`tests/apps/test_apps.py`,
-  run by ctest), `ec_move` against a simulated arm (`tools/fake_robot.py`) with
-  injected faults (emergency stop, teach mode).
+  run by ctest), `ec_move` and `sbx_path` against a simulated arm
+  (`tools/fake_robot.py`) with injected faults (emergency stop, teach mode, a
+  rejected call).
 - Fake servers (`tools/`): replay the EA66's recorded replies, stream
   synthetic frames, or simulate a moving arm, with fault injection.
 - CI: format check; all six presets built and tested; AddressSanitizer and
@@ -130,11 +133,11 @@ step ends with something testable.
 | 10 | Done: point-to-point motion through the control loop | first move at 10 % speed; a stop mid-move |
 | 11 | Experiments: stop latency, two 8055 connections, close sequences; tuning the numbers in `docs/motion.md` §7.2 | numbers for timeouts |
 | 12 | Done: `JointTrajectory`, `validate()` | bad trajectories rejected |
-| 13 | Done differently: the controller's own kinematics, in joint-space planning (ADR 0017, proposed); `ec_move circle` checks them against the reported TCP | `ec_move circle --radius R` without `--yes` |
-| 14 | Done without the tracking monitor: `PlayTrajectory`, `plan()` for TCP paths | a planned circle on the robot |
+| 13 | Done differently: the controller's own kinematics, in joint-space planning (ADR 0017, proposed); `sbx_path` checks them against the reported TCP | `sbx_path` without `--yes` |
+| 14 | Done without the tracking monitor: `PlayTrajectory`, `plan()` for motions of the TCP (`PoseTrajectory`) | a planned circle on the robot (`sbx_path`) |
 | 15 | Logging of commands, setpoints and events (the feedback stream is done: raw and HDF5) | commanded against actual |
 | 16 | Transparent-transmission experiments (`docs/motion.md` §7: underrun, step response, round trip) | numbers for the loop design |
-| 17 | Done: `ServoStream`, sessions, the watchdog; TCP targets solved by the application (`docs/motion.md` 5.11) | `ec_move --yes sine 6 2 4`, then `ec_move --yes circle --radius 30 --stream` on the robot |
+| 17 | Done: `ServoStream`, sessions, the watchdog; TCP targets solved and checked by the application (`docs/motion.md` 5.11) | `ec_move --yes sine 6 2 4`, then `sbx_path --yes` with `stream()` on the robot |
 | 18 | Done for joints (speedj): `VelocityStream`; speedl later | velocity commands that stop on timeout |
 | 19 | Done: `ec::Robot`; examples and a guide still to write | |
 | 20 | Extras as needed: force control, Python bindings, ROS 2 | |

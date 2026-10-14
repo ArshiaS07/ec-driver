@@ -1,8 +1,7 @@
 // ec::Robot against a minimal controller on 127.0.0.1: a command port that
 // answers every call, and a monitor port that sends a frame every 8 ms. Checks
 // the wiring: connecting, state, typed calls, kinematics, a planned move, a
-// servo session and a pose session, stop from another thread, and stopping on
-// destruction.
+// servo session, stop from another thread, and stopping on destruction.
 
 #include "ec/robot.hpp"
 
@@ -218,9 +217,9 @@ TEST(Robot, PlansWithTheControllersKinematicsAndPlaysThroughTheTimestampService)
     ASSERT_TRUE(robot);
     // The mini controller answers inverseKinematic with the reference itself:
     // the arm stays where it is (all joints 0 deg: J3 and J5 sit on singularities).
-    const ec::motion::TimedPose here{.time = 0.0, .pose = Eigen::Isometry3d::Identity()};
-    const ec::motion::TimedPose later{.time = 1.0, .pose = Eigen::Isometry3d::Identity()};
-    const std::vector path{here, later};
+    Eigen::Isometry3d nearby = Eigen::Isometry3d::Identity();
+    nearby.translation().x() = 0.001;
+    const ec::PoseTrajectory path{{0s, Eigen::Isometry3d::Identity()}, {1s, nearby}};
     const auto refused = robot->plan(path);
     ASSERT_FALSE(refused);
     EXPECT_NE(refused.error().message.find("singularity"), std::string::npos) << refused.error().message;

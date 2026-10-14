@@ -19,8 +19,8 @@ and cross-compiles for 64-bit ARM Linux.
 | `ec::log` (raw recordings; HDF5 logs in the optional `ec::hdf5`) | done, tested |
 | live state: `feedback::Receiver` (8056 thread, reconnects), `ec::Latest` (newest value) | done, tested; not yet on the robot |
 | `ec::motion` (supervision, planned and streamed motion, the control thread) and `ec::Robot` | done, tested against loopback servers and a simulated arm; not yet on the robot (`docs/motion.md`) |
-| TCP paths in joint space (poses as Eigen isometries, `ec::Circle`/`Line`, `plan()` with the controller's inverse kinematics and singularity checks, played by the timestamp service) | done, tested the same way (`docs/motion.md` 5.11) |
-| `apps/ec_monitor`, `apps/ec_record`, `apps/ec_query`, `apps/ec_move` | done, tested end to end against the fake servers |
+| Motions of the TCP in joint space (poses as Eigen isometries stamped with their time, `ec::PoseTrajectory`; `plan()` with the controller's inverse kinematics and singularity checks, played by the timestamp service) | done, tested the same way (`docs/motion.md` 5.11) |
+| `apps/ec_monitor`, `apps/ec_record`, `apps/ec_query`, `apps/ec_move`, `apps/sbx_path` | done, tested end to end against the fake servers |
 | still open | the robot checks in `docs/motion.md` §7; logging of commands and events; preflight; a guide |
 
 ## Try it
@@ -54,22 +54,17 @@ Moving the arm through the driver (remote mode; nothing moves without
     ./build/linux-debug/apps/ec_move --yes nudge 6 5               # J6 by +5 deg at 10 % speed
     ./build/linux-debug/apps/ec_move --yes sine 6 2 4               # stream 2 deg x sin(2 pi t / 4 s) on J6
 
-A circle of the TCP around where it is (parallel to the ground unless
-`--normal` says otherwise), planned in joint space with the controller's
-inverse kinematics and checked for singularities. Without `--yes` it only plans
-and prints points to check; with it, the controller's timestamp service plays
-the plan, or `--stream` pushes the poses live, each solved:
+Motions of the TCP are code: `apps/sbx_path.cpp`, a sandbox (temporary), to
+read the whole way to the robot one commented step at a time, and to change.
+Its command line sets the robot only; the motion is a function of the TCP's
+pose now that returns poses stamped with their time (a square, a circle, a
+pivot of the tool about its TCP, or your own), picked in `drive()`, as is how to
+run it: `play()` the plan through the controller's timestamp service, or
+`stream()` the poses live. It plans in joint space with the controller's
+inverse kinematics and checks for singularities; without `--yes` it stops there:
 
-    ./build/linux-debug/apps/ec_move circle --radius 50 --speed 20
-    ./build/linux-debug/apps/ec_move --yes --record circle.ecraw circle --radius 50 --center -496 -122 424
-
-To read the whole way from a list of TCP points to the robot, one commented
-step at a time, and to change it: `apps/sbx_path.cpp`, a sandbox (temporary).
-It plans a square, a circle or the points of a file from where the TCP is, and
-plays or streams them:
-
-    ./build/linux-debug/apps/sbx_path --shape square --size 30            # plan only
-    ./build/linux-debug/apps/sbx_path --yes --shape circle --size 30 --record recordings/circle.ecraw
+    ./build/linux-debug/apps/sbx_path                                     # plan only
+    ./build/linux-debug/apps/sbx_path --yes --record recordings/square.ecraw   # and the plan beside it
 
 Without the robot, run the fake servers (Python 3, standard library only) in a
 second terminal and point the tools at them:

@@ -508,9 +508,9 @@ loop picks up within one period (§6.2 b).
 | Streamed motion | `stream.hpp`, `shaper.hpp`, `session.hpp` | `ServoStream`, `VelocityStream`; `RateLimiter`; the application's `Session<T>` |
 | The control thread | `ec/motion/control_loop.hpp` | `ControlLoop`, `Job`, `Status` |
 | The facade | `ec/robot.hpp` | `ec::Robot`: `connect`, `state`, `next_state`, `status`, `ik`, `fk`, `move_joints`, `plan`, `play`, `run`, `bring_up`, `servo`, `velocity`, `stop`, `acknowledge`, `call<C>` |
-| Poses | `ec/pose.hpp` | `Eigen::Isometry3d` in the T_ab notation; `from_mm_rad`, `to_mm_rad`, `rotation_from_rxyz`, `rxyz_from_rotation` at the wire |
-| Paths and planning | `ec/path.hpp`, `ec/motion/planning.hpp` | `CartesianPath` (a concept: `length`, `pose_at`), `Circle`, `Line`; `SpeedProfile`, `sample()`, `TimedPose`, `plan()`, `JointSpline`, `singularity_margins()` (§5.11) |
-| Tool | `apps/ec_move.cpp`, `apps/circle.cpp` | status, bring-up, joint, nudge, sine, circle (played or `--stream`ed), stop, acknowledge; nothing moves without `--yes`; `--record` |
+| Poses | `ec/pose.hpp`, `ec/stamped.hpp` | `Eigen::Isometry3d` in the T_ab notation; `from_mm_rad`, `to_mm_rad`, `rotation_from_rxyz`, `rxyz_from_rotation` at the wire; `PoseTrajectory` (poses stamped with their time since the start, `ec::Stamped`), `validate()`, `interpolate()`, `pose_at()` |
+| Planning | `ec/motion/planning.hpp` | `plan()`, `check_point()`, `check_step()`, `JointSpline`, `singularity_margins()` (§5.11) |
+| Tools | `apps/ec_move.cpp`, `apps/sbx_path.cpp` | `ec_move`: status, bring-up, joint, nudge, sine, stop, acknowledge. `sbx_path`: a motion of the TCP written as code, planned, then played or streamed. Nothing moves without `--yes`; `--record` |
 | Test bench | `tools/fake_robot.py`, `tools/kinematics.py` | a simulated arm on 8055 and 8056, with fault injection, an EC66-like kinematic model and a trace of its TCP |
 
 Refinements of the design above, each for a reason:
@@ -565,14 +565,23 @@ R = Rz·Ry·Rx (ADR 0012).
 ```cpp
 Joints q = robot.ik(T_base_tcp, near).value();           // inverseKinematic, nearest `near`
 robot.move_joints({.target = q, .speed = 0.2}).wait();   // moveByJoint
-std::vector<ec::motion::TimedPose> path = ...;           // {time [s], T_base_tcp}, from rest to rest
-auto trajectory = robot.plan(path).value();              // solved, checked, every 20 ms
+ec::PoseTrajectory motion{{0s, T_base_tcp}, {2s, T_base_goal}};  // poses stamped with their time
+auto trajectory = robot.plan(motion).value();            // solved, checked, every 20 ms
 robot.play(trajectory).wait();                           // the timestamp service, joint points
-auto servo = robot.servo().value();                      // live: solve each target, push joints
+auto servo = robot.servo().value();                      // live: solve each target, check_step(), push joints
 servo.target(robot.ik(T_base_tcp, q).value());
 ```
 
-`plan()` turns timed poses into a joint trajectory:
+**A motion** of the TCP is a `PoseTrajectory`: poses, each stamped with its time
+since the start (a `Clock::duration`, the steady clock's), the first at 0 and
+where the arm is. The application fills in the times; the library has no timing
+law (yet). Between two poses the TCP goes straight, its orientation turning
+evenly; `pose_at(motion, t)` reads it so, and `plan()` too. The shape follows
+the navigation library this may later take motions from (capsnav: a value
+stamped with its time, sampled at a duration since the start), without
+depending on it: a pose there converts to an `Eigen::Isometry3d` and back.
+
+`plan()` turns a motion into a joint trajectory:
 
 1. **Fill in.** Neighbouring points further apart than 3 mm or 1° get points
    between them, on the straight line and turning evenly (slerp), timed in
@@ -580,24 +589,26 @@ servo.target(robot.ik(T_base_tcp, q).value());
 2. **Solve every point** with the controller, each near the solution before (the
    first near the arm's joints), a solution given within one turn moved by whole
    turns to the nearest (`nearest_turn`).
-3. **Check every solution**: no joint more than 10° from the one before (a change
-   of arm configuration, or a singularity in between: MoveIt's jump threshold),
-   J5 and J3 at least 5° from 0 and 180° (the wrist and elbow singularities of
-   this arm, whose layout is Universal Robots'), within the joint limits.
-4. **Interpolate over time** (`JointSpline`: cubic Hermite, Bessel's slopes,
-   at rest at both ends, the end segments kept monotone so that the arm does not
-   step backwards from rest) and sample every 20 ms, ending exactly at the last
-   time.
+3. **Check every solution** (`check_step()`, which a stream of poses uses too):
+   no joint more than 10° from the one before (a change of arm configuration,
+   or a singularity in between: MoveIt's jump threshold), J5 and J3 at least 5°
+   from 0 and 180° (the wrist and elbow singularities of this arm, whose layout
+   is Universal Robots'), within the joint limits. A pose stamped twice is a
+   pause: it is not solved again, its joints are held.
+4. **Interpolate over time** (`JointSpline`: cubic Hermite, Bessel's slopes; at
+   rest at both ends and at both ends of a pause, the segments into and out of
+   rest kept monotone so that the arm neither steps backwards from rest nor
+   overshoots into it) and sample every 20 ms, ending exactly at the last time.
+   The arm passes through every other pose without stopping: to stop there, the
+   stamps must slow down to it.
 5. **Check the trajectory**: joint speeds within the datasheet's, accelerations
    within the limit (from rest at the start, to rest at the end).
 
-Paths make the timed poses: a `CartesianPath` (anything with `length` and
-`pose_at`: `Circle`, `Line`) is timed by a `SpeedProfile` (rest to rest, half
-cosine ramps) and `sample()`d every 3 mm, and more often in the ramps, where the
-path is slow: interpolating over time across a long gap there strayed tens of
-micrometres from the circle. Each point costs one call; the control loop answers
-calls between its cycles, so a 50 mm circle (about 130 points with its approach)
-plans in a fraction of a second on the fake.
+Each point costs one call; the control loop answers calls between its cycles,
+so the sandbox's square (241 poses over 12 s) plans in 0.1 to 0.2 s on the fake.
+Interpolating over time across long gaps where a motion is slow strays from it
+(tens of micrometres on a circle, measured before): motions stamp their poses
+densely, the sandbox's every 50 ms.
 
 The shoulder singularity (the wrist above or below the base) is not checked by a
 margin: near it J1 turns fast, which the jump and speed checks catch. A true
@@ -606,10 +617,11 @@ Servo uses) needs a kinematic model; the controller's 12 DH values (`getDH`),
 checked against `positiveKinematic`, would give one.
 
 **Streams** of TCP targets are the application's loop: `robot.ik()` per target,
-the joints into `robot.servo()`. The stream's rate limiter plans to be able to
-stop at each target, so it trails a moving one by the braking distance, v²/2a
-per joint, and the joints trail by different amounts: the path bends. On the
-fake a 50 mm circle at 40 mm/s strays 0.5 mm when streamed, 0.00 mm when played.
+checked with `check_step()` against the solution before, the joints into
+`robot.servo()`. The stream's rate limiter plans to be able to stop at each
+target, so it trails a moving one by the braking distance, v²/2a per joint, and
+the joints trail by different amounts: the path bends. On the fake the
+sandbox's 30 mm circle (10 s) strays 0.4 mm when streamed, 0.01 mm when played.
 An online trajectory generator that takes the target's velocity would remove
 the lag.
 
@@ -624,12 +636,17 @@ works in the base frame and leaves work frames to the application, as poses it
 composes (T_base_work · T_work_tcp); a frame taught on the pendant can be read
 once with `getUserFrame`.
 
-`ec_move circle` is the worked example: it checks that the controller's forward
-kinematics of the current joints give the TCP that 8056 reports (within 1 mm
-and 0.5°: the same tool), plans a straight approach and the circle, prints
-points to check by hand and the closest approach to a singularity, and without
-`--yes` stops there. With `--yes` it plays both through the timestamp service,
-or `--stream`s the circle, and reports how far every monitoring frame strayed.
+`apps/sbx_path.cpp` is the worked example, a sandbox to read and change: the
+command line sets the robot only (address, `--yes`, `--record`); motions are
+functions in the code (a square, a circle, a pivot of the tool about its TCP),
+each a `PoseTrajectory` from the TCP's pose now, timed by a smootherstep per
+move. It checks that the controller's forward kinematics of the current joints
+give the TCP that 8056 reports (within 1 mm and 0.5°: the same tool), that the
+motion starts at the TCP and stays within 300 mm of it, plans it, prints the
+closest approach to a singularity, and without `--yes` stops there. With
+`--yes` it plays the plan through the timestamp service, or streams the poses
+(the other function), and reports how far every monitoring frame strayed; with
+`--record` the plan goes beside the recording as CSV.
 
 ---
 
@@ -722,11 +739,11 @@ moving fake first.
 | 7 | Does a timestamped trajectory run on if the PC disconnects? | Yes, the cautious assumption: trajectories are validated before upload (joint limits, speeds, a start at the current position), and first runs use a low `speed_percent`. | Nothing. | motion |
 | 8 | Does V3.15.3 accept `targetPose` in a stream [S 2.2.7.4], or poses in an upload (`pos_type` 1), and in which units? | Not used: the driver sends joints only (ADR 0017). | The controller could solve live targets itself, without a call per target. | motion, without moving: stream the current pose as `targetPose` (a later milestone) |
 | 9 | Step response for several L, T and smoothness | The defaults in §7.2. | Tuned values, and the lag the tracking check expects. | motion |
-| 10 | Does `inverseKinematic` return the solution nearest `referencePos`, and within which range? | The nearest; any range, moved by whole turns to the reference (`nearest_turn`). A solution from another configuration shows up as a jump, which planning refuses. | Nothing structural: solving reports where the jump is. | `ec_move circle MODE --radius R` without `--yes` (computations only) |
+| 10 | Does `inverseKinematic` return the solution nearest `referencePos`, and within which range? | The nearest; any range, moved by whole turns to the reference (`nearest_turn`). A solution from another configuration shows up as a jump, which planning refuses. | Nothing structural: solving reports where the jump is. | `sbx_path` without `--yes` (computations only) |
 | 11 | How do arc waypoints (`moveType` 3) group in a path? The JBI manual has MOVC in threes [J 2.4.3]. | Not used: the driver moves in joint space (ADR 0017). | Nothing, unless the controller's own paths come back. | motion |
-| 12 | How does the controller interpolate an uploaded trajectory between its points? | Linearly or better; points are sent 20 ms apart. | A different spacing. | `ec_move circle trajectory`, recorded |
-| 13 | Is the TCP in 8056 (`machinePose`) the current tool's, as `positiveKinematic` computes it? | Yes; `ec_move circle` checks it before planning (1 mm, 0.5°). | Planning would compare against the reported TCP's own tool. | `ec_move circle` without `--yes` |
-| 14 | Which tool do `inverseKinematic` and `positiveKinematic` use in remote mode: the teach-mode tool (`getToolNumber`) or the remote one (`getAutoRunToolNumber`)? | The remote one, the tool remote-mode motion uses. | A check before motion sets or compares the other. | `ec_query getToolNumber`, `getAutoRunToolNumber`, then `ec_move circle` without `--yes` with the two different |
+| 12 | How does the controller interpolate an uploaded trajectory between its points? | Linearly or better; points are sent 20 ms apart. | A different spacing. | `sbx_path --yes --record`, the circle |
+| 13 | Is the TCP in 8056 (`machinePose`) the current tool's, as `positiveKinematic` computes it? | Yes; `sbx_path` checks it before planning (1 mm, 0.5°). | Planning would compare against the reported TCP's own tool. | `sbx_path` without `--yes` |
+| 14 | Which tool do `inverseKinematic` and `positiveKinematic` use in remote mode: the teach-mode tool (`getToolNumber`) or the remote one (`getAutoRunToolNumber`)? | The remote one, the tool remote-mode motion uses. | A check before motion sets or compares the other. | `ec_query getToolNumber`, `getAutoRunToolNumber`, then `sbx_path` without `--yes` with the two different |
 | 15 | Joint accelerations the arm accepts (the datasheet gives none) | Each joint's datasheet speed reached in 0.5 s. | Tuned limits. | motion |
 
 ### 7.1 Why drift matters only for long streams
@@ -763,7 +780,7 @@ is a roadmap step (11 and 16), not a code change.
 | Stop timeout | 2 s from the stop command to standstill | every family |
 | Job time limit | given per job; 30 s otherwise | planned motion |
 | Planning | points at most 3 mm and 1° apart; at most 10° per joint between solutions; J5 and J3 at least 5° from 0 and 180°; a trajectory point every 20 ms; joint accelerations: the datasheet speed in 0.5 s; at most 10 000 points | `plan()` |
-| Circle defaults | 20 mm/s, 0.5 s ramps; a straight approach at 20 mm/s, at most 300 mm | `ec_move circle` |
+| Sandbox motions | a 30 mm square, 3 s a side; a 30 mm circle in 10 s; a 10° pivot, 2 s each way; each move a smootherstep; poses 50 ms apart; at most 300 mm from the start | `apps/sbx_path.cpp` |
 
 ---
 

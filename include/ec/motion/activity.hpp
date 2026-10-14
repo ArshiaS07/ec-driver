@@ -24,10 +24,11 @@
 #include "ec/feedback/state.hpp"
 #include "ec/motion/conditions.hpp"
 #include "ec/motion/error.hpp"
+#include "ec/stamped.hpp"
 
 namespace ec::motion {
 
-using Clock = std::chrono::steady_clock;
+using ec::Clock;  // the driver's one clock (ec/stamped.hpp)
 
 /// The controller's answer to one command sent the cycle before.
 struct Reply {

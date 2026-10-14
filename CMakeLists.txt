@@ -35,7 +35,6 @@ add_library(ec_driver
     src/motion/stream.cpp
     src/motion/trajectory.cpp
     src/net/tcp_socket.cpp
-    src/path.cpp
     src/pose.cpp
     src/robot.cpp
 )

@@ -17,16 +17,10 @@
 #include "ec/latest.hpp"
 #include "ec/motion/activity.hpp"
 #include "ec/motion/shaper.hpp"
+#include "ec/stamped.hpp"
 #include "ec/units.hpp"
 
 namespace ec::motion {
-
-/// A reference and when the application pushed it.
-template <typename T>
-struct Stamped {
-    T value{};
-    Clock::time_point at{};
-};
 
 /// What a stream's handle and its activity share: the newest reference (a
 /// newest-wins mailbox) and a request to close. Thread-safe.
@@ -36,9 +30,9 @@ public:
     /// Makes `value` the newest reference, stamped now.
     void push(const T& value) { push(value, Clock::now()); }
     /// Makes `value` the newest reference, stamped `at` (for tests and replays).
-    void push(const T& value, Clock::time_point at) { latest_.publish(Stamped<T>{value, at}); }
+    void push(const T& value, Clock::time_point at) { latest_.publish(Stamped<T>{at, value}); }
 
-    /// The newest reference, if any was pushed.
+    /// The newest reference, if any was pushed, stamped when it was.
     [[nodiscard]] std::optional<Stamped<T>> newest() const {
         if (auto e = latest_.get()) return e->value;
         return std::nullopt;

@@ -135,12 +135,12 @@ std::expected<Eigen::Isometry3d, motion::Error> Robot::fk(const Joints& joints) 
 
 motion::Job Robot::move_joints(const motion::MoveJoint& move) { return run(move); }
 
-std::expected<motion::JointTrajectory, motion::Error> Robot::plan(std::span<const motion::TimedPose> path,
+std::expected<motion::JointTrajectory, motion::Error> Robot::plan(const PoseTrajectory& motion,
                                                                   const motion::PlanOptions& options) {
     const auto now = state();
     if (!now) return std::unexpected(motion::Error{motion::Error::Kind::Refused, "no state yet", {}});
     return motion::plan(
-        path, now->state.joint_position,
+        motion, now->state.joint_position,
         [this](const Eigen::Isometry3d& T_base_tcp, const Joints& near) { return ik(T_base_tcp, near); }, options);
 }
 

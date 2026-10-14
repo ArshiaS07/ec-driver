@@ -472,115 +472,12 @@ class EcMove(unittest.TestCase):
                 self.assertEqual(self.move(fake, *args).returncode, 2)
 
 
-class EcMoveCircle(unittest.TestCase):
-    """ec_move circle against the moving fake: the plan alone, then the circle
-    played by the timestamp service and pushed as a stream, checked against the
-    fake's own trace of its TCP."""
-
-    RADIUS = 20.0  # mm
-    READY = "joints 0 -90 90 -90 -90 0"  # elbow bent, the tool pointing down
-
-    def robot(self) -> FakeRobot:
-        fake = FakeRobot("--ready")
-        self.addCleanup(fake.stop)
-        self.assertEqual(fake.control(self.READY), "ok")
-        return fake
-
-    def circle(self, fake: FakeRobot, *args: str, timeout: float = 60.0) -> subprocess.CompletedProcess:
-        return run(PATHS.ec_move, "--host", LOCAL, "--command-port", str(fake.command), "--monitor-port",
-                   str(fake.monitor), *args, timeout=timeout)
-
-    def test_without_yes_it_only_plans(self):
-        fake = self.robot()
-        tmp = tempfile.TemporaryDirectory(dir=PATHS.ec_move.parent)  # in the build tree
-        self.addCleanup(tmp.cleanup)
-        plan = Path(tmp.name) / "plan.csv"
-        before = fake.state()["q"]
-        r = self.circle(fake, "circle", "--radius", "20", "--save", str(plan))
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("points to check: start (0 deg) (-476.0, -122.0, 424.4) mm", r.stdout)  # the TCP is the centre
-        self.assertIn("approach: a straight line of 20.0 mm", r.stdout)
-        self.assertIn("closest to a singularity", r.stdout)
-        self.assertIn("nothing moved", r.stdout)
-        self.assertEqual(fake.state()["q"], before)
-        rows = plan.read_text().splitlines()
-        self.assertTrue(rows[0].startswith("# ec_move circle:"))
-        self.assertEqual(rows[2].split(",")[:4], ["t_s", "x_mm", "y_mm", "z_mm"])
-        self.assertEqual(rows[3].split(",")[:2], ["0.000", "-476.0000"])
-
-    def test_the_circle_is_played_or_streamed(self):
-        # how, and how far its TCP may stray [mm]: the stream's shaper lags
-        # behind each joint's target by its braking distance, which bends the
-        # path (1.3 mm here at 60 mm/s, a ninth of that at 20).
-        for how, extra, tolerance in (("played", [], 0.05), ("streamed", ["--stream"], 2.0)):
-            with self.subTest(how=how):
-                fake = self.robot()
-                x, y, z = fake.state()["pose"][:3]
-                cx = x - self.RADIUS  # the TCP is the circle's first point: no approach
-                fake.control("trace start")
-                r = self.circle(fake, "--yes", "circle", "--radius", str(self.RADIUS), "--center", str(cx), str(y),
-                                str(z), "--start-toward", "1", "0", "0", "--speed", "60", "--ramp", "0.3", *extra)
-                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-                self.assertIn("circle: done", r.stdout)
-                self.assertNotIn("approach", r.stdout)
-                trace = json.loads(fake.control("trace"))
-                radial = [abs(math.hypot(p[0] - cx, p[1] - y) - self.RADIUS) for p in trace]
-                self.assertLess(max(radial), tolerance)
-                self.assertLess(max(abs(p[2] - z) for p in trace), max(tolerance, 0.05))
-                angles = sorted(math.atan2(p[1] - y, p[0] - cx) for p in trace)
-                gaps = [b - a for a, b in zip(angles, angles[1:])] + [angles[0] + 2 * math.pi - angles[-1]]
-                self.assertLess(max(gaps), math.radians(45))  # all the way round
-                end = trace[-1]
-                self.assertLess(math.hypot(end[0] - x, end[1] - y), 0.5)  # back at the start
-
-    def test_the_approach_comes_first_in_a_straight_line(self):
-        fake = self.robot()
-        x, y, z = fake.state()["pose"][:3]
-        fake.control("trace start")
-        r = self.circle(fake, "--yes", "circle", "--radius", "15", "--speed", "60", "--ramp", "0.3",
-                        "--approach-speed", "60")
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("approach: a straight line of 15.0 mm", r.stdout)
-        trace = json.loads(fake.control("trace"))
-        first = next(i for i, p in enumerate(trace) if math.hypot(p[0] - x, p[1] - y) > 14.9)
-        for p in trace[:first]:  # from the centre straight out along base x
-            self.assertLess(abs(p[1] - y), 0.05)
-            self.assertLess(abs(p[2] - z), 0.05)
-
-    def test_an_unreachable_circle_is_refused_before_anything_moves(self):
-        fake = self.robot()
-        before = fake.state()["q"]
-        r = self.circle(fake, "--yes", "circle", "--radius", "500", "--max-approach", "2000")
-        self.assertEqual(r.returncode, 1)
-        self.assertIn("planning", r.stderr)
-        self.assertEqual(fake.state()["q"], before)
-
-    def test_a_circle_too_abrupt_for_the_joints_is_refused(self):
-        fake = self.robot()
-        r = self.circle(fake, "--yes", "circle", "--radius", "5", "--speed", "250", "--ramp", "0")
-        self.assertEqual(r.returncode, 1)
-        self.assertIn("would accelerate at", r.stderr)
-
-    def test_an_emergency_stop_ends_the_circle_and_the_recording_has_it(self):
-        fake = self.robot()
-        tmp = tempfile.TemporaryDirectory(dir=PATHS.ec_move.parent)
-        self.addCleanup(tmp.cleanup)
-        recording = Path(tmp.name) / "circle.ecraw"
-        timer = threading.Timer(3.0, lambda: fake.control("estop on"))
-        timer.start()
-        self.addCleanup(timer.cancel)
-        r = self.circle(fake, "--yes", "--record", str(recording), "circle", "--radius", "20")
-        self.assertEqual(r.returncode, 1)
-        self.assertIn("condition lost", r.stderr)
-        self.assertRegex(r.stdout, r"recorded \d+ frames to")
-        self.assertGreater(recording.stat().st_size, 100 * 1032)
-
-
 class SbxPath(unittest.TestCase):
-    """The sandbox against the moving fake: a plan alone, a square played and
-    recorded, a circle streamed, points from a file, and its refusals."""
+    """The sandbox against the moving fake: its motion as committed (a 30 mm
+    square) planned alone, then played and recorded with the plan beside the
+    recording; its refusals, and an emergency stop."""
 
-    READY = "joints 0 -90 90 -90 -90 0"
+    READY = "joints 0 -90 90 -90 -90 0"  # elbow bent, the tool pointing down
 
     def robot(self, *options: str) -> FakeRobot:
         fake = FakeRobot(*options)
@@ -590,7 +487,7 @@ class SbxPath(unittest.TestCase):
 
     def sbx(self, fake: FakeRobot, *args: str) -> subprocess.CompletedProcess:
         return run(PATHS.sbx_path, "--host", LOCAL, "--command-port", str(fake.command), "--monitor-port",
-                   str(fake.monitor), "--speed", "60", "--ramp", "0.3", *args, timeout=60.0)
+                   str(fake.monitor), *args, timeout=60.0)
 
     def tmp(self) -> Path:
         d = tempfile.TemporaryDirectory(dir=PATHS.sbx_path.parent)  # in the build tree
@@ -600,78 +497,69 @@ class SbxPath(unittest.TestCase):
     def test_without_yes_it_only_plans(self):
         fake = self.robot("--ready")
         before = fake.state()["q"]
-        r = self.sbx(fake, "--shape", "square", "--size", "20")
+        r = self.sbx(fake)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("kinematics check: the controller's FK is 0.000 mm", r.stdout)
-        self.assertIn("the TCP stays within x -496.0..-476.0, y -122.0..-102.0", r.stdout)
+        self.assertIn("motion: 241 poses over 12.0 s; the TCP stays within x -496.0..-466.0, y -122.0..-92.0", r.stdout)
+        self.assertIn("plan: 601 joint points over 12.0 s", r.stdout)
         self.assertIn("nothing moved", r.stdout)
         self.assertEqual(fake.state()["q"], before)
 
-    def test_plays_a_square_and_records_it(self):
+    def test_plays_the_square_and_records_it_with_the_plan_beside(self):
         fake = self.robot("--ready")
         x, y, z = fake.state()["pose"][:3]
         recording = self.tmp() / "square.ecraw"
         fake.control("trace start")
-        r = self.sbx(fake, "--yes", "--shape", "square", "--size", "20", "--record", str(recording))
+        r = self.sbx(fake, "--yes", "--record", str(recording))
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("done in", r.stdout)
+        self.assertRegex(r.stdout, r"the TCP stayed within 0\.0\d mm of the motion's path")
         self.assertRegex(r.stdout, r"recorded \d+ frames to")
         self.assertGreater(recording.stat().st_size, 100 * 1032)
+        plan = Path(str(recording) + ".plan.csv").read_text().splitlines()
+        self.assertRegex(plan[0], r"^# sbx_path plan; started at steady clock \d+ ns")
+        self.assertEqual(plan[1].split(",")[:4], ["t_s", "x_mm", "y_mm", "z_mm"])
+        self.assertEqual(len(plan), 2 + 601)
         trace = json.loads(fake.control("trace"))
-        for cx, cy in ((x + 20, y), (x + 20, y + 20), (x, y + 20)):  # every corner reached
+        for cx, cy in ((x + 30, y), (x + 30, y + 30), (x, y + 30)):  # every corner reached
             self.assertLess(min(math.hypot(p[0] - cx, p[1] - cy) for p in trace), 0.1, (cx, cy))
         self.assertLess(math.hypot(trace[-1][0] - x, trace[-1][1] - y), 0.1)  # back at the start
         self.assertLess(max(abs(p[2] - z) for p in trace), 0.05)
 
-    def test_streams_a_circle(self):
-        fake = self.robot("--ready")
-        x, y, _ = fake.state()["pose"][:3]
-        fake.control("trace start")
-        r = self.sbx(fake, "--yes", "--shape", "circle", "--size", "20", "--stream")
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("the TCP stayed within", r.stdout)
-        trace = json.loads(fake.control("trace"))
-        far = max(math.hypot(p[0] - x, p[1] - y) for p in trace)
-        self.assertGreater(far, 19.0)  # out on the circle
-        self.assertLess(far, 21.5)
-
-    def test_points_from_a_file_and_a_bad_one(self):
-        fake = self.robot("--ready")
-        x, y, z = fake.state()["pose"][:3]
-        points = self.tmp() / "points.txt"
-        points.write_text(f"# two points\n{x + 15}, {y}, {z}\n{x + 15} {y + 10} {z + 5}\n")
-        fake.control("trace start")
-        r = self.sbx(fake, "--yes", "--shape", "points", "--points", str(points))
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        end = json.loads(fake.control("trace"))[-1]
-        self.assertLess(math.dist(end[:3], [x + 15, y + 10, z + 5]), 0.1)
-
-        points.write_text("1 2\n")
-        before = fake.state()["q"]
-        r = self.sbx(fake, "--yes", "--shape", "points", "--points", str(points))
-        self.assertEqual(r.returncode, 1)
-        self.assertIn("line 1: not three numbers", r.stderr)
-        self.assertEqual(fake.state()["q"], before)
-
-    def test_refuses_to_move_until_ready_or_brought_up(self):
+    def test_refuses_to_move_until_ready(self):
         fake = self.robot()  # servos off, not synchronised
-        r = self.sbx(fake, "--yes", "--shape", "square", "--size", "10")
-        self.assertEqual(r.returncode, 1)
-        self.assertIn("missing: servo on, encoders synchronised", r.stderr)
-        r = self.sbx(fake, "--yes", "--bring-up", "--shape", "square", "--size", "10")
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("bring-up: servo on, encoders synchronised", r.stdout)
-
-    def test_a_point_out_of_reach_is_refused_before_anything_moves(self):
-        fake = self.robot("--ready")
-        x, y, z = fake.state()["pose"][:3]
-        points = self.tmp() / "far.txt"
-        points.write_text(f"{x - 900} {y} {z}\n")
         before = fake.state()["q"]
-        r = self.sbx(fake, "--yes", "--shape", "points", "--points", str(points), "--max-distance", "1000")
+        r = self.sbx(fake, "--yes")
         self.assertEqual(r.returncode, 1)
-        self.assertIn("plan:", r.stderr)
+        self.assertIn("ready: missing: servo on, encoders synchronised (ec_move --yes bring-up", r.stderr)
         self.assertEqual(fake.state()["q"], before)
+
+    def test_a_failed_inverse_kinematics_is_reported_before_anything_moves(self):
+        fake = self.robot("--ready")
+        self.assertEqual(fake.control("reject inverseKinematic"), "ok")
+        before = fake.state()["q"]
+        r = self.sbx(fake, "--yes")
+        self.assertEqual(r.returncode, 1)
+        self.assertTrue(r.stderr.startswith("plan: "), r.stderr)
+        self.assertIn("inverse kinematics failed for the pose at 0.000 s (-496.0, -122.0, 424.4 mm)", r.stderr)
+        self.assertEqual(fake.state()["q"], before)
+
+    def test_an_emergency_stop_ends_the_motion(self):
+        fake = self.robot("--ready")
+        timer = threading.Timer(2.0, lambda: fake.control("estop on"))
+        timer.start()
+        self.addCleanup(timer.cancel)
+        r = self.sbx(fake, "--yes")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("motion: ", r.stderr)
+        self.assertIn("no emergency stop", r.stderr)
+
+    def test_the_command_line_sets_the_robot_only(self):
+        fake = self.robot("--ready")
+        self.assertEqual(self.sbx(fake, "--shape", "circle").returncode, 2)  # motions are code
+        r = run(PATHS.sbx_path, "--help")
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("--record", r.stdout)
 
 
 def main() -> None:

@@ -9,6 +9,8 @@
 #include <optional>
 #include <utility>
 
+#include "ec/stamped.hpp"
+
 namespace ec {
 
 /// Holds the newest of a sequence of values: one thread publishes, any number
@@ -56,7 +58,6 @@ public:
     /// at once if it already is. nullopt if `timeout` passes first. Pass 0 to
     /// wait for the first value, or the last Entry::seq seen to wait for the next.
     [[nodiscard]] std::optional<Entry> wait_newer(std::uint64_t seq, std::chrono::nanoseconds timeout) const {
-        using Clock = std::chrono::steady_clock;
         const auto now = Clock::now();
         const auto deadline = timeout >= Clock::time_point::max() - now ? Clock::time_point::max() : now + timeout;
         std::unique_lock lock(mutex_);
