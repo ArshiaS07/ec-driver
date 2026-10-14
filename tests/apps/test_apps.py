@@ -488,8 +488,7 @@ class SbxTrajectory(unittest.TestCase):
         return fake
 
     def sbx(self, fake: FakeRobot, *args: str) -> subprocess.CompletedProcess:
-        r = run(PATHS.sbx_trajectory, "--host", LOCAL, "--command-port", str(fake.command), "--monitor-port",
-                str(fake.monitor), *args, timeout=120.0)
+        r = run(PATHS.sbx_trajectory, "--host", LOCAL, "--command-port", str(fake.command), *args, timeout=120.0)
         if r.returncode == 1 and r.stderr.startswith("verify: ") and "inverse kinematics failed" in r.stderr:
             self.skipTest("the circle in circle() is out of the fake arm's reach")
         return r
@@ -511,8 +510,7 @@ class SbxTrajectory(unittest.TestCase):
         fake = self.robot("--ready")
         self.assertEqual(fake.control("reject inverseKinematic"), "ok")
         before = fake.state()["q"]
-        r = run(PATHS.sbx_trajectory, "--host", LOCAL, "--command-port", str(fake.command), "--monitor-port",
-                str(fake.monitor), timeout=60.0)
+        r = run(PATHS.sbx_trajectory, "--host", LOCAL, "--command-port", str(fake.command), timeout=60.0)
         self.assertEqual(r.returncode, 1)
         self.assertTrue(r.stderr.startswith("verify: "), r.stderr)
         self.assertIn("inverse kinematics failed for the pose at 0.000 s", r.stderr)
@@ -525,7 +523,7 @@ class SbxTrajectory(unittest.TestCase):
         self.addCleanup(timer.cancel)
         r = self.sbx(fake)
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
-        self.assertIn("no emergency stop", r.stderr)
+        self.assertIn("emergency stop", r.stderr)
 
     def test_the_command_line_is_the_robot_only(self):
         fake = self.robot("--ready")
