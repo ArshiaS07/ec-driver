@@ -62,9 +62,9 @@ SDK call (queries and computations; anything else needs `--write`), lists
 every call, or checks every query's reply against its type; `ec_move` moves
 the arm through `ec::Robot` (bring-up, joint moves, a streamed sine, stop),
 printing its plan unless given `--yes`, and records 8056 while it runs with
-`--record`; `sbx_trajectory`, a sandbox to read and change, draws a circle of
-the TCP set as a struct in its code (a `PoseTrajectory`), planned in joint space,
-then played or streamed, after asking. File formats: `docs/log-format.md`.
+`--record`; `sbx_trajectory`, a sandbox to scroll through, draws a circle of
+the TCP from a free function returning stamped poses: brought up, verified,
+executed by the timestamp service. File formats: `docs/log-format.md`.
 The motion design and its reasons: `docs/motion.md`.
 
 ---
@@ -133,11 +133,11 @@ step ends with something testable.
 | 10 | Done: point-to-point motion through the control loop | first move at 10 % speed; a stop mid-move |
 | 11 | Experiments: stop latency, two 8055 connections, close sequences; tuning the numbers in `docs/motion.md` §7.2 | numbers for timeouts |
 | 12 | Done: `JointTrajectory`, `validate()` | bad trajectories rejected |
-| 13 | Done differently: the controller's own kinematics, in joint-space planning (ADR 0017, proposed); `sbx_trajectory` starts from the controller's forward kinematics and prints the reported TCP beside it | `sbx_trajectory`, answered no |
+| 13 | Done differently: the controller's own kinematics, in joint-space planning (ADR 0017, proposed); checked on the robot with `ec_query positiveKinematic` against `ec_monitor` | `sbx_trajectory` |
 | 14 | Done without the tracking monitor: `PlayTrajectory`, `plan()` for motions of the TCP (`PoseTrajectory`) | a planned circle on the robot (`sbx_trajectory`) |
 | 15 | Logging of commands, setpoints and events (the feedback stream is done: raw and HDF5) | commanded against actual |
 | 16 | Transparent-transmission experiments (`docs/motion.md` §7: underrun, step response, round trip) | numbers for the loop design |
-| 17 | Done: `ServoStream`, sessions, the watchdog; TCP targets solved and checked by the application (`docs/motion.md` 5.11) | `ec_move --yes sine 6 2 4`, then `sbx_trajectory --stream` on the robot |
+| 17 | Done: `ServoStream`, sessions, the watchdog; TCP targets solved and checked by the application (`docs/motion.md` 5.11) | `ec_move --yes sine 6 2 4`, then a streamed TCP motion on the robot |
 | 18 | Done for joints (speedj): `VelocityStream`; speedl later | velocity commands that stop on timeout |
 | 19 | Done: `ec::Robot`; examples and a guide still to write | |
 | 20 | Extras as needed: force control, Python bindings, ROS 2 | |

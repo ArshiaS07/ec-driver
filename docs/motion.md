@@ -510,7 +510,7 @@ loop picks up within one period (§6.2 b).
 | The facade | `ec/robot.hpp` | `ec::Robot`: `connect`, `state`, `next_state`, `status`, `ik`, `fk`, `move_joints`, `plan`, `play`, `run`, `bring_up`, `servo`, `velocity`, `stop`, `acknowledge`, `call<C>` |
 | Poses | `ec/pose.hpp`, `ec/stamped.hpp` | `Eigen::Isometry3d` in the T_ab notation; `from_mm_rad`, `to_mm_rad`, `rotation_from_rxyz`, `rxyz_from_rotation` at the wire; `PoseTrajectory` (poses stamped with their time since the start, `ec::Stamped`), `validate()`, `interpolate()`, `pose_at()` |
 | Planning | `ec/motion/planning.hpp` | `plan()`, `check_point()`, `check_step()`, `JointSpline`, `singularity_margins()` (§5.11) |
-| Tools | `apps/ec_move.cpp`, `apps/sbx_trajectory.cpp` | `ec_move`: status, bring-up, joint, nudge, sine, stop, acknowledge; nothing moves without `--yes`. `sbx_trajectory`: a circle of the TCP set in code, planned, then played or streamed after asking. Both `--record` |
+| Tools | `apps/ec_move.cpp`, `apps/sbx_trajectory.cpp` | `ec_move`: status, bring-up, joint, nudge, sine, stop, acknowledge; nothing moves without `--yes`. `sbx_trajectory`: a circle of the TCP from a free function (stamped poses), brought up, verified and executed by the timestamp service. `ec_move` has `--record` |
 | Test bench | `tools/fake_robot.py`, `tools/kinematics.py` | a simulated arm on 8055 and 8056, with fault injection, an EC66-like kinematic model and a trace of its TCP |
 
 Refinements of the design above, each for a reason:
@@ -636,17 +636,12 @@ works in the base frame and leaves work frames to the application, as poses it
 composes (T_base_work · T_work_tcp); a frame taught on the pendant can be read
 once with `getUserFrame`.
 
-`apps/sbx_trajectory.cpp` is the worked example, a sandbox to read and change:
-the circle is a struct in the code (centre, empty for where the TCP is; radius;
-axis; top speed), turned by a free function into a `PoseTrajectory` from the
-TCP's pose now: a straight line to the circle's nearest point if the TCP is not
-on it, then once round, each move a smootherstep from rest to rest. The TCP it
-starts from is the controller's forward kinematics of the current joints (the
-tool its inverse kinematics uses), with 8056's TCP printed beside it. It plans
-the motion, prints the plan and the closest approach to a singularity, checks
-the conditions, and asks; then the timestamp service plays the plan, or
-`--stream` pushes the poses live, and it reports how far every monitoring frame
-strayed. The command line sets the robot and the way to run, nothing else.
+`apps/sbx_trajectory.cpp` is the worked example, a sandbox to scroll through: a
+free function returns the circle as stamped poses (centre and tool orientation
+read on the pendant, radius, speed, number of poses); `main` connects, brings
+the robot up, verifies the poses (`plan()`), moves to the first point with a
+joint move, and executes the circle by the timestamp service. Ctrl+C stops the
+arm.
 
 ---
 
@@ -741,9 +736,9 @@ moving fake first.
 | 9 | Step response for several L, T and smoothness | The defaults in §7.2. | Tuned values, and the lag the tracking check expects. | motion |
 | 10 | Does `inverseKinematic` return the solution nearest `referencePos`, and within which range? | The nearest; any range, moved by whole turns to the reference (`nearest_turn`). A solution from another configuration shows up as a jump, which planning refuses. | Nothing structural: solving reports where the jump is. | `sbx_trajectory`, answered no (computations only) |
 | 11 | How do arc waypoints (`moveType` 3) group in a path? The JBI manual has MOVC in threes [J 2.4.3]. | Not used: the driver moves in joint space (ADR 0017). | Nothing, unless the controller's own paths come back. | motion |
-| 12 | How does the controller interpolate an uploaded trajectory between its points? | Linearly or better; points are sent 20 ms apart. | A different spacing. | `sbx_trajectory --record`, answered yes |
-| 13 | Is the TCP in 8056 (`machinePose`) the current tool's, as `positiveKinematic` computes it? | Yes; `sbx_trajectory` prints the distance between the two before planning (it starts from the forward kinematics). | Planning would compare against the reported TCP's own tool. | `sbx_trajectory`, answered no |
-| 14 | Which tool do `inverseKinematic` and `positiveKinematic` use in remote mode: the teach-mode tool (`getToolNumber`) or the remote one (`getAutoRunToolNumber`)? | The remote one, the tool remote-mode motion uses. | A check before motion sets or compares the other. | `ec_query getToolNumber`, `getAutoRunToolNumber`, then `sbx_trajectory`, answered no, with the two different |
+| 12 | How does the controller interpolate an uploaded trajectory between its points? | Linearly or better; points are sent 20 ms apart. | A different spacing. | `sbx_trajectory`, recorded by `ec_record` in a second terminal |
+| 13 | Is the TCP in 8056 (`machinePose`) the current tool's, as `positiveKinematic` computes it? | Yes. | Planning would compare against the reported TCP's own tool. | `ec_query positiveKinematic` with the joints now, against `ec_monitor`'s TCP |
+| 14 | Which tool do `inverseKinematic` and `positiveKinematic` use in remote mode: the teach-mode tool (`getToolNumber`) or the remote one (`getAutoRunToolNumber`)? | The remote one, the tool remote-mode motion uses. | A check before motion sets or compares the other. | `ec_query getToolNumber`, `getAutoRunToolNumber`, then `ec_query positiveKinematic` with the two different |
 | 15 | Joint accelerations the arm accepts (the datasheet gives none) | Each joint's datasheet speed reached in 0.5 s. | Tuned limits. | motion |
 
 ### 7.1 Why drift matters only for long streams
@@ -780,7 +775,7 @@ is a roadmap step (11 and 16), not a code change.
 | Stop timeout | 2 s from the stop command to standstill | every family |
 | Job time limit | given per job; 30 s otherwise | planned motion |
 | Planning | points at most 3 mm and 1° apart; at most 10° per joint between solutions; J5 and J3 at least 5° from 0 and 180°; a trajectory point every 20 ms; joint accelerations: the datasheet speed in 0.5 s; at most 10 000 points | `plan()` |
-| Sandbox circle | 30 mm about where the TCP is, level, at most 20 mm/s; each move a smootherstep, at least 0.5 s; poses 50 ms apart; radius 1 to 200 mm, speed up to 100 mm/s, at most 100 mm to reach the circle | `apps/sbx_trajectory.cpp` |
+| Sandbox circle | centre and tool orientation as read on the pendant; 30 mm radius, 20 mm/s, 200 poses; a joint move to the start at 10 % | `apps/sbx_trajectory.cpp` |
 
 ---
 

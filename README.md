@@ -54,16 +54,13 @@ Moving the arm through the driver (remote mode; nothing moves without
     ./build/linux-debug/apps/ec_move --yes nudge 6 5               # J6 by +5 deg at 10 % speed
     ./build/linux-debug/apps/ec_move --yes sine 6 2 4               # stream 2 deg x sin(2 pi t / 4 s) on J6
 
-Motions of the TCP are code: `apps/sbx_trajectory.cpp`, a sandbox (temporary),
-to read the whole way to the robot one commented step at a time, and to change.
-The TCP draws a circle set in `struct Circle` (centre, radius, axis, top speed;
-edit, rebuild, run), turned into poses stamped with their time, planned in
-joint space with the controller's inverse kinematics and checked for
-singularities. It prints the plan and asks before anything moves; then the
-controller's timestamp service plays it, or `--stream` pushes the poses live:
+Motions of the TCP are code: `apps/sbx_trajectory.cpp`, a sandbox (temporary)
+to scroll through. A free function returns the circle as stamped poses (centre
+and tool orientation read on the pendant, radius, speed); the program brings
+the robot up, verifies the poses with the controller's inverse kinematics,
+moves to the first one and executes the circle by the timestamp service:
 
     ./build/linux-release/apps/sbx_trajectory --host 192.168.0.200
-    ./build/linux-release/apps/sbx_trajectory --host 192.168.0.200 --stream --record recordings/circle.ecraw
 
 Without the robot, run the fake servers (Python 3, standard library only) in a
 second terminal and point the tools at them:

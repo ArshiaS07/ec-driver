@@ -475,9 +475,9 @@ class EcMove(unittest.TestCase):
 
 
 class SbxTrajectory(unittest.TestCase):
-    """The sandbox against the moving fake, with its circle as committed: 30 mm
-    about where the TCP is, level, at most 20 mm/s. Planned and refused at the
-    prompt, then played and streamed; its refusals, and an emergency stop."""
+    """The sandbox against the moving fake, with its circle as committed: centre
+    (-496, -122, 424.4) mm, the fake's TCP with the arm at READY; radius 30 mm;
+    the tool at rx, ry, rz = 180, 0, 90 deg."""
 
     READY = "joints 0 -90 90 -90 -90 0"  # elbow bent, the tool pointing down
 
@@ -487,80 +487,35 @@ class SbxTrajectory(unittest.TestCase):
         self.assertEqual(fake.control(self.READY), "ok")
         return fake
 
-    def sbx(self, fake: FakeRobot, *args: str, answer: str | None = None) -> subprocess.CompletedProcess:
+    def sbx(self, fake: FakeRobot, *args: str) -> subprocess.CompletedProcess:
         return run(PATHS.sbx_trajectory, "--host", LOCAL, "--command-port", str(fake.command), "--monitor-port",
-                   str(fake.monitor), *args, timeout=90.0, answer=answer)
+                   str(fake.monitor), *args, timeout=90.0)
 
-    def tmp(self) -> Path:
-        d = tempfile.TemporaryDirectory(dir=PATHS.sbx_trajectory.parent)  # in the build tree
-        self.addCleanup(d.cleanup)
-        return Path(d.name)
-
-    def assert_drew_the_circle(self, trace: list, x: float, y: float, z: float, tolerance: float) -> None:
-        far = [math.hypot(p[0] - x, p[1] - y) for p in trace]  # from the centre, where the TCP was
-        self.assertGreater(max(far), 30.0 - tolerance)
-        self.assertLess(max(far), 30.0 + tolerance)
+    def test_brings_up_verifies_and_draws_the_circle(self):
+        fake = self.robot()  # servos off, not synchronised: brought up first
+        x, y, z = fake.state()["pose"][:3]
+        fake.control("trace start")
+        r = self.sbx(fake)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertRegex(r.stdout, r"verified: \d+ points over 9\.4 s")
+        self.assertIn("done", r.stdout)
+        trace = json.loads(fake.control("trace"))
+        far = [math.hypot(p[0] - x, p[1] - y) for p in trace]
+        self.assertLess(max(far), 30.1)
         for angle in range(0, 360, 45):  # all the way round
             cx, cy = x + 30 * math.cos(math.radians(angle)), y + 30 * math.sin(math.radians(angle))
-            self.assertLess(min(math.hypot(p[0] - cx, p[1] - cy) for p in trace), tolerance + 0.5, angle)
-        self.assertLess(math.hypot(trace[-1][0] - (x + 30), trace[-1][1] - y), tolerance)  # at the start, base +x
-        self.assertLess(max(abs(p[2] - z) for p in trace), tolerance)  # in its plane
-
-    def test_plans_and_moves_nothing_unless_told_yes(self):
-        fake = self.robot("--ready")
-        before = fake.state()["q"]
-        for answer in (None, "n\n", "\n"):
-            with self.subTest(answer=answer):
-                r = self.sbx(fake, answer=answer)
-                self.assertEqual(r.returncode, 0, r.stderr)
-                self.assertIn("the TCP is at (-496.0, -122.0, 424.4) mm (8056 reports it 0.000 mm from there)", r.stdout)
-                self.assertIn("first a straight line of 30.0 mm to the circle", r.stdout)
-                self.assertIn("the circle starts and ends at (-466.0, -122.0, 424.4) mm; the TCP stays within "
-                              "x -526.0..-466.0, y -152.0..-92.0", r.stdout)
-                self.assertIn("Run it, planned", r.stdout)
-                self.assertIn("nothing moved", r.stdout)
-        self.assertEqual(fake.state()["q"], before)
-
-    def test_draws_the_circle_planned_and_records_it(self):
-        fake = self.robot("--ready")
-        x, y, z = fake.state()["pose"][:3]
-        recording = self.tmp() / "circle.ecraw"
-        fake.control("trace start")
-        r = self.sbx(fake, "--record", str(recording), answer="y\n")
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("done in", r.stdout)
-        self.assertRegex(r.stdout, r"the TCP stayed within 0\.0\d mm of the motion's path")
-        self.assertRegex(r.stdout, r"recorded \d+ frames to")
-        self.assertGreater(recording.stat().st_size, 100 * 1032)
-        self.assert_drew_the_circle(json.loads(fake.control("trace")), x, y, z, 0.1)
-
-    def test_draws_the_circle_streamed(self):
-        fake = self.robot("--ready")
-        x, y, z = fake.state()["pose"][:3]
-        fake.control("trace start")
-        r = self.sbx(fake, "--stream", answer="y\n")
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("Run it, streamed", r.stdout)
-        self.assertIn("done in", r.stdout)
-        self.assertFalse(fake.state()["streaming"])  # the stream was cleared
-        self.assert_drew_the_circle(json.loads(fake.control("trace")), x, y, z, 1.0)
-
-    def test_refuses_to_move_until_ready(self):
-        fake = self.robot()  # servos off, not synchronised
-        before = fake.state()["q"]
-        r = self.sbx(fake, answer="y\n")
-        self.assertEqual(r.returncode, 1)
-        self.assertIn("ready: missing: servo on, encoders synchronised (ec_move --yes bring-up", r.stderr)
-        self.assertEqual(fake.state()["q"], before)
+            self.assertLess(min(math.hypot(p[0] - cx, p[1] - cy) for p in trace), 0.2, angle)
+        self.assertLess(math.hypot(trace[-1][0] - (x + 30), trace[-1][1] - y), 0.1)  # ends where it started
+        self.assertLess(max(abs(p[2] - z) for p in trace[-100:]), 0.1)
 
     def test_a_failed_inverse_kinematics_is_reported_before_anything_moves(self):
         fake = self.robot("--ready")
         self.assertEqual(fake.control("reject inverseKinematic"), "ok")
         before = fake.state()["q"]
-        r = self.sbx(fake, answer="y\n")
+        r = self.sbx(fake)
         self.assertEqual(r.returncode, 1)
-        self.assertTrue(r.stderr.startswith("plan: "), r.stderr)
-        self.assertIn("inverse kinematics failed for the pose at 0.000 s (-496.0, -122.0, 424.4 mm)", r.stderr)
+        self.assertTrue(r.stderr.startswith("verify: "), r.stderr)
+        self.assertIn("inverse kinematics failed for the pose at 0.000 s (-466.0, -122.0, 424.4 mm)", r.stderr)
         self.assertEqual(fake.state()["q"], before)
 
     def test_an_emergency_stop_ends_the_motion(self):
@@ -568,18 +523,14 @@ class SbxTrajectory(unittest.TestCase):
         timer = threading.Timer(3.0, lambda: fake.control("estop on"))
         timer.start()
         self.addCleanup(timer.cancel)
-        r = self.sbx(fake, answer="y\n")
+        r = self.sbx(fake)
         self.assertEqual(r.returncode, 1)
-        self.assertIn("motion: ", r.stderr)
         self.assertIn("no emergency stop", r.stderr)
 
-    def test_the_command_line_sets_the_robot_and_the_way_only(self):
+    def test_the_command_line_is_the_robot_only(self):
         fake = self.robot("--ready")
-        self.assertEqual(self.sbx(fake, "--radius", "30").returncode, 2)  # the circle is code
-        r = run(PATHS.sbx_trajectory, "--help")
-        self.assertEqual(r.returncode, 0)
-        self.assertIn("--stream", r.stdout)
-        self.assertIn("--record", r.stdout)
+        self.assertEqual(self.sbx(fake, "--radius", "30").returncode, 2)
+        self.assertEqual(run(PATHS.sbx_trajectory, "--help").returncode, 0)
 
 
 def main() -> None:
