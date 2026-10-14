@@ -127,6 +127,8 @@ std::optional<Ticket> Executor::current() const noexcept {
 
 std::string_view Executor::current_name() const noexcept { return activity_ ? activity_->name() : std::string_view{}; }
 
+bool Executor::current_needs_every_cycle() const { return activity_ && activity_->needs().every_cycle; }
+
 void Executor::begin_close(End why, std::expected<void, Error> result, Clock::time_point now) {
     why_ = why;
     result_ = std::move(result);

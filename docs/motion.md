@@ -761,8 +761,8 @@ is a roadmap step (11 and 16), not a code change.
 |---|---|---|
 | Cycle period T | 8 ms, the 8056 rate | control thread; stream sampling period |
 | Reply timeout | 2 s per command: a reply that takes longer fails it (50 ms was too short for the EA66's `set_servo_status`, first robot run) | control thread |
-| Trajectory upload | 20 points per cycle without replies (`ret_flag` 0); 0.2 s after `start_push_pos` and 1 s before `stop_push_pos`, as the manual's examples (2.2.9.10, 11) | `PlayTrajectory` |
-| Late cycles before a fault | 3 in a row, each starting later than T/2, while an activity runs | control thread |
+| Trajectory upload | 5 points per cycle, each confirmed (`ret_flag` 1): the EA66 takes them at its own pace (unconfirmed, 20 a cycle backed up and blocked the loop, first robot run); 0.2 s after `start_push_pos` and 1 s before `stop_push_pos`, as the manual's examples (2.2.9.10, 11) | `PlayTrajectory` |
+| Late cycles before a fault | 3 in a row, each starting later than T/2, while a stream runs (other activities only run later: first robot run) | control thread |
 | State freshness | 50 ms, about 6 frames | condition Fresh |
 | Standstill | every joint below 0.5 °/s for 5 frames | condition Standstill |
 | Stream lookahead L | 40 ms (5 T) | position stream |

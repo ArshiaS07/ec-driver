@@ -254,8 +254,8 @@ TEST(PlayTrajectory, UploadsChecksRunsAndFlushes) {
     const auto path = ramp(12);
     auto a = make_activity(ec::motion::PlayTrajectory{.path = path, .speed = 0.5});
 
-    // As the manual's examples: 0.2 s after start_push_pos, the points without
-    // replies; 1 s after them, stop_push_pos.
+    // As the manual's examples: 0.2 s after start_push_pos, the points, each
+    // confirmed; 1 s after the last, stop_push_pos.
     const auto steps_until = [&](std::string_view method) {
         int n = 0;
         for (; n < 400 && b.count(method) == 0; ++n) EXPECT_EQ(b.step(a), Phase::Running);
@@ -263,7 +263,7 @@ TEST(PlayTrajectory, UploadsChecksRunsAndFlushes) {
     };
     steps_until("start_push_pos");
     EXPECT_GE(steps_until("push_pos"), 200 / 8);
-    EXPECT_EQ(b.count("push_pos"), 12u);  // all in one cycle
+    EXPECT_EQ(b.count("push_pos"), 5u);  // five a cycle
     EXPECT_GE(steps_until("stop_push_pos"), 1000 / 8);
     steps_until("start_trajectory");
     EXPECT_EQ(b.count("getSpeed"), 1u);
@@ -274,7 +274,7 @@ TEST(PlayTrajectory, UploadsChecksRunsAndFlushes) {
     for (const auto& s : b.sent) {
         if (s.method == "start_push_pos") {
             EXPECT_EQ(s.params["path_lenth"], 12);
-            EXPECT_EQ(s.params["ret_flag"], 0);
+            EXPECT_EQ(s.params["ret_flag"], 1);
         }
         if (s.method == "start_trajectory") {
             EXPECT_DOUBLE_EQ(s.params["speed_percent"].get<double>(), 50.0);

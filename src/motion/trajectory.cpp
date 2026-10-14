@@ -142,7 +142,7 @@ std::expected<Phase, Error> PlayTrajectoryActivity::step(const Cycle& c, Outbox&
                                            .point_type = command::PointType::Joint,
                                            .reference = rad_to_deg(spec_.path.position.front()),
                                            .frame = {},
-                                           .replies = false});
+                                           .replies = true});
             sent_at_ = c.now;
             stage_ = Stage::AwaitBegin;
             return Phase::Running;
@@ -160,18 +160,25 @@ std::expected<Phase, Error> PlayTrajectoryActivity::step(const Cycle& c, Outbox&
 
         case Stage::Upload: {
             // As the manual's examples (2.2.9.10, 11): a pause after start_push_pos,
-            // then the points, each without a reply.
+            // then the points, each confirmed: the next batch goes once the
+            // controller has taken the last.
+            for (const Reply& reply : c.replies) {
+                if (reply.method != command::PushPos::method) continue;
+                if (!reply.result) return std::unexpected(command_failed(reply.method, reply.result.error()));
+                if (const auto ok = command::ReplyDecoder<command::Ok>::decode(*reply.result); !ok)
+                    return std::unexpected(command_failed(reply.method, ok.error()));
+            }
             if (c.now - paused_since_ < kBeforeUpload) return Phase::Running;
-            const auto batch =
-                std::min(spec_.path.size() - uploaded_, static_cast<std::size_t>(spec_.points_per_cycle));
-            for (std::size_t k = uploaded_; k < uploaded_ + batch; ++k)
-                out.send_without_reply(
-                    command::PushPos{.time_s = spec_.path.time[k], .point = rad_to_deg(spec_.path.position[k])});
-            uploaded_ += batch;
             if (uploaded_ == spec_.path.size()) {
                 paused_since_ = c.now;
                 stage_ = Stage::Settle;
+                return Phase::Running;
             }
+            const auto batch =
+                std::min(spec_.path.size() - uploaded_, static_cast<std::size_t>(spec_.points_per_cycle));
+            for (std::size_t k = uploaded_; k < uploaded_ + batch; ++k)
+                out.send(command::PushPos{.time_s = spec_.path.time[k], .point = rad_to_deg(spec_.path.position[k])});
+            uploaded_ += batch;
             return Phase::Running;
         }
 

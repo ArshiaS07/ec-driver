@@ -81,6 +81,8 @@ public:
     /// The open activity's ticket and name, while one is open.
     [[nodiscard]] std::optional<Ticket> current() const noexcept;
     [[nodiscard]] std::string_view current_name() const noexcept;
+    /// Whether the open activity must send every cycle (Needs::every_cycle).
+    [[nodiscard]] bool current_needs_every_cycle() const;
 
 private:
     void begin_close(End why, std::expected<void, Error> result, Clock::time_point now);

@@ -497,7 +497,7 @@ class SbxTrajectory(unittest.TestCase):
     def test_brings_up_verifies_and_executes_with_slow_answers(self):
         fake = self.robot()  # servos off, not synchronised: brought up first
         for method, seconds in (("set_servo_status", "0.3"), ("syncMotorStatus", "0.2"), ("start_push_pos", "0.1"),
-                                ("check_trajectory", "0.1")):  # slow answers, as the EA66 gives some
+                                ("push_pos", "0.004"), ("check_trajectory", "0.1")):  # slow, as the EA66 is
             self.assertEqual(fake.control(f"delay {method} {seconds}"), "ok")
         r = self.sbx(fake)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)

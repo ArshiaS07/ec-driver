@@ -41,8 +41,10 @@ struct ControlOptions {
     /// EA66 takes longer than 50 ms to answer some actions (set_servo_status), and
     /// the cycle's timing is watched separately (max_late_cycles).
     std::chrono::milliseconds reply_timeout{2'000};
-    /// While an activity runs, this many consecutive cycles starting more than
-    /// half a period late are a fault (Kind::Overrun).
+    /// While a stream runs (an activity that needs every cycle), this many
+    /// consecutive cycles starting more than half a period late are a fault
+    /// (Kind::Overrun). Other activities only run later: slow replies (an upload
+    /// the controller takes at its own pace) make cycles late harmlessly.
     int max_late_cycles = 3;
     Thresholds thresholds{};
     Executor::Options executor{};

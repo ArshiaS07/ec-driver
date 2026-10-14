@@ -201,6 +201,7 @@ void ControlLoop::run(const std::stop_token& stop) {
                 consecutive_late_ = 0;
             }
             if (lateness > 10 * period) deadline = now;
+            if (!executor_.current_needs_every_cycle()) consecutive_late_ = 0;  // only a stream needs every cycle
             if (consecutive_late_ >= options_.max_late_cycles && executor_.current()) {
                 executor_.fail(Error{Error::Kind::Overrun,
                                      std::format("{} cycles in a row started late, the last by {} ms",

@@ -135,9 +135,14 @@ struct Pinger {
     int cycles = 3;  // 0: never done
     std::shared_ptr<std::atomic<int>> closes = std::make_shared<std::atomic<int>>(0);
     std::chrono::milliseconds sleep_in_step{0};
+    bool every_cycle = true;
     int replies = 0;
 
-    [[nodiscard]] Needs needs() const { return {{Condition::Fresh, Condition::ServoOn}, {Condition::Fresh}}; }
+    [[nodiscard]] Needs needs() const {
+        return {.to_start = {Condition::Fresh, Condition::ServoOn},
+                .while_running = {Condition::Fresh},
+                .every_cycle = every_cycle};
+    }
     std::expected<Phase, Error> step(const Cycle& c, Outbox& out) {
         if (sleep_in_step > 0ms) std::this_thread::sleep_for(sleep_in_step);
         for (const auto& r : c.replies) {
@@ -281,11 +286,20 @@ TEST(ControlLoop, DestructionStopsAnOpenActivity) {
     EXPECT_EQ(*closes, 1);
 }
 
-TEST(ControlLoop, ASlowCycleIsAnOverrun) {
+TEST(ControlLoop, ASlowCycleIsAnOverrunForAStream) {
     Rig rig;
     const auto result = rig.loop->run(Pinger{.cycles = 0, .sleep_in_step = 25ms}).wait();
     ASSERT_FALSE(result);
     EXPECT_EQ(result.error().kind, Error::Kind::Overrun);
+    EXPECT_GE(rig.loop->status().late_cycles, 3u);
+}
+
+// An upload the controller takes at its own pace makes cycles late; for an
+// activity that need not send every cycle, that only takes longer.
+TEST(ControlLoop, SlowCyclesAreNoFaultForAPlannedMotion) {
+    Rig rig;
+    const auto result = rig.loop->run(Pinger{.cycles = 8, .sleep_in_step = 25ms, .every_cycle = false}).wait();
+    EXPECT_TRUE(result) << describe(result.error());
     EXPECT_GE(rig.loop->status().late_cycles, 3u);
 }
 

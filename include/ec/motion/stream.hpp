@@ -83,7 +83,9 @@ class ServoStream {
 public:
     ServoStream(const ServoOptions& options, std::shared_ptr<Channel<Joints>> channel);
 
-    [[nodiscard]] Needs needs() const noexcept { return {kCanStartMotion, kCanMove}; }
+    [[nodiscard]] Needs needs() const noexcept {
+        return {.to_start = kCanStartMotion, .while_running = kCanMove, .every_cycle = true};
+    }
     [[nodiscard]] std::string_view name() const noexcept { return "servo_stream"; }
     [[nodiscard]] std::expected<Phase, Error> step(const Cycle& c, Outbox& out);
     [[nodiscard]] bool close(const Cycle& c, Outbox& out, End why);
@@ -123,7 +125,9 @@ public:
     VelocityStream(const VelocityOptions& options, std::shared_ptr<Channel<Joints>> channel)
         : options_(options), channel_(std::move(channel)) {}
 
-    [[nodiscard]] Needs needs() const noexcept { return {kCanStartMotion, kCanMove}; }
+    [[nodiscard]] Needs needs() const noexcept {
+        return {.to_start = kCanStartMotion, .while_running = kCanMove, .every_cycle = true};
+    }
     [[nodiscard]] std::string_view name() const noexcept { return "velocity_stream"; }
     [[nodiscard]] std::expected<Phase, Error> step(const Cycle& c, Outbox& out);
     [[nodiscard]] bool close(const Cycle& c, Outbox& out, End why);

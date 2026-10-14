@@ -104,6 +104,10 @@ enum class End {
 struct Needs {
     Conditions to_start{};
     Conditions while_running{};
+    /// It must send to the controller every cycle (a stream): cycles that start
+    /// late are a fault while it runs. A planned motion, which the controller
+    /// times, or a procedure only runs later.
+    bool every_cycle = false;
 };
 
 /// An activity (docs/motion.md 5.3):

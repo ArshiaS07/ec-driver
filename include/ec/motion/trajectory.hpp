@@ -66,9 +66,10 @@ struct PlayTrajectory {
     TrajectoryLimits limits{};
     double start_tolerance = deg_to_rad(0.5);  ///< [rad]: how close to the first point the arm must be
     double tolerance = deg_to_rad(0.2);        ///< [rad]: arrival at the last point
-    /// Uploaded per cycle, without a reply each (ret_flag 0, as the manual's
-    /// second example does): stop_push_pos then confirms them all.
-    int points_per_cycle = 20;
+    /// Uploaded per cycle, each confirmed (ret_flag 1, as the manual's first
+    /// example): the controller takes them at its own pace. Unconfirmed, they
+    /// backed up on the EA66 and blocked the loop (first robot run).
+    int points_per_cycle = 5;
     std::chrono::milliseconds margin{5'000};
 };
 
