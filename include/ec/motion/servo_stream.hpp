@@ -2,12 +2,15 @@
 /// @file
 /// Servo streaming, the controller's transparent transmission (SDK manual
 /// 2.2.7, ADR 0018): joint targets into the controller's queue, which plays one
-/// every `period` after `lookahead`. As the manual's example (2.2.7.6): a
-/// stream left open is cleared first, transparent_transmission_init, then
-/// points from the application's loop, one every period, each answered; at the
-/// end tt_clear_servo_joint_buf. The application paces the points and makes
-/// them smooth: the first at where the arm rests, the next ones close to it.
-/// No watchdog yet (ADR 0018, 4).
+/// every `period` after `lookahead`. As the manual's example (2.2.7.6): open()
+/// clears a stream left open, then transparent_transmission_init; add_point()
+/// is tt_put_servo_joint_to_buf, each answered; close() is
+/// tt_clear_servo_joint_buf. The application paces the points and makes them
+/// smooth: the first where the arm rests (the manual moves it there with
+/// moveByJoint), the next ones close to it. No watchdog yet (ADR 0018, 4).
+///
+///     ec::motion::ServoStream stream(robot, {.lookahead = 40ms, .period = 8ms});
+///     stream.open();  // then stream.add_point(q) every period, stream.close()
 
 #include <chrono>
 #include <cstdint>
@@ -21,26 +24,28 @@
 namespace ec::motion {
 
 struct ServoOptions {
-    std::chrono::milliseconds lookahead{40};  ///< the controller's queue delay, [10, 1000] ms, longer than the period
+    std::chrono::milliseconds lookahead{40};  ///< the controller's queue delay, [10, 1000] ms
     std::chrono::milliseconds period{8};      ///< between points, [2, 100] ms
     double smoothness = 0.1;                  ///< the controller's smoothing gain, [0, 1]
 };
 
-/// An open stream. It is the robot's open motion until close() or the
-/// object's destruction (which closes it). Move-only.
+/// One stream. It is the robot's open motion from open() until close(), or
+/// the object's destruction, which sends nothing. Move-only.
 class ServoStream {
 public:
-    /// Opens the stream. Invalid for options out of range; Busy while another
-    /// motion is open.
-    [[nodiscard]] static std::expected<ServoStream, Error> open(Robot& robot, const ServoOptions& options = {});
+    /// Sends nothing.
+    explicit ServoStream(Robot& robot, const ServoOptions& options = {});
 
-    /// tt_put_servo_joint_to_buf: the next point [rad]. Invalid beyond the
-    /// joint limits.
+    /// Opens the stream. Invalid for options outside the manual's ranges; Busy
+    /// while a motion is open.
+    [[nodiscard]] std::expected<void, Error> open();
+    /// tt_put_servo_joint_to_buf: the next point [rad]. Invalid outside
+    /// [-360, 360] deg, or before open().
     [[nodiscard]] std::expected<void, Error> add_point(const Joints& q);
-    /// tt_clear_servo_joint_buf: the stream ends; the arm stops where the
-    /// queue has brought it.
+    /// tt_clear_servo_joint_buf: the stream ends; the arm stops where the queue
+    /// has brought it.
     [[nodiscard]] std::expected<void, Error> close();
-    /// Clears the queue at once (tt_clear_servo_joint_buf).
+    /// tt_clear_servo_joint_buf, at once.
     void stop() noexcept;
 
     ServoStream(ServoStream&& other) noexcept;
@@ -50,11 +55,9 @@ public:
     ~ServoStream();
 
 private:
-    ServoStream(std::shared_ptr<detail::Connection> c, std::uint64_t id) : c_(std::move(c)), id_(id) {}
-    void close_quietly() noexcept;  // close(), for the destructor and the move assignment
-
     std::shared_ptr<detail::Connection> c_;
-    std::uint64_t id_ = 0;
+    ServoOptions options_;
+    std::uint64_t id_ = 0;  // the registration as the open motion, while open; 0: none
 };
 
 }  // namespace ec::motion

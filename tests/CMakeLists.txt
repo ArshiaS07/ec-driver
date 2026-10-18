@@ -17,7 +17,6 @@ add_executable(ec_tests
     latest_test.cpp
     log/raw_test.cpp
     motion/families_test.cpp
-    motion/planning_test.cpp
     net/tcp_socket_test.cpp
     pose_test.cpp
     robot_test.cpp

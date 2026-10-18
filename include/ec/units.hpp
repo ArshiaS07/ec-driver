@@ -3,7 +3,6 @@
 /// SI types and the conversions to and from the controller's units (deg, mm),
 /// for the one boundary where commands are built (ADR 0014).
 
-#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -35,26 +34,11 @@ template <std::size_t N>
     return out;
 }
 
-/// The largest absolute element-wise difference: how far apart two joint
-/// vectors are on their worst joint.
-[[nodiscard]] inline double max_abs_diff(const Joints& a, const Joints& b) noexcept {
-    double worst = 0.0;
-    for (std::size_t i = 0; i < kJointCount; ++i) worst = std::max(worst, std::abs(a[i] - b[i]));
-    return worst;
-}
-
 /// Every element times `k`.
 [[nodiscard]] constexpr Joints scale(const Joints& v, double k) noexcept {
     Joints out{};
     for (std::size_t i = 0; i < kJointCount; ++i) out[i] = v[i] * k;
     return out;
-}
-
-/// The largest absolute element.
-[[nodiscard]] inline double max_abs(const Joints& v) noexcept {
-    double worst = 0.0;
-    for (double x : v) worst = std::max(worst, std::abs(x));
-    return worst;
 }
 
 /// `q` with each joint moved by whole turns (2 pi) to lie nearest `reference`,

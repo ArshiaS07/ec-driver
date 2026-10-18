@@ -1,10 +1,15 @@
 #pragma once
 /// @file
 /// The controller's timestamp service (SDK manual 2.2.9, ADR 0018): a joint
-/// trajectory uploaded, then run on the controller's own clock. As the
+/// trajectory uploaded, then run on the controller's own clock. upload() is the
 /// manual's example (2.2.9.10): start_push_pos, 0.2 s, push_pos for every
-/// point, each answered before the next, 1 s, stop_push_pos, check_trajectory;
-/// then start_trajectory.
+/// point, each answered before the next, 1 s, stop_push_pos, check_trajectory.
+/// start() is start_trajectory; pause(), resume() and stop() the calls of the
+/// same names. The arm is to rest at the first point before start() (the
+/// manual moves it there with moveByJoint).
+///
+///     ec::motion::Timestamped run(robot, trajectory);
+///     run.upload();  // then run.start(), run.wait()
 
 #include <chrono>
 #include <cstdint>
@@ -13,41 +18,40 @@
 #include <optional>
 
 #include "ec/error.hpp"
-#include "ec/motion/trajectory.hpp"
 #include "ec/robot.hpp"
 #include "ec/stamped.hpp"
-#include "ec/units.hpp"
+#include "ec/trajectory.hpp"
 
 namespace ec::motion {
 
-struct TimestampedOptions {
-    TrajectoryLimits limits{};                 ///< the trajectory is checked against them before the upload
-    double start_tolerance = deg_to_rad(0.5);  ///< [rad] on every joint: how close to the first point the arm must rest
-};
-
-/// One uploaded trajectory. It is the robot's open motion from the upload
-/// until its run has ended (a wait says so) or the object is destroyed.
-/// Move-only; a run goes on if the object is destroyed (stop() ends it).
+/// One trajectory. It is the robot's open motion from its upload until a wait
+/// has seen its run end. Move-only; a run goes on if the object is destroyed
+/// (stop() ends it).
 class Timestamped {
 public:
-    /// Checks `trajectory` (validate()) and that the arm rests at its first
-    /// point, then uploads it. Nothing moves. Invalid for a trajectory that
-    /// fails the check or an arm elsewhere; Command if the controller refuses
-    /// a point or the upload; Stopped if Robot::stop() came during the upload.
-    [[nodiscard]] static std::expected<Timestamped, Error> upload(Robot& robot, const JointTrajectory& trajectory,
-                                                                  const TimestampedOptions& options = {});
+    /// Sends nothing.
+    Timestamped(Robot& robot, JointTrajectory trajectory);
 
-    /// start_trajectory: the arm moves, `speed` (0, 1] times the trajectory's own.
+    /// Uploads the trajectory; nothing moves. Invalid for fewer than 3 points,
+    /// or stamps not from 0 increasing (the manual's ranges); Busy while a
+    /// motion is open; Command if the controller refuses a call or finds the
+    /// upload invalid; Stopped if Robot::stop() came during it.
+    [[nodiscard]] std::expected<void, Error> upload();
+
+    /// start_trajectory: the arm moves, at `speed` times the trajectory's own
+    /// (speed_percent / 100, at least 0.001). Invalid before an upload.
     [[nodiscard]] std::expected<void, Error> start(double speed = 1.0);
     [[nodiscard]] std::expected<void, Error> pause();   ///< pause_trajectory
     [[nodiscard]] std::expected<void, Error> resume();  ///< resume_trajectory
 
-    /// Waits up to `timeout`: nullopt while the run goes on; nothing once the
-    /// arm has stopped; else why (a fault, a stop).
+    /// Waits up to `timeout` for the run to end, asking getRobotState every 10
+    /// ms (the manual's wait_stop): nullopt while the arm still moves; nothing
+    /// once it is at rest; Fault on an emergency stop, an alarm or a collision;
+    /// Stopped after Robot::stop(). Invalid before start().
     [[nodiscard]] std::optional<std::expected<void, Error>> wait_for(std::chrono::nanoseconds timeout);
     /// Waits until the run has ended, and says how.
     [[nodiscard]] std::expected<void, Error> wait();
-    /// Ends the run at once (stop_trajectory).
+    /// stop_trajectory: the run ends; a wait then sees it.
     void stop() noexcept;
 
     Timestamped(Timestamped&& other) noexcept;
@@ -57,14 +61,12 @@ public:
     ~Timestamped();
 
 private:
-    Timestamped(std::shared_ptr<detail::Connection> c, std::uint64_t id) : c_(std::move(c)), id_(id) {}
-
     std::shared_ptr<detail::Connection> c_;
-    std::uint64_t id_ = 0;
+    JointTrajectory trajectory_;
+    std::uint64_t id_ = 0;  // the registration as the open motion, from the upload; 0: none
     bool started_ = false;
     Clock::time_point started_at_{};
     bool ran_ = false;
-    std::optional<std::expected<void, Error>> result_{};  // once the run has ended
 };
 
 }  // namespace ec::motion

@@ -1,9 +1,10 @@
 // sbx_trajectory: a sandbox (temporary). The TCP draws the circle of circle():
 // the robot is brought up, the poses are verified with the controller's
-// inverse kinematics, the arm makes a joint move to the first one, and the
-// controller's timestamp service runs the circle (ec::motion::Timestamped:
-// start_push_pos, push_pos for every point, stop_push_pos, check_trajectory,
-// start_trajectory, as the SDK manual's example). Ctrl+C stops the arm.
+// inverse kinematics (planning.hpp), the arm makes a joint move to the first
+// one, and the controller's timestamp service runs the circle
+// (ec::motion::Timestamped: start_push_pos, push_pos for every point,
+// stop_push_pos, check_trajectory, start_trajectory, as the SDK manual's
+// example). Ctrl+C stops the arm.
 //
 //    sbx_trajectory --host 192.168.0.200
 //    (against the fake robot: python3 tools/fake_robot.py, then --host 127.0.0.1)
@@ -16,14 +17,15 @@
 #include <numbers>
 #include <string>
 #include <string_view>
+#include <utility>
 
 #include "cli.hpp"
 #include "ec/motion/move.hpp"
-#include "ec/motion/move_along.hpp"
 #include "ec/motion/timestamped.hpp"
 #include "ec/pose.hpp"
 #include "ec/robot.hpp"
 #include "interrupt.hpp"
+#include "planning.hpp"
 
 namespace {
 
@@ -32,7 +34,7 @@ ec::Clock::duration at_seconds(double s) {
 }
 
 // The circle, as poses stamped with their time. Base frame, as on the pendant.
-ec::PoseTrajectory circle() {
+planning::PoseTrajectory circle() {
     // const Eigen::Vector3d center(-496.0, -122.0, 424.4);          // [mm], read on the pendant
     // const Eigen::Vector3d rxyz(180.0, 0.0, 90.0);                 // [deg], read on the pendant: the tool's
     // orientation
@@ -59,7 +61,7 @@ ec::PoseTrajectory circle() {
         return speed * ramp / 2.0 + speed * (t - ramp);
     };
 
-    ec::PoseTrajectory poses;
+    planning::PoseTrajectory poses;
     for (int k = 0; k <= n; ++k) {
         const double t = duration * k / n;
         const double a = distance(t) / radius;  // [rad] round the circle
@@ -96,21 +98,21 @@ int run(int argc, char** argv) {
     // 2. Verify: every pose solved by the controller's inverse kinematics near the
     // one before (the first near the joints now) and checked: no jump, no
     // singularity, within the limits; a joint trajectory, a point every 20 ms.
-    const auto plan = ec::motion::plan(*robot, circle());
+    auto plan = planning::plan(*robot, circle());
     if (!plan) return fail("verify", plan.error());
-    cli::out("verified: {} points over {:.1f} s\n", plan->size(), plan->duration());
+    cli::out("verified: {} points over {:.1f} s\n", plan->size(),
+             std::chrono::duration<double>(plan->back().stamp).count());
 
     // 3. A joint move to the first point, at 10 % of the joints' speed.
-    auto move = ec::motion::Move::joints(*robot, plan->position.front(), {.speed = 0.1});
-    if (!move) return fail("to the start", move.error());
-    if (auto there = move->wait(); !there) return fail("to the start", there.error());
+    ec::motion::Move move(*robot);
+    if (auto ok = move.joint(plan->front().value, {.speed = 0.1}); !ok) return fail("to the start", ok.error());
+    if (auto there = move.wait(); !there) return fail("to the start", there.error());
 
-    // 4. The circle: uploaded, started, and waited for. (ec::motion::move_along
-    // does steps 2 to 4 in one call.)
-    auto circle_motion = ec::motion::Timestamped::upload(*robot, *plan);
-    if (!circle_motion) return fail("circle", circle_motion.error());
-    if (auto ok = circle_motion->start(); !ok) return fail("circle", ok.error());
-    if (auto done = circle_motion->wait(); !done) return fail("circle", done.error());
+    // 4. The circle: uploaded, started, and waited for.
+    ec::motion::Timestamped circle_motion(*robot, std::move(*plan));
+    if (auto ok = circle_motion.upload(); !ok) return fail("circle", ok.error());
+    if (auto ok = circle_motion.start(); !ok) return fail("circle", ok.error());
+    if (auto done = circle_motion.wait(); !done) return fail("circle", done.error());
     cli::out("done\n");
     return cli::kOk;
 }

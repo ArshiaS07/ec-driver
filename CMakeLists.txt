@@ -27,11 +27,8 @@ add_library(ec_driver
     src/log/raw.cpp
     src/detail/connection.cpp
     src/motion/move.cpp
-    src/motion/move_along.cpp
-    src/motion/planning.cpp
     src/motion/servo_stream.cpp
     src/motion/timestamped.cpp
-    src/motion/trajectory.cpp
     src/net/tcp_socket.cpp
     src/pose.cpp
     src/robot.cpp

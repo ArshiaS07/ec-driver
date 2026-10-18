@@ -4,16 +4,13 @@
 /// (8055), on which every call is sent and answered one at a time, and, if
 /// asked, the monitoring stream (8056), whose newest frame it keeps decoded.
 /// Motions are opened on it, one at a time (ec/motion/move.hpp,
-/// timestamped.hpp, servo_stream.hpp, move_along.hpp). Several arms are
-/// several Robots.
+/// timestamped.hpp, servo_stream.hpp). Several arms are several Robots.
 ///
 ///     auto robot = ec::Robot::connect({.host = "192.168.0.200"});
 ///     robot->bring_up();
-///     auto mode = robot->call(ec::sdk::GetRobotMode{});   // any typed SDK call
-///     auto f = robot->feedback();                             // the newest frame, in SI
-///     ec::motion::move_along(*robot, poses);                  // a TCP motion, planned and run
+///     auto mode = robot->call(ec::sdk::GetRobotMode{});  // any typed SDK call
+///     auto f = robot->feedback();                         // the newest frame, in SI
 
-#include <Eigen/Geometry>
 #include <chrono>
 #include <cstdint>
 #include <expected>
@@ -28,7 +25,6 @@
 #include "ec/feedback/state.hpp"
 #include "ec/sdk/request.hpp"
 #include "ec/stamped.hpp"
-#include "ec/units.hpp"
 
 namespace ec {
 
@@ -92,15 +88,6 @@ public:
     /// The first frame newer than `after` (a Feedback::seq), waiting up to
     /// `timeout`: for loops paced by the robot's frames (about every 8 ms).
     [[nodiscard]] std::optional<Feedback> next_feedback(std::uint64_t after, std::chrono::nanoseconds timeout) const;
-
-    /// The joint positions [rad] that put the current tool's TCP at T_base_tcp,
-    /// the solution nearest `near` (the controller's inverseKinematic), each
-    /// joint taken by whole turns to the value nearest it.
-    [[nodiscard]] std::expected<Joints, Error> ik(const Eigen::Isometry3d& T_base_tcp, const Joints& near);
-    /// T_base_tcp of the current tool for joint positions [rad] (positiveKinematic).
-    [[nodiscard]] std::expected<Eigen::Isometry3d, Error> fk(const Joints& joints);
-    /// The joint positions now [rad] (get_joint_pos).
-    [[nodiscard]] std::expected<Joints, Error> joints();
 
     /// As the manual's examples: clears an alarm, synchronises the encoders,
     /// switches the servos on; only what the state needs. Returns once the

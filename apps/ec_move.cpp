@@ -64,19 +64,19 @@ std::expected<void, ec::Error> stream_sine(ec::Robot& robot, const cli::StopOnIn
                                            const ec::Joints& start, std::size_t joint, double amplitude_deg,
                                            double period_s, double seconds, std::chrono::milliseconds lookahead) {
     const ec::motion::ServoOptions options{.lookahead = lookahead};
-    auto stream = ec::motion::ServoStream::open(robot, options);
-    if (!stream) return std::unexpected(stream.error());
+    ec::motion::ServoStream stream(robot, options);
+    if (auto ok = stream.open(); !ok) return std::unexpected(ok.error());
     const auto t0 = ec::Clock::now();
     for (auto next = t0; !ctrl_c.interrupted(); next += options.period) {
         const double t = std::chrono::duration<double>(ec::Clock::now() - t0).count();
         if (t >= seconds) break;
         ec::Joints q = start;
         q[joint] += ec::deg_to_rad(amplitude_deg) * std::sin(2.0 * std::numbers::pi * t / period_s);
-        if (auto ok = stream->add_point(q); !ok) return std::unexpected(ok.error());
+        if (auto ok = stream.add_point(q); !ok) return std::unexpected(ok.error());
         std::this_thread::sleep_until(next + options.period);
     }
     if (ctrl_c.interrupted()) return std::unexpected(ec::Error{ec::Error::Kind::Stopped, "Ctrl+C"});
-    return stream->close();
+    return stream.close();
 }
 
 int run(int argc, char** argv) {
@@ -184,8 +184,9 @@ int run(int argc, char** argv) {
                 code = dry_run(plan);
             } else {
                 cli::out("{}\n", plan);
-                auto m = ec::motion::Move::joints(*robot, target, {.speed = speed});
-                code = report(m ? m->wait() : std::unexpected(m.error()), "move_joint");
+                ec::motion::Move m(*robot);
+                const auto started = m.joint(target, {.speed = speed});
+                code = report(started ? m.wait() : started, "move_joint");
             }
         } else if (sine->parsed()) {
             if (seconds <= 0.0) seconds = 2.0 * period;

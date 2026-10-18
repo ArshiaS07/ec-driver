@@ -5,8 +5,10 @@ proposed), 2026-10-14, after the first runs on the robot (§5.0). Sections
 1-4 describe the controller and the field and still hold. §5.0 is the design
 as built now. §5.1-5.10 and §6 describe the earlier runtime (ADR 0014: one
 control thread, activities, jobs, sessions), superseded and kept for its
-reasoning. §5.11 (TCP targets, planned in joint space) still holds. Section 7
-is what is assumed until measured on the robot.
+reasoning. §5.11 (TCP targets, planned in joint space) still holds, as the
+application's planning: since 2026-10-18 it is not part of the driver (ADR
+0018, 6; the sandbox's is `apps/planning.hpp`). Section 7 is what is assumed
+until measured on the robot.
 
 **Sources**, in order of authority (§5.1): the vendor's manuals, cited as
 [S] SDK socket manual 3.19.2 (English) / 3.11.2 (Chinese original),
@@ -27,9 +29,12 @@ A citation like [S 2.2.7.1] names a manual section.
   calls, its stop, its tear-down). The driver has one small class per family
   that sends exactly that sequence over one connection, every call answered
   before the next (§5.0).
-- `ec::Robot` is one controller: the command connection, the monitoring
-  stream's newest frame, the controller's kinematics, bring-up, and a stop
-  callable from any thread. One motion is open at a time.
+- `ec::Robot` is one controller: the command connection (every SDK call,
+  the controller's kinematics included), the monitoring stream's newest
+  frame, bring-up, and a stop callable from any thread. One motion is open at
+  a time.
+- Planning a motion of the TCP into joint positions is the application's,
+  not the driver's (§5.11).
 - No control thread: set-up calls block, waits poll `getRobotState` as the
   manual's examples do, and streams are paced by the application's loop.
   Safety is the controller's (E-stop, pendant) as much as the driver's.
@@ -235,23 +240,28 @@ The manual's own example, sent call by call, drew the circle.
 
 | Part | Where | What |
 |---|---|---|
-| `ec::Robot` | `ec/robot.hpp` | `connect` (8055; 8056 if `monitor`), `call<C>` (one typed call, answered; while a motion is open, queries and computations only), `feedback`/`next_feedback` (the newest frame, decoded; `on_feedback` with every frame), `ik`, `fk`, `joints`, `bring_up` (the manual's sequence, waiting for the servos), `stop` (any thread: the open motion's stop, then `stop`) |
+| `ec::Robot` | `ec/robot.hpp` | `connect` (8055; 8056 if `monitor`), `call<C>` (one typed SDK call, answered, queries and the controller's kinematics included; while a motion is open, queries and computations only), `feedback`/`next_feedback` (the newest frame, decoded; `on_feedback` with every frame), `bring_up` (the manual's sequence, waiting for the servos), `stop` (any thread: the open motion's stop, then `stop`) |
 | Errors | `ec/error.hpp` | one `ec::Error` (invalid, busy, command failed, fault, stopped, timeout, disconnected) |
-| Point-to-point | `ec/motion/move.hpp` | `Move::joints` (moveByJoint); `wait_for`, `wait` (until it rests at the target), `stop` |
-| Timestamped trajectory | `ec/motion/timestamped.hpp` | `Timestamped::upload`: checked, the arm at the first point; start_push_pos, 0.2 s, push_pos per point, 1 s, stop_push_pos, check_trajectory. Then `start`, `pause`, `resume`, `wait_for`, `wait`, `stop` (stop_trajectory) |
-| Servo streaming | `ec/motion/servo_stream.hpp` | `ServoStream::open`: a stream left open cleared first, then transparent_transmission_init. Then `add_point` (tt_put_servo_joint_to_buf) and `close` (tt_clear_servo_joint_buf); paced by the application, no watchdog yet |
-| TCP motions | `ec/motion/move_along.hpp` | `plan(robot, poses)` (§5.11); `move_along`: plan, a joint move to the first pose, the timestamped run |
+| Point-to-point | `ec/motion/move.hpp` | `Move(robot)`; `joint` (moveByJoint), `line` (moveByLine), `arc` (moveByArc), `rotate` (moveByRotate), each to joint positions; `wait_for`, `wait` (the manual's wait_stop), `stop` |
+| Timestamped trajectory | `ec/motion/timestamped.hpp` | `Timestamped(robot, trajectory)`, stamped joint positions (`ec/trajectory.hpp`); `upload`: start_push_pos, 0.2 s, push_pos per point, 1 s, stop_push_pos, check_trajectory. Then `start`, `pause`, `resume`, `wait_for`, `wait`, `stop` (stop_trajectory) |
+| Servo streaming | `ec/motion/servo_stream.hpp` | `ServoStream(robot, options)`; `open`: a stream left open cleared first, then transparent_transmission_init. Then `add_point` (tt_put_servo_joint_to_buf) and `close` (tt_clear_servo_joint_buf); paced by the application, no watchdog yet |
 
-Each family's factory does the manual's set-up and returns the motion or
-why not. A failed set-up sends nothing to clean up. Waits ask
-`getRobotState` every 10 ms. Until the motion is seen running, a stop
-counts only a second after the start, since a motion just started may not
-show yet. The only thread in the driver is the optional 8056 receiver.
+A family's constructor takes its inputs and sends nothing; its methods are its
+SDK calls, in the manual's order, with arguments checked against the manual's
+ranges only. Nothing else is asked or checked: no arrival, no first point, no
+speed limits; the controller refuses what is wrong. A failed call sends
+nothing to clean up, and destroying a motion sends nothing. Waits ask
+`getRobotState` every 10 ms. Until the motion is seen running, a stop counts
+only a second after the start, since a motion just started may not show yet.
+The only thread in the driver is the optional 8056 receiver.
 `apps/interrupt.hpp` turns Ctrl+C into `Robot::stop()` for the tools.
 
+Planning (§5.11) is the application's, not the driver's (ADR 0018, 6): the
+sandbox's is `apps/planning.hpp`.
+
 Following, in milestone B: the waypoint queue, jog, velocity streaming,
-stored programs, `Move` line and arc, a watchdog for `ServoStream`, and a
-log of every call and answer.
+stored programs, a watchdog for `ServoStream`, and a log of every call and
+answer.
 
 ### 5.1 Order of authority
 
@@ -596,20 +606,26 @@ wire do they become the controller's x, y, z [mm] and rx, ry, rz [rad], with
 R = Rz·Ry·Rx (ADR 0012).
 
 ```cpp
-Joints q = robot.ik(T_base_tcp, near).value();               // inverseKinematic, nearest `near`
-ec::motion::Move::joints(robot, q, {.speed = 0.2})->wait();  // moveByJoint
-ec::PoseTrajectory motion{{0s, T_base_tcp}, {2s, T_base_goal}};  // poses stamped with their time
-auto trajectory = ec::motion::plan(robot, motion).value();   // solved, checked, every 20 ms
-ec::motion::move_along(robot, motion);                       // plan, move to the start, run timestamped
-auto servo = ec::motion::ServoStream::open(robot).value();   // live: solve each target, check_step(), add_point()
-servo.add_point(robot.ik(T_base_tcp, q).value());
+// The driver: the controller's kinematics as typed calls, the motions on joint positions.
+auto q = robot.call(ec::sdk::InverseKinematic{.target = ec::to_mm_rad(T_base_tcp),
+                                              .reference = ec::rad_to_deg(near)});  // [deg]
+ec::motion::Move move(robot);
+move.joint(ec::deg_to_rad(*q), {.speed = 0.2});  // moveByJoint
+move.wait();
+// The application (the sandbox: apps/planning.hpp): poses stamped with their time, planned.
+planning::PoseTrajectory motion{{0s, T_base_tcp}, {2s, T_base_goal}};
+auto trajectory = planning::plan(robot, motion);  // solved, checked, every 20 ms
+ec::motion::Timestamped run(robot, *trajectory);  // after a joint move to its first point
+run.upload();
+run.start();
+run.wait();
 ```
 
 **A motion** of the TCP is a `PoseTrajectory`: poses, each stamped with its time
 since the start (a `Clock::duration`, the steady clock's), the first at 0 and
-where the arm is. The application fills in the times; the library has no timing
-law (yet). Between two poses the TCP goes straight, its orientation turning
-evenly; `pose_at(motion, t)` reads it so, and `plan()` too. The shape follows
+where the arm is. The application fills in the times; there is no timing law.
+Between two poses the TCP goes straight, its orientation turning evenly, and
+`plan()` reads it so. The shape follows
 the navigation library this may later take motions from (capsnav: a value
 stamped with its time, sampled at a duration since the start), without
 depending on it: a pose there converts to an `Eigen::Isometry3d` and back.
@@ -622,7 +638,7 @@ depending on it: a pose there converts to an `Eigen::Isometry3d` and back.
 2. **Solve every point** with the controller, each near the solution before (the
    first near the arm's joints), a solution given within one turn moved by whole
    turns to the nearest (`nearest_turn`).
-3. **Check every solution** (`check_step()`, which a stream of poses uses too):
+3. **Check every solution** (a stream of poses should check its targets so too):
    no joint more than 10° from the one before (a change of arm configuration,
    or a singularity in between: MoveIt's jump threshold), J5 and J3 at least 5°
    from 0 and 180° (the wrist and elbow singularities of this arm, whose layout
@@ -637,8 +653,7 @@ depending on it: a pose there converts to an `Eigen::Isometry3d` and back.
 5. **Check the trajectory**: joint speeds within the datasheet's, accelerations
    within the limit (from rest at the start, to rest at the end).
 
-Each point costs one call; the control loop answers calls between its cycles,
-so the sandbox's circle with its approach (412 poses over 20.5 s) plans in 0.1 to 0.3 s on the fake.
+Each point costs one call of `inverseKinematic`.
 Interpolating over time across long gaps where a motion is slow strays from it
 (tens of micrometres on a circle, measured before): motions stamp their poses
 densely, the sandbox's every 50 ms.
@@ -649,9 +664,10 @@ distance from singularity (the Jacobian's smallest singular value, as MoveIt
 Servo uses) needs a kinematic model; the controller's 12 DH values (`getDH`),
 checked against `positiveKinematic`, would give one.
 
-**Streams** of TCP targets are the application's loop: `robot.ik()` per target,
-checked with `check_step()` against the solution before, the joints into a
-`ServoStream` with `add_point()`, one every period. Since ADR 0018 the driver
+**Streams** of TCP targets are the application's loop: the controller's inverse
+kinematics per target (`robot.call(ec::sdk::InverseKinematic{...})`), checked
+against the solution before, the joints into a `ServoStream` with
+`add_point()`, one every period. Since ADR 0018 the driver
 neither shapes nor resamples them: the application sends smooth targets, as
 the manual's example does. (The earlier stream's rate limiter trailed a moving
 target by its braking distance: on the fake a 30 mm circle strayed 0.4 mm
@@ -670,10 +686,10 @@ once with `getUserFrame`.
 
 `apps/sbx_trajectory.cpp` is the worked example, a sandbox to scroll through: a
 free function returns the circle as stamped poses (centre and tool orientation
-read on the pendant, radius, speed, number of poses); `main` connects, brings
-the robot up, verifies the poses (`plan()`), moves to the first point with a
-joint move, and executes the circle by the timestamp service. Ctrl+C stops the
-arm.
+read on the pendant, radius, speed, number of poses); `run()` connects, brings
+the robot up, verifies the poses (`planning::plan()`, `apps/planning.hpp`),
+moves to the first point (`Move::joint`), and executes the circle by the
+timestamp service (`Timestamped`). Ctrl+C stops the arm.
 
 ---
 

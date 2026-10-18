@@ -1,8 +1,17 @@
 #pragma once
 /// @file
-/// Point-to-point moves (SDK manual 2.2.3.1, ADR 0018): the controller plans
-/// and times one move to a target. Joint moves for now; the controller's line
-/// and arc moves follow (milestone B).
+/// Point-to-point moves (SDK manual 2.2.3.1-4, ADR 0018): the controller plans
+/// and times one move to a target, given as joint positions. joint() moves in
+/// joint space (moveByJoint); line() moves the TCP in a straight line to the
+/// target's pose (moveByLine); arc() along the circle through the pose of
+/// `middle` to the target's (moveByArc); rotate() turns the tool about its TCP
+/// to the target's orientation (moveByRotate). Each sends its one call;
+/// wait() then waits as the manual's wait_stop. The manual: remote mode only,
+/// and the arm at rest.
+///
+///     ec::motion::Move move(robot);
+///     move.joint(q, {.speed = 0.1});  // then move.wait()
+///     move.line(q2, {.speed = 0.05});  // [m/s]; then move.wait()
 
 #include <chrono>
 #include <cstdint>
@@ -12,35 +21,61 @@
 
 #include "ec/error.hpp"
 #include "ec/robot.hpp"
+#include "ec/sdk/movement.hpp"
 #include "ec/stamped.hpp"
 #include "ec/units.hpp"
 
 namespace ec::motion {
 
-struct MoveOptions {
-    double speed = 0.1;                    ///< fraction of the joints' maximum speed, (0, 1]
-    std::optional<double> acceleration{};  ///< fraction of the maximum, (0, 1]; the controller's default otherwise
-    double tolerance = deg_to_rad(0.5);    ///< [rad] on every joint: how close to the target counts as arrived
+/// A joint move's speed and acceleration (moveByJoint).
+struct JointMoveOptions {
+    double speed = 0.1;  ///< fraction of the joints' maximum speed, [0.0001, 1] (speed, [0.01, 100] %)
+    std::optional<double> acceleration{};  ///< fraction, [0.01, 1] (acc, [1, 100] %); the controller's default 0.8
+    std::optional<double> deceleration{};  ///< fraction, [0.01, 1] (dec); the controller's default: the acceleration
+    std::optional<sdk::StopCondition> until{};  ///< the move ends early once this holds (cond_*)
 };
 
-/// One move. It is the robot's open motion until it has ended (a wait says
-/// so) or the object is destroyed. Move-only; the move it started goes on if
-/// the object is destroyed (stop() ends it).
+/// A move of the TCP: its speed and acceleration (moveByLine, moveByArc, moveByRotate).
+struct PathMoveOptions {
+    sdk::SpeedType speed_type = sdk::SpeedType::Linear;  ///< what `speed` is (speed_type)
+    /// [m/s] for Linear, [0.001, 3], and AbsoluteLinear; [rad/s] for Rotational,
+    /// [1, 300] deg/s, and AbsoluteRotational. The absolute ones lie within the
+    /// controller's own speed parameters.
+    double speed = 0.05;
+    std::optional<double> acceleration{};  ///< fraction, [0.01, 1] (acc, [1, 100] %); the controller's default 0.8
+    std::optional<double> deceleration{};  ///< fraction, [0.01, 1] (dec); the controller's default: the acceleration
+    std::optional<sdk::StopCondition> until{};  ///< the move ends early once this holds (cond_*)
+};
+
+/// Moves, one at a time. From a move's call until a wait has seen it end, it is
+/// the robot's open motion. Move-only; a move goes on if the object is
+/// destroyed (stop() ends it).
 class Move {
 public:
-    /// moveByJoint to `target` [rad]. Returns once the controller has taken
-    /// the move; the arm then moves. Invalid for a target beyond the joint
-    /// limits or a speed outside (0, 1]; Busy while another motion is open.
-    [[nodiscard]] static std::expected<Move, Error> joints(Robot& robot, const Joints& target,
-                                                           const MoveOptions& options = {});
+    /// Sends nothing.
+    explicit Move(Robot& robot);
 
-    /// Waits up to `timeout`: nullopt while the arm still moves; nothing once
-    /// it rests at the target; else why not (it rested elsewhere, a fault, a
-    /// stop).
+    /// moveByJoint to `target` [rad]. Returns once the controller has taken the
+    /// move; the arm then moves. Invalid for a target outside [-360, 360] deg or
+    /// options outside their ranges; Busy while a motion is open (this one's
+    /// last move included, until a wait has seen it end).
+    [[nodiscard]] std::expected<void, Error> joint(const Joints& target, const JointMoveOptions& options = {});
+    /// moveByLine to the pose of `target` [rad]. As joint().
+    [[nodiscard]] std::expected<void, Error> line(const Joints& target, const PathMoveOptions& options = {});
+    /// moveByArc through the pose of `middle` to that of `target` [rad]. As joint().
+    [[nodiscard]] std::expected<void, Error> arc(const Joints& middle, const Joints& target,
+                                                 const PathMoveOptions& options = {});
+    /// moveByRotate to the orientation of `target` [rad]. As joint().
+    [[nodiscard]] std::expected<void, Error> rotate(const Joints& target, const PathMoveOptions& options = {});
+
+    /// Waits up to `timeout` for the move to end, asking getRobotState every 10
+    /// ms (the manual's wait_stop): nullopt while the arm still moves; nothing
+    /// once it is at rest; Fault on an emergency stop, an alarm or a collision;
+    /// Stopped after Robot::stop(). Invalid without a move to wait for.
     [[nodiscard]] std::optional<std::expected<void, Error>> wait_for(std::chrono::nanoseconds timeout);
     /// Waits until the move has ended, and says how.
     [[nodiscard]] std::expected<void, Error> wait();
-    /// Ends the move at once (stop).
+    /// stop: the arm stops; a wait then sees the move end.
     void stop() noexcept;
 
     Move(Move&& other) noexcept;
@@ -50,15 +85,14 @@ public:
     ~Move();
 
 private:
-    Move(std::shared_ptr<detail::Connection> c, std::uint64_t id, const Joints& target, double tolerance);
+    // Opens the move, sends `command`, and notes when; closes it again if the call fails.
+    template <class C>
+    [[nodiscard]] std::expected<void, Error> start(const C& command);
 
     std::shared_ptr<detail::Connection> c_;
-    std::uint64_t id_ = 0;
-    Joints target_{};
-    double tolerance_ = 0.0;
+    std::uint64_t id_ = 0;  // the move's registration as the open motion; 0: none
     Clock::time_point started_{};
     bool ran_ = false;
-    std::optional<std::expected<void, Error>> result_{};  // once it has ended
 };
 
 }  // namespace ec::motion

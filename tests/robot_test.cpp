@@ -1,6 +1,6 @@
 // ec::Robot against a scripted controller on 127.0.0.1 (tests/support/
 // mini_controller.hpp): connecting, the monitoring stream's newest frame,
-// typed calls, the controller's kinematics in SI, bring-up, and stop.
+// typed calls, bring-up, and stop.
 
 #include "ec/robot.hpp"
 
@@ -12,7 +12,6 @@
 #include <thread>
 #include <vector>
 
-#include "ec/pose.hpp"
 #include "ec/sdk/param.hpp"
 #include "support/mini_controller.hpp"
 
@@ -88,28 +87,6 @@ TEST(Robot, CallsFromSeveralThreadsAreAnsweredOneByOne) {
     }
     EXPECT_EQ(answered.load(), 100);
     EXPECT_EQ(controller.count("getRobotMode"), 100u);
-}
-
-TEST(Robot, KinematicsAreTheControllersInSiUnits) {
-    MiniController controller;
-    auto robot = ec::Robot::connect(controller.options());
-    ASSERT_TRUE(robot);
-    const Eigen::Isometry3d T_base_tcp = ec::from_mm_rad({400.0, -50.0, 300.0, 3.0, 0.1, -0.2});
-    const ec::Joints near{0.1, -1.5, 1.5, -1.5, -1.5, 0.0};
-    const auto q = robot->ik(T_base_tcp, near);
-    ASSERT_TRUE(q) << describe(q.error());
-    const auto ik = controller.last("inverseKinematic");
-    for (std::size_t i = 0; i < 6; ++i)  // mm and radians
-        EXPECT_NEAR(ik["targetPose"][i].get<double>(), (std::array{400.0, -50.0, 300.0, 3.0, 0.1, -0.2})[i], 1e-9);
-    EXPECT_NEAR(ik["referencePos"][1].get<double>(), -85.9437, 1e-4);                  // degrees
-    for (std::size_t j = 0; j < q->size(); ++j) EXPECT_NEAR((*q)[j], near[j], 1e-12);  // back in radians
-
-    const auto T = robot->fk(near);
-    ASSERT_TRUE(T) << describe(T.error());
-    EXPECT_TRUE(T->translation().isApprox(Eigen::Vector3d(0.4, -0.05, 0.3), 1e-12));  // metres
-    const auto joints = robot->joints();
-    ASSERT_TRUE(joints);
-    EXPECT_NEAR((*joints)[1], ec::deg_to_rad(-90.0), 1e-12);
 }
 
 TEST(Robot, BringUpSendsOnlyWhatTheStateNeeds) {

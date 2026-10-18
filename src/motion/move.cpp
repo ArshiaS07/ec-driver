@@ -2,56 +2,148 @@
 
 #include <cmath>
 #include <format>
+#include <string>
 #include <utility>
 
 #include "detail/connection.hpp"
-#include "ec/sdk/movement.hpp"
-#include "ec/sdk/param.hpp"
 
 namespace ec::motion {
+namespace {
 
-std::expected<Move, Error> Move::joints(Robot& robot, const Joints& target, const MoveOptions& o) {
+std::unexpected<Error> invalid(std::string message) {
+    return std::unexpected(Error{Error::Kind::Invalid, std::move(message)});
+}
+
+// Whether every joint is within the manual's [-360, 360] deg.
+std::expected<void, Error> check_target(std::string_view name, const Joints& q) {
     for (std::size_t j = 0; j < kJointCount; ++j)
-        if (!(std::abs(target[j]) <= kEc66JointLimit))
-            return std::unexpected(
-                Error{Error::Kind::Invalid,
-                      std::format("joint {} target {} rad is beyond the joint limit", j + 1, target[j])});
-    if (!(o.speed > 0.0 && o.speed <= 1.0))
-        return std::unexpected(Error{Error::Kind::Invalid, std::format("speed must be in (0, 1], not {}", o.speed)});
-    if (o.acceleration && !(*o.acceleration > 0.0 && *o.acceleration <= 1.0))
-        return std::unexpected(
-            Error{Error::Kind::Invalid, std::format("acceleration must be in (0, 1], not {}", *o.acceleration)});
-    auto c = robot.share();
-    const auto id = c->open([raw = c.get()] {
+        if (!(std::abs(q[j]) <= kEc66JointLimit))
+            return invalid(std::format("{}: joint {} at {} rad is outside [-360, 360] deg", name, j + 1, q[j]));
+    return {};
+}
+
+// A fraction as the manual's percentage, int [1, 100]; none stays the controller's default.
+std::expected<std::optional<int>, Error> percent(std::string_view name, const std::optional<double>& fraction) {
+    if (!fraction) return std::optional<int>{};
+    if (!(*fraction >= 0.01 && *fraction <= 1.0))
+        return invalid(std::format("{} must be in [0.01, 1], not {}", name, *fraction));
+    return std::optional<int>(static_cast<int>(std::lround(*fraction * 100.0)));
+}
+
+// A move of the TCP's speed and acceleration, in the controller's units.
+struct Profile {
+    double speed = 0.0;  // mm/s or deg/s, as speed_type says
+    std::optional<int> acc_pct{};
+    std::optional<int> dec_pct{};
+};
+
+std::expected<Profile, Error> profile(const PathMoveOptions& o) {
+    Profile p;
+    switch (o.speed_type) {
+        case sdk::SpeedType::Linear:
+            if (!(o.speed >= 0.001 && o.speed <= 3.0))
+                return invalid(std::format("speed must be in [0.001, 3] m/s, not {} m/s", o.speed));
+            p.speed = o.speed * 1000.0;
+            break;
+        case sdk::SpeedType::Rotational:
+            if (!(o.speed >= deg_to_rad(1.0) && o.speed <= deg_to_rad(300.0)))
+                return invalid(std::format("speed must be in [1, 300] deg/s, not {} deg/s", rad_to_deg(o.speed)));
+            p.speed = rad_to_deg(o.speed);
+            break;
+        case sdk::SpeedType::AbsoluteLinear: p.speed = o.speed * 1000.0; break;
+        case sdk::SpeedType::AbsoluteRotational: p.speed = rad_to_deg(o.speed); break;
+        default: return invalid("unknown speed type");
+    }
+    auto acc = percent("acceleration", o.acceleration);
+    if (!acc) return std::unexpected(acc.error());
+    auto dec = percent("deceleration", o.deceleration);
+    if (!dec) return std::unexpected(dec.error());
+    p.acc_pct = *acc;
+    p.dec_pct = *dec;
+    return p;
+}
+
+}  // namespace
+
+Move::Move(Robot& robot) : c_(robot.share()) {}
+
+std::expected<void, Error> Move::joint(const Joints& target, const JointMoveOptions& o) {
+    if (auto ok = check_target("target", target); !ok) return ok;
+    if (!(o.speed >= 0.0001 && o.speed <= 1.0))
+        return invalid(std::format("speed must be in [0.0001, 1], not {}", o.speed));
+    const auto acc = percent("acceleration", o.acceleration);
+    if (!acc) return std::unexpected(acc.error());
+    const auto dec = percent("deceleration", o.deceleration);
+    if (!dec) return std::unexpected(dec.error());
+    return start(sdk::MoveByJoint{.target = rad_to_deg(target),
+                                  .speed_pct = o.speed * 100.0,
+                                  .acc_pct = *acc,
+                                  .dec_pct = *dec,
+                                  .until = o.until});
+}
+
+std::expected<void, Error> Move::line(const Joints& target, const PathMoveOptions& o) {
+    if (auto ok = check_target("target", target); !ok) return ok;
+    const auto p = profile(o);
+    if (!p) return std::unexpected(p.error());
+    return start(sdk::MoveByLine{.target = rad_to_deg(target),
+                                 .speed_type = o.speed_type,
+                                 .speed = p->speed,
+                                 .acc_pct = p->acc_pct,
+                                 .dec_pct = p->dec_pct,
+                                 .until = o.until});
+}
+
+std::expected<void, Error> Move::arc(const Joints& middle, const Joints& target, const PathMoveOptions& o) {
+    if (auto ok = check_target("middle", middle); !ok) return ok;
+    if (auto ok = check_target("target", target); !ok) return ok;
+    const auto p = profile(o);
+    if (!p) return std::unexpected(p.error());
+    return start(sdk::MoveByArc{.middle = rad_to_deg(middle),
+                                .target = rad_to_deg(target),
+                                .speed_type = o.speed_type,
+                                .speed = p->speed,
+                                .acc_pct = p->acc_pct,
+                                .dec_pct = p->dec_pct,
+                                .until = o.until});
+}
+
+std::expected<void, Error> Move::rotate(const Joints& target, const PathMoveOptions& o) {
+    if (auto ok = check_target("target", target); !ok) return ok;
+    const auto p = profile(o);
+    if (!p) return std::unexpected(p.error());
+    return start(sdk::MoveByRotate{.target = rad_to_deg(target),
+                                   .speed_type = o.speed_type,
+                                   .speed = p->speed,
+                                   .acc_pct = p->acc_pct,
+                                   .dec_pct = p->dec_pct,
+                                   .until = o.until});
+}
+
+template <class C>
+std::expected<void, Error> Move::start(const C& command) {
+    if (!c_) return invalid("a moved-from Move");
+    const auto id = c_->open([raw = c_.get()] {
         const auto stopped = raw->send(sdk::Stop{});
         static_cast<void>(stopped);
     });
     if (!id) return std::unexpected(id.error());
-    Move move(c, *id, target, o.tolerance);  // closes the registration on any return below
-    sdk::MoveByJoint cmd{.target = rad_to_deg(target), .speed_pct = o.speed * 100.0};
-    if (o.acceleration) cmd.acc_pct = static_cast<int>(std::lround(*o.acceleration * 100.0));
-    if (auto ok = c->send(cmd); !ok) return std::unexpected(ok.error());
-    move.started_ = Clock::now();
-    return move;
+    if (auto ok = c_->send(command); !ok) {
+        c_->close(*id);  // not taken: nothing is moving
+        return std::unexpected(ok.error());
+    }
+    id_ = *id;
+    started_ = Clock::now();
+    ran_ = false;
+    return {};
 }
 
 std::optional<std::expected<void, Error>> Move::wait_for(std::chrono::nanoseconds timeout) {
-    if (result_) return result_;
-    if (!c_) return std::expected<void, Error>(std::unexpected(Error{Error::Kind::Invalid, "not a move"}));
-    auto stopped = c_->wait_stopped(started_, ran_, timeout);
-    if (!stopped) return std::nullopt;
-    result_ = std::move(*stopped);
-    if (*result_) {  // at rest: at the target?
-        const auto q = c_->send(sdk::GetJointPos{});
-        if (!q) {
-            result_ = std::unexpected(q.error());
-        } else if (const double off = max_abs_diff(deg_to_rad(*q), target_); off > tolerance_) {
-            result_ = std::unexpected(Error{
-                Error::Kind::Command, std::format("the arm stopped {:.2f} deg from the target", rad_to_deg(off))});
-        }
-    }
-    c_->close(id_);  // ended: no longer the open motion
-    return result_;
+    if (id_ == 0) return std::expected<void, Error>(invalid("no move to wait for"));
+    auto ended = c_->wait_stopped(started_, ran_, timeout);
+    if (!ended) return std::nullopt;
+    c_->close(std::exchange(id_, 0));  // ended: no longer the open motion
+    return ended;
 }
 
 std::expected<void, Error> Move::wait() {
@@ -68,34 +160,22 @@ void Move::stop() noexcept {
     }
 }
 
-Move::Move(std::shared_ptr<detail::Connection> c, std::uint64_t id, const Joints& target, double tolerance)
-    : c_(std::move(c)), id_(id), target_(target), tolerance_(tolerance), started_(Clock::now()) {}
-
 Move::Move(Move&& other) noexcept
-    : c_(std::move(other.c_)),
-      id_(std::exchange(other.id_, 0)),
-      target_(other.target_),
-      tolerance_(other.tolerance_),
-      started_(other.started_),
-      ran_(other.ran_),
-      result_(std::move(other.result_)) {}
+    : c_(std::move(other.c_)), id_(std::exchange(other.id_, 0)), started_(other.started_), ran_(other.ran_) {}
 
 Move& Move::operator=(Move&& other) noexcept {
     if (this != &other) {
-        if (c_) c_->close(id_);
+        if (id_ != 0) c_->close(id_);
         c_ = std::move(other.c_);
         id_ = std::exchange(other.id_, 0);
-        target_ = other.target_;
-        tolerance_ = other.tolerance_;
         started_ = other.started_;
         ran_ = other.ran_;
-        result_ = std::move(other.result_);
     }
     return *this;
 }
 
 Move::~Move() {
-    if (c_) c_->close(id_);
+    if (id_ != 0) c_->close(id_);
 }
 
 }  // namespace ec::motion

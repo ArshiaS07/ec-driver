@@ -18,8 +18,8 @@ and cross-compiles for 64-bit ARM Linux.
 | `ec::sdk` (port 8055: codec, typed calls, client) | done, tested; all 184 calls typed, replies checked against the EA66 for a few (`ec_query --check-all` checks the rest) |
 | `ec::log` (raw recordings; HDF5 logs in the optional `ec::hdf5`) | done, tested |
 | live state: `feedback::Receiver` (8056 thread, reconnects), `ec::Latest` (newest value) | done, tested; not yet on the robot |
-| `ec::Robot` and the motion families (`Move`, `Timestamped`, `ServoStream`, `move_along`; ADR 0018) | done, tested against a scripted controller and a simulated arm; a timestamped circle ran on the robot (`docs/motion.md` §5.0) |
-| Motions of the TCP in joint space (poses as Eigen isometries stamped with their time, `ec::PoseTrajectory`; `plan()` with the controller's inverse kinematics and singularity checks, played by the timestamp service) | done, tested the same way (`docs/motion.md` 5.11) |
+| `ec::Robot` and the motion families (`Move`: joint, line, arc, rotate; `Timestamped`; `ServoStream`; ADR 0018): each makes its SDK calls as the manual, nothing more | done, tested against a scripted controller and a simulated arm; a timestamped circle ran on the robot (`docs/motion.md` §5.0) |
+| Planning motions of the TCP in joint space: application code, not the driver's (the sandbox's `apps/planning.hpp`: stamped poses, the controller's inverse kinematics, singularity checks) | the sandbox's, tested end to end against the simulated arm (`docs/motion.md` 5.11) |
 | `apps/ec_monitor`, `apps/ec_record`, `apps/ec_query`, `apps/ec_move`, `apps/sbx_trajectory` | done, tested end to end against the fake servers |
 | still open | the robot checks in `docs/motion.md` §7; logging of commands and events; preflight; a guide |
 

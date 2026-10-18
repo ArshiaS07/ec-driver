@@ -46,11 +46,10 @@ by the layers above; a lower layer knows nothing of the layers above it.
 | `ec` | `RobotState`, `RobotMode`, `CycleMode` | status values both ports report | yes |
 | `ec` | `Joints`, unit conversions | SI types, and deg/mm conversion where commands are built | yes |
 | `ec` | poses (`Eigen::Isometry3d`, T_ab), `from_mm_rad`, `to_mm_rad` | poses in SI, converted to the controller's mm and rx, ry, rz only at the wire | yes |
-| `ec` | `Clock`, `Stamped`, `PoseTrajectory` | the one (steady) clock; a value stamped with its time; a motion of the TCP as poses stamped with their time since the start | yes |
+| `ec` | `Clock`, `Stamped`, `JointTrajectory` | the one (steady) clock; a value stamped with its time; joint positions stamped with their time since the start, what the timestamp service takes | yes |
 | `ec` | `Error` | the driver's error: a kind and what was observed | yes |
-| `ec::motion` | `plan()`, `check_step()`, `JointSpline`, `JointTrajectory` | a motion of the TCP solved by a given inverse kinematics (the controller's) into a checked joint trajectory | yes |
-| `ec::motion` | `Move`, `Timestamped`, `ServoStream`, `move_along` | motion families (ADR 0018): each sends its family's sequence from the manual over the robot's connection; one open at a time | no |
-| `ec` | `Robot` | one controller: the command connection (one call at a time, each answered), the newest monitoring frame, the controller's kinematics, bring-up, stop; what applications use | no |
+| `ec::motion` | `Move`, `Timestamped`, `ServoStream` | motion families (ADR 0018): the constructor takes the inputs and sends nothing; the methods are the family's SDK calls, in the manual's order, over the robot's connection; one open at a time | no |
+| `ec` | `Robot` | one controller: the command connection (every SDK call, one at a time, each answered), the newest monitoring frame, bring-up, stop; what applications use | no |
 
 Command-line tools (`apps/`): `ec_monitor` prints the 8056 stream; `ec_record`
 records it (raw and/or HDF5) or converts a raw recording; `ec_query` sends one
@@ -59,7 +58,8 @@ every call, or checks every query's reply against its type; `ec_move` moves
 the arm through `ec::Robot` (bring-up, joint moves, a streamed sine, stop),
 printing its plan unless given `--yes`, and records 8056 while it runs with
 `--record`; `sbx_trajectory`, a sandbox to scroll through, draws a circle of
-the TCP from a free function returning stamped poses: brought up, verified,
+the TCP from a free function returning stamped poses: brought up, verified
+(its own planning, `apps/planning.hpp`: application code, not the driver's),
 executed by the timestamp service. File formats: `docs/log-format.md`.
 The motion design and its reasons: `docs/motion.md`.
 
@@ -99,9 +99,8 @@ The motion design and its reasons: `docs/motion.md`.
 
 - GoogleTest unit tests for every pure component, and real-socket tests against
   a loopback server (`tests/support/loopback_server.hpp`).
-- Activities on a bench (`tests/support/bench.hpp`) that answers their
-  commands and plays the state cycle by cycle; the control loop and
-  `ec::Robot` against loopback servers.
+- `ec::Robot` and the motion families against a scripted controller
+  (`tests/support/mini_controller.hpp`: 8055 and 8056, every call recorded).
 - Every tool end to end against the fake servers (`tests/apps/test_apps.py`,
   run by ctest), `ec_move` and `sbx_trajectory` against a simulated arm
   (`tools/fake_robot.py`) with injected faults (emergency stop, teach mode, a
@@ -127,11 +126,11 @@ step ends with something testable.
 | 7 | The supervisor, observe-only (status without moving: `ec_move status`) | pendant mode change, E-stop, pushing the arm: each detected and named |
 | 8 | Preflight: identity and configuration checked against a config file | a changed tool: refuses to start |
 | 9 | Done: `Robot::bring_up()`, the manual's sequence, waiting for the servos | `ec_move --yes bring-up` on the robot |
-| 10 | Done: `motion::Move` (moveByJoint) | first move at 10 % speed; a stop mid-move |
+| 10 | Done: `motion::Move` (moveByJoint, moveByLine, moveByArc, moveByRotate) | first move at 10 % speed; a stop mid-move; a line and an arc |
 | 11 | Experiments: stop latency, two 8055 connections, close sequences; tuning the numbers in `docs/motion.md` §7.2 | numbers for timeouts |
 | 12 | Done: `JointTrajectory`, `validate()` | bad trajectories rejected |
 | 13 | Done differently: the controller's own kinematics, in joint-space planning (ADR 0017, proposed); checked on the robot with `ec_query positiveKinematic` against `ec_monitor` | `sbx_trajectory` |
-| 14 | Done: `motion::Timestamped`, `plan()`, `move_along`; the circle ran on the robot, 2026-10-14 | a planned circle on the robot (`sbx_trajectory`) |
+| 14 | Done: `motion::Timestamped`; planning as the sandbox's (`apps/planning.hpp`, application code since 2026-10-18); the circle ran on the robot, 2026-10-14 | a planned circle on the robot (`sbx_trajectory`) |
 | 15 | Logging of commands, setpoints and events (the feedback stream is done: raw and HDF5) | commanded against actual |
 | 16 | Transparent-transmission experiments (`docs/motion.md` §7: underrun, step response, round trip) | numbers for the loop design |
 | 17 | Done in part: `motion::ServoStream`, paced by the application, no watchdog yet (ADR 0018) | `ec_move --yes sine 6 2 4`, then a streamed TCP motion on the robot |

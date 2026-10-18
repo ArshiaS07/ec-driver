@@ -6,9 +6,7 @@
 #include "detail/connection.hpp"
 #include "ec/feedback/frame.hpp"
 #include "ec/feedback/receiver.hpp"
-#include "ec/pose.hpp"
 #include "ec/sdk/client.hpp"
-#include "ec/sdk/kinematics.hpp"
 #include "ec/sdk/movement.hpp"
 #include "ec/sdk/param.hpp"
 #include "ec/sdk/servo.hpp"
@@ -68,24 +66,6 @@ std::optional<Feedback> Robot::feedback() const {
 std::optional<Feedback> Robot::next_feedback(std::uint64_t after, std::chrono::nanoseconds timeout) const {
     if (const auto e = c_->latest->wait_newer(after, timeout)) return e->value;
     return std::nullopt;
-}
-
-std::expected<Joints, Error> Robot::ik(const Eigen::Isometry3d& T_base_tcp, const Joints& near) {
-    auto q = c_->send(sdk::InverseKinematic{.target = to_mm_rad(T_base_tcp), .reference = rad_to_deg(near)});
-    if (!q) return std::unexpected(std::move(q.error()));
-    return nearest_turn(deg_to_rad(*q), near, kEc66JointLimit);  // in case it comes within one turn
-}
-
-std::expected<Eigen::Isometry3d, Error> Robot::fk(const Joints& joints) {
-    auto pose = c_->send(sdk::PositiveKinematic{.joints = rad_to_deg(joints)});
-    if (!pose) return std::unexpected(std::move(pose.error()));
-    return from_mm_rad(*pose);
-}
-
-std::expected<Joints, Error> Robot::joints() {
-    auto q = c_->send(sdk::GetJointPos{});
-    if (!q) return std::unexpected(std::move(q.error()));
-    return deg_to_rad(*q);
 }
 
 std::expected<void, Error> Robot::bring_up() {
