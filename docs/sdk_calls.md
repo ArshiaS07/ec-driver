@@ -3,8 +3,8 @@
 All 184 JSON-RPC calls on port 8055, from the SDK manual Ver3.11.2 (English translation).
 Generated from the manual's section headings and request templates; classification is ours.
 
-Every call is typed in `include/ec/command/` (one header per service section) and listed in
-`ec::command::AllCommands`; `ec_query --list` prints them with their kinds, and a test checks that this
+Every call is typed in `include/ec/sdk/` (one header per service section) and listed in
+`ec::sdk::AllCommands`; `ec_query --list` prints them with their kinds, and a test checks that this
 table and the code name the same 184 methods. The code's kinds follow this table, except that a motion
 family's own reads (`getCurrentJobLine`, `getPathPointIndex`, `checkJbiExist`, `getJbiState`,
 `get_transparent_transmission_state`, `check_trajectory`, `get_force_mode_state`) count as queries. Replies

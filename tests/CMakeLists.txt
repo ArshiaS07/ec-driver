@@ -3,12 +3,12 @@ find_package(Threads REQUIRED)
 include(GoogleTest)
 
 add_executable(ec_tests
-    command/calls_test.cpp
-    command/client_test.cpp
-    command/codec_test.cpp
-    command/commands_test.cpp
-    command/line_framer_test.cpp
-    command/reply_test.cpp
+    sdk/calls_test.cpp
+    sdk/client_test.cpp
+    sdk/codec_test.cpp
+    sdk/commands_test.cpp
+    sdk/line_framer_test.cpp
+    sdk/reply_test.cpp
     feedback/frame_test.cpp
     feedback/framer_test.cpp
     feedback/reader_test.cpp

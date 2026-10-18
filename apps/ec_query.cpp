@@ -34,12 +34,12 @@
 #include <vector>
 
 #include "cli.hpp"
-#include "ec/command/all.hpp"
-#include "ec/command/client.hpp"
+#include "ec/sdk/all.hpp"
+#include "ec/sdk/client.hpp"
 
 namespace {
 
-using ec::command::Json;
+using ec::sdk::Json;
 
 // "key=value": params[key] = value, as JSON if it parses, otherwise as text.
 bool add_pair(Json& params, std::string_view arg) {
@@ -52,24 +52,24 @@ bool add_pair(Json& params, std::string_view arg) {
     return true;
 }
 
-std::string describe(const ec::command::Error& e) {
-    return std::string(ec::command::to_string(e.kind)) + (e.message.empty() ? "" : ": " + e.message);
+std::string describe(const ec::sdk::Error& e) {
+    return std::string(ec::sdk::to_string(e.kind)) + (e.message.empty() ? "" : ": " + e.message);
 }
 
 // Invalid UTF-8 from the controller is printed as U+FFFD instead of throwing.
 std::string dump(const Json& j) { return j.dump(-1, ' ', false, Json::error_handler_t::replace); }
 
 int list() {
-    for (const auto& c : ec::command::all_commands()) cli::out("{}\t{}\n", c.method, ec::command::to_string(c.kind));
+    for (const auto& c : ec::sdk::all_commands()) cli::out("{}\t{}\n", c.method, ec::sdk::to_string(c.kind));
     return cli::kOk;
 }
 
-int check_all(ec::command::Client& client) {
+int check_all(ec::sdk::Client& client) {
     int ok = 0;
     int mismatches = 0;
     int errors = 0;
-    for (const auto& c : ec::command::all_commands()) {
-        if (c.kind != ec::command::Kind::Query) continue;
+    for (const auto& c : ec::sdk::all_commands()) {
+        if (c.kind != ec::sdk::Kind::Query) continue;
         const auto result = client.call(c.example());
         if (!result) {
             ++errors;
@@ -91,7 +91,7 @@ int check_all(ec::command::Client& client) {
 
 int run(int argc, char** argv) {
     std::string host = "192.168.0.200";  // this tool's default; the library has none
-    ec::command::Client::Options options;
+    ec::sdk::Client::Options options;
     std::int64_t timeout_ms = options.reply_timeout.count();
     bool allow_write = false;
     bool untyped = false;
@@ -121,10 +121,10 @@ int run(int argc, char** argv) {
         return cli::kUsage;
     }
 
-    const ec::command::CommandInfo* info = nullptr;
+    const ec::sdk::CommandInfo* info = nullptr;
     Json params;  // stays null without parameters: the request then has no "params"
     if (!check) {
-        info = ec::command::find_command(method);
+        info = ec::sdk::find_command(method);
         if (info == nullptr && !untyped) {
             cli::err(
                 "'{}' is not a call of the SDK manual (ec_query --list shows them).\n"
@@ -132,11 +132,11 @@ int run(int argc, char** argv) {
                 method);
             return cli::kUsage;
         }
-        if ((info == nullptr || !ec::command::is_read_only(info->kind)) && !allow_write) {
+        if ((info == nullptr || !ec::sdk::is_read_only(info->kind)) && !allow_write) {
             cli::err(
                 "'{}' is not read-only ({}); it may move the robot or change its configuration.\n"
                 "Pass --write if you really mean to send it.\n",
-                method, info ? ec::command::to_string(info->kind) : "unknown kind");
+                method, info ? ec::sdk::to_string(info->kind) : "unknown kind");
             return cli::kUsage;
         }
         for (const std::string& a : param_args) {
@@ -153,14 +153,14 @@ int run(int argc, char** argv) {
         }
     }
 
-    auto client = ec::command::Client::connect(host, options);
+    auto client = ec::sdk::Client::connect(host, options);
     if (!client) {
         cli::err("{}:{}: {}\n", host, options.port, client.error().message);
         return cli::kFailed;
     }
     if (check) return check_all(*client);
 
-    const auto result = client->call(ec::command::Request{method, params});
+    const auto result = client->call(ec::sdk::Request{method, params});
     if (!result) {
         cli::err("{}\n", describe(result.error()));
         return cli::kFailed;

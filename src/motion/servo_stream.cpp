@@ -6,8 +6,8 @@
 #include <utility>
 
 #include "detail/connection.hpp"
-#include "ec/command/reply.hpp"
-#include "ec/command/transparent.hpp"
+#include "ec/sdk/reply.hpp"
+#include "ec/sdk/transparent.hpp"
 
 namespace ec::motion {
 
@@ -27,7 +27,7 @@ std::expected<ServoStream, Error> ServoStream::open(Robot& robot, const ServoOpt
             Error{Error::Kind::Invalid, std::format("smoothness must be in [0, 1], not {}", o.smoothness)});
     auto c = robot.share();
     const auto id = c->open([raw = c.get()] {
-        const auto cleared = raw->send(command::TtClearServoJointBuf{});
+        const auto cleared = raw->send(sdk::TtClearServoJointBuf{});
         static_cast<void>(cleared);
     });
     if (!id) return std::unexpected(id.error());
@@ -36,16 +36,16 @@ std::expected<ServoStream, Error> ServoStream::open(Robot& robot, const ServoOpt
         c->close(*id);
         return std::unexpected(std::move(e));
     };
-    const auto state = c->send(command::GetTransparentTransmissionState{});
+    const auto state = c->send(sdk::GetTransparentTransmissionState{});
     if (!state) return fail(state.error());
-    if (*state == command::Flag::On) {  // left open: cleared first, as the manual's example
-        if (auto ok = c->send(command::TtClearServoJointBuf{}); !ok) return fail(ok.error());
+    if (*state == sdk::Flag::On) {  // left open: cleared first, as the manual's example
+        if (auto ok = c->send(sdk::TtClearServoJointBuf{}); !ok) return fail(ok.error());
         std::this_thread::sleep_for(500ms);
     }
-    if (auto ok = c->send(command::TransparentTransmissionInit{.lookahead_ms = static_cast<int>(lookahead),
-                                                               .period_ms = static_cast<int>(period),
-                                                               .smoothness = o.smoothness,
-                                                               .replies = true});
+    if (auto ok = c->send(sdk::TransparentTransmissionInit{.lookahead_ms = static_cast<int>(lookahead),
+                                                           .period_ms = static_cast<int>(period),
+                                                           .smoothness = o.smoothness,
+                                                           .replies = true});
         !ok)
         return fail(ok.error());
     return ServoStream(c, *id);
@@ -57,12 +57,12 @@ std::expected<void, Error> ServoStream::add_point(const Joints& q) {
         if (!(std::abs(q[j]) <= kEc66JointLimit))
             return std::unexpected(Error{Error::Kind::Invalid,
                                          std::format("joint {} target {} rad is beyond the joint limit", j + 1, q[j])});
-    return c_->send(command::TtPutServoJointToBuf{.target = rad_to_deg(q)}).transform([](auto&&) {});
+    return c_->send(sdk::TtPutServoJointToBuf{.target = rad_to_deg(q)}).transform([](auto&&) {});
 }
 
 std::expected<void, Error> ServoStream::close() {
     if (!c_) return std::unexpected(Error{Error::Kind::Invalid, "not an open stream"});
-    auto ok = c_->send(command::TtClearServoJointBuf{});
+    auto ok = c_->send(sdk::TtClearServoJointBuf{});
     c_->close(id_);
     c_.reset();
     if (!ok) return std::unexpected(ok.error());
@@ -72,7 +72,7 @@ std::expected<void, Error> ServoStream::close() {
 void ServoStream::stop() noexcept {
     try {
         if (!c_) return;
-        const auto cleared = c_->send(command::TtClearServoJointBuf{});
+        const auto cleared = c_->send(sdk::TtClearServoJointBuf{});
         static_cast<void>(cleared);
     } catch (...) {  // NOLINT(bugprone-empty-catch): noexcept; a failed stop has no one to tell
     }

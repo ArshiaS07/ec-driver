@@ -5,8 +5,8 @@
 #include <utility>
 
 #include "detail/connection.hpp"
-#include "ec/command/movement.hpp"
-#include "ec/command/param.hpp"
+#include "ec/sdk/movement.hpp"
+#include "ec/sdk/param.hpp"
 
 namespace ec::motion {
 
@@ -23,12 +23,12 @@ std::expected<Move, Error> Move::joints(Robot& robot, const Joints& target, cons
             Error{Error::Kind::Invalid, std::format("acceleration must be in (0, 1], not {}", *o.acceleration)});
     auto c = robot.share();
     const auto id = c->open([raw = c.get()] {
-        const auto stopped = raw->send(command::Stop{});
+        const auto stopped = raw->send(sdk::Stop{});
         static_cast<void>(stopped);
     });
     if (!id) return std::unexpected(id.error());
     Move move(c, *id, target, o.tolerance);  // closes the registration on any return below
-    command::MoveByJoint cmd{.target = rad_to_deg(target), .speed_pct = o.speed * 100.0};
+    sdk::MoveByJoint cmd{.target = rad_to_deg(target), .speed_pct = o.speed * 100.0};
     if (o.acceleration) cmd.acc_pct = static_cast<int>(std::lround(*o.acceleration * 100.0));
     if (auto ok = c->send(cmd); !ok) return std::unexpected(ok.error());
     move.started_ = Clock::now();
@@ -42,7 +42,7 @@ std::optional<std::expected<void, Error>> Move::wait_for(std::chrono::nanosecond
     if (!stopped) return std::nullopt;
     result_ = std::move(*stopped);
     if (*result_) {  // at rest: at the target?
-        const auto q = c_->send(command::GetJointPos{});
+        const auto q = c_->send(sdk::GetJointPos{});
         if (!q) {
             result_ = std::unexpected(q.error());
         } else if (const double off = max_abs_diff(deg_to_rad(*q), target_); off > tolerance_) {
@@ -62,7 +62,7 @@ std::expected<void, Error> Move::wait() {
 void Move::stop() noexcept {
     try {
         if (!c_) return;
-        const auto stopped = c_->send(command::Stop{});
+        const auto stopped = c_->send(sdk::Stop{});
         static_cast<void>(stopped);
     } catch (...) {  // NOLINT(bugprone-empty-catch): noexcept; a failed stop has no one to tell
     }

@@ -14,29 +14,29 @@
 #include <string_view>
 #include <utility>
 
-#include "ec/command/client.hpp"
-#include "ec/command/request.hpp"
 #include "ec/error.hpp"
 #include "ec/feedback/receiver.hpp"
 #include "ec/latest.hpp"
 #include "ec/robot.hpp"
+#include "ec/sdk/client.hpp"
+#include "ec/sdk/request.hpp"
 #include "ec/stamped.hpp"
 
 namespace ec::detail {
 
 struct Connection {
-    explicit Connection(command::Client c) : client(std::move(c)) {}
+    explicit Connection(sdk::Client c) : client(std::move(c)) {}
 
     /// Sends one call and waits for its answer; other threads wait their turn.
-    [[nodiscard]] std::expected<command::Json, Error> call(const command::Request& request);
+    [[nodiscard]] std::expected<sdk::Json, Error> call(const sdk::Request& request);
 
     /// The same, typed: the decoded reply, or the failure as "method: why".
-    template <command::Command C>
+    template <sdk::Command C>
     [[nodiscard]] std::expected<typename C::Reply, Error> send(const C& c) {
-        const auto json = call(command::to_request(c));
+        const auto json = call(sdk::to_request(c));
         if (!json) return std::unexpected(json.error());
-        auto reply = command::decode_reply<C>(*json);
-        if (!reply) return std::unexpected(from_command(C::method, reply.error()));
+        auto reply = sdk::decode_reply<C>(*json);
+        if (!reply) return std::unexpected(from_call(C::method, reply.error()));
         return std::move(*reply);
     }
 
@@ -58,7 +58,7 @@ struct Connection {
                                                                          std::chrono::nanoseconds timeout);
 
     std::mutex calls;
-    command::Client client;
+    sdk::Client client;
 
     mutable std::mutex motions;
     std::uint64_t open_motion = 0;  // 0: none

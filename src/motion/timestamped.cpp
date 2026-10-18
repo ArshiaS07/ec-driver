@@ -5,8 +5,8 @@
 #include <utility>
 
 #include "detail/connection.hpp"
-#include "ec/command/param.hpp"
-#include "ec/command/trajectory.hpp"
+#include "ec/sdk/param.hpp"
+#include "ec/sdk/trajectory.hpp"
 
 namespace ec::motion {
 
@@ -16,37 +16,37 @@ std::expected<Timestamped, Error> Timestamped::upload(Robot& robot, const JointT
     if (auto ok = validate(t, o.limits); !ok) return std::unexpected(Error{Error::Kind::Invalid, ok.error()});
     auto c = robot.share();
     const auto id = c->open([raw = c.get()] {
-        const auto stopped = raw->send(command::StopTrajectory{});
+        const auto stopped = raw->send(sdk::StopTrajectory{});
         static_cast<void>(stopped);
     });
     if (!id) return std::unexpected(id.error());
     Timestamped motion(c, *id);  // closes the registration on any return below
 
-    const auto now = c->send(command::GetJointPos{});
+    const auto now = c->send(sdk::GetJointPos{});
     if (!now) return std::unexpected(now.error());
     if (const double off = max_abs_diff(deg_to_rad(*now), t.position.front()); off > o.start_tolerance)
         return std::unexpected(
             Error{Error::Kind::Invalid,
                   std::format("the arm is {:.2f} deg from the first point; move there first", rad_to_deg(off))});
 
-    if (auto ok = c->send(command::StartPushPos{.point_count = static_cast<int>(t.size()),
-                                                .point_type = command::PointType::Joint,
-                                                .reference = rad_to_deg(t.position.front()),
-                                                .frame = {},
-                                                .replies = true});
+    if (auto ok = c->send(sdk::StartPushPos{.point_count = static_cast<int>(t.size()),
+                                            .point_type = sdk::PointType::Joint,
+                                            .reference = rad_to_deg(t.position.front()),
+                                            .frame = {},
+                                            .replies = true});
         !ok)
         return std::unexpected(ok.error());
     std::this_thread::sleep_for(200ms);
     for (std::size_t k = 0; k < t.size(); ++k) {
         if (c->stop_requested.load()) return std::unexpected(Error{Error::Kind::Stopped, "during the upload"});
-        if (auto ok = c->send(command::PushPos{.time_s = t.time[k], .point = rad_to_deg(t.position[k])}); !ok)
+        if (auto ok = c->send(sdk::PushPos{.time_s = t.time[k], .point = rad_to_deg(t.position[k])}); !ok)
             return std::unexpected(Error{ok.error().kind, std::format("point {}: {}", k, ok.error().message)});
     }
     std::this_thread::sleep_for(1s);
-    if (auto ok = c->send(command::StopPushPos{}); !ok) return std::unexpected(ok.error());
-    const auto check = c->send(command::CheckTrajectory{});
+    if (auto ok = c->send(sdk::StopPushPos{}); !ok) return std::unexpected(ok.error());
+    const auto check = c->send(sdk::CheckTrajectory{});
     if (!check) return std::unexpected(check.error());
-    if (*check != command::TrajectoryCheck::Valid)
+    if (*check != sdk::TrajectoryCheck::Valid)
         return std::unexpected(Error{
             Error::Kind::Command,
             std::format("check_trajectory: the controller found the upload invalid ({})", static_cast<int>(*check))});
@@ -57,8 +57,7 @@ std::expected<void, Error> Timestamped::start(double speed) {
     if (!c_ || result_) return std::unexpected(Error{Error::Kind::Invalid, "not an uploaded trajectory"});
     if (!(speed > 0.0 && speed <= 1.0))
         return std::unexpected(Error{Error::Kind::Invalid, std::format("speed must be in (0, 1], not {}", speed)});
-    if (auto ok = c_->send(command::StartTrajectory{.speed_pct = speed * 100.0}); !ok)
-        return std::unexpected(ok.error());
+    if (auto ok = c_->send(sdk::StartTrajectory{.speed_pct = speed * 100.0}); !ok) return std::unexpected(ok.error());
     started_ = true;
     started_at_ = Clock::now();
     return {};
@@ -66,12 +65,12 @@ std::expected<void, Error> Timestamped::start(double speed) {
 
 std::expected<void, Error> Timestamped::pause() {
     if (!c_) return std::unexpected(Error{Error::Kind::Invalid, "not an uploaded trajectory"});
-    return c_->send(command::PauseTrajectory{}).transform([](auto&&) {});
+    return c_->send(sdk::PauseTrajectory{}).transform([](auto&&) {});
 }
 
 std::expected<void, Error> Timestamped::resume() {
     if (!c_) return std::unexpected(Error{Error::Kind::Invalid, "not an uploaded trajectory"});
-    return c_->send(command::ResumeTrajectory{}).transform([](auto&&) {});
+    return c_->send(sdk::ResumeTrajectory{}).transform([](auto&&) {});
 }
 
 std::optional<std::expected<void, Error>> Timestamped::wait_for(std::chrono::nanoseconds timeout) {
@@ -93,7 +92,7 @@ std::expected<void, Error> Timestamped::wait() {
 void Timestamped::stop() noexcept {
     try {
         if (!c_) return;
-        const auto stopped = c_->send(command::StopTrajectory{});
+        const auto stopped = c_->send(sdk::StopTrajectory{});
         static_cast<void>(stopped);
     } catch (...) {  // NOLINT(bugprone-empty-catch): noexcept; a failed stop has no one to tell
     }

@@ -18,8 +18,8 @@
 #include <utility>
 #include <vector>
 
-#include "ec/command/json.hpp"
 #include "ec/robot.hpp"
+#include "ec/sdk/json.hpp"
 #include "support/frame_builder.hpp"
 #include "support/loopback_server.hpp"
 
@@ -29,10 +29,10 @@ class MiniController {
 public:
     struct Call {
         std::string method;
-        command::Json params;
+        sdk::Json params;
     };
     // An answer: the result, already JSON (e.g. "true", "[1,2]"), or nullopt for an error reply.
-    using Answer = std::function<std::optional<std::string>(const command::Json& params)>;
+    using Answer = std::function<std::optional<std::string>(const sdk::Json& params)>;
 
     explicit MiniController(bool frames = true) {
         commands_thread_ = std::jthread([this](const std::stop_token& stop) { serve_commands(stop); });
@@ -56,7 +56,7 @@ public:
         answers_[method] = std::move(a);
     }
     void answer(const std::string& method, std::string result) {
-        answer(method, [result = std::move(result)](const command::Json&) { return std::optional(result); });
+        answer(method, [result = std::move(result)](const sdk::Json&) { return std::optional(result); });
     }
     // getRobotState answers these states in turn, then `then` for ever.
     void states(std::vector<int> queue, int then = 0) {
@@ -84,7 +84,7 @@ public:
         return n;
     }
     // The parameters of the last call of `method`.
-    [[nodiscard]] command::Json last(const std::string& method) const {
+    [[nodiscard]] sdk::Json last(const std::string& method) const {
         const auto all = calls();
         for (auto it = all.rbegin(); it != all.rend(); ++it)
             if (it->method == method) return it->params;
@@ -96,7 +96,7 @@ public:
     }
 
 private:
-    std::optional<std::string> respond(const std::string& method, const command::Json& params) {
+    std::optional<std::string> respond(const std::string& method, const sdk::Json& params) {
         const std::lock_guard lock(mutex_);
         calls_.push_back({method, params});
         if (const auto it = answers_.find(method); it != answers_.end()) return it->second(params);
@@ -106,7 +106,7 @@ private:
             states_.pop_front();
             return std::to_string(s);
         }
-        if (method == "get_joint_pos") return command::Json(joints_).dump();
+        if (method == "get_joint_pos") return sdk::Json(joints_).dump();
         if (method == "getRobotMode") return "2";
         if (method == "getMotorStatus" || method == "getServoStatus") return "true";
         if (method == "get_transparent_transmission_state") return "0";
@@ -123,15 +123,15 @@ private:
             for (;;) {
                 const std::string line = peer.receive_line();
                 if (line.empty()) break;
-                const auto request = command::Json::parse(line);
+                const auto request = sdk::Json::parse(line);
                 const std::string method = request["method"].get<std::string>();
-                const command::Json params = request.contains("params") ? request["params"] : command::Json{};
+                const sdk::Json params = request.contains("params") ? request["params"] : sdk::Json{};
                 const auto result = respond(method, params);
-                const command::Json reply =
-                    result ? command::Json{{"jsonrpc", "2.0"}, {"result", *result}, {"id", request["id"]}}
-                           : command::Json{{"jsonrpc", "2.0"},
-                                           {"error", {{"code", -32693}, {"message", "scripted failure"}}},
-                                           {"id", request["id"]}};
+                const sdk::Json reply = result
+                                            ? sdk::Json{{"jsonrpc", "2.0"}, {"result", *result}, {"id", request["id"]}}
+                                            : sdk::Json{{"jsonrpc", "2.0"},
+                                                        {"error", {{"code", -32693}, {"message", "scripted failure"}}},
+                                                        {"id", request["id"]}};
                 peer.send(reply.dump() + "\n");
             }
         }

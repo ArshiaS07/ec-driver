@@ -12,8 +12,8 @@
 #include <thread>
 #include <vector>
 
-#include "ec/command/param.hpp"
 #include "ec/pose.hpp"
+#include "ec/sdk/param.hpp"
 #include "support/mini_controller.hpp"
 
 namespace {
@@ -49,7 +49,7 @@ TEST(Robot, WithoutTheMonitorThereIsNoFeedbackButCallsWork) {
     auto robot = ec::Robot::connect(controller.options(/*monitor=*/false));
     ASSERT_TRUE(robot) << describe(robot.error());
     EXPECT_FALSE(robot->feedback());
-    const auto mode = robot->call(ec::command::GetRobotMode{});
+    const auto mode = robot->call(ec::sdk::GetRobotMode{});
     ASSERT_TRUE(mode) << describe(mode.error());
     EXPECT_EQ(*mode, ec::RobotMode::Remote);
 }
@@ -83,7 +83,7 @@ TEST(Robot, CallsFromSeveralThreadsAreAnsweredOneByOne) {
         for (int t = 0; t < 4; ++t)
             threads.emplace_back([&] {
                 for (int i = 0; i < 25; ++i)
-                    if (robot->call(ec::command::GetRobotMode{})) ++answered;
+                    if (robot->call(ec::sdk::GetRobotMode{})) ++answered;
             });
     }
     EXPECT_EQ(answered.load(), 100);

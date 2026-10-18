@@ -38,11 +38,11 @@ by the layers above; a lower layer knows nothing of the layers above it.
 | `ec::log` | `Sink<Record>` | the interface every recorder implements: `write(record)` | yes |
 | `ec::log` | `RawWriter`, `RawReader` | raw recordings: every frame as received, with its arrival time | no |
 | `ec::log` (target `ec::hdf5`, optional) | `H5File`, `H5FeedbackWriter` | HDF5 logs: one dataset per field, SI units | no |
-| `ec::command` | `LineFramer` | 8055 byte stream → lines | yes |
-| `ec::command` | `encode`, `parse_response` | request → JSON-RPC line; response line → id, and result or error | yes |
-| `ec::command` | command structs, `ReplyDecoder` | one type per SDK call (all 184): method, kind, parameters, reply type and its decoding | yes |
-| `ec::command` | `AllCommands`, `all_commands()` | every typed call, as a type list and as a table of names and kinds | yes |
-| `ec::command` | `Client` | one call at a time: send, wait for the response with its id, decode | no |
+| `ec::sdk` | `LineFramer` | 8055 byte stream → lines | yes |
+| `ec::sdk` | `encode`, `parse_response` | request → JSON-RPC line; response line → id, and result or error | yes |
+| `ec::sdk` | command structs, `ReplyDecoder` | one type per SDK call (all 184): method, kind, parameters, reply type and its decoding | yes |
+| `ec::sdk` | `AllCommands`, `all_commands()` | every typed call, as a type list and as a table of names and kinds | yes |
+| `ec::sdk` | `Client` | one call at a time: send, wait for the response with its id, decode | no |
 | `ec` | `RobotState`, `RobotMode`, `CycleMode` | status values both ports report | yes |
 | `ec` | `Joints`, unit conversions | SI types, and deg/mm conversion where commands are built | yes |
 | `ec` | poses (`Eigen::Isometry3d`, T_ab), `from_mm_rad`, `to_mm_rad` | poses in SI, converted to the controller's mm and rx, ry, rz only at the wire | yes |

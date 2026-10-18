@@ -15,7 +15,7 @@ and cross-compiles for 64-bit ARM Linux.
 |---|---|
 | `ec::net::TcpSocket` (Linux + Windows) | done, tested against a loopback server |
 | `ec::feedback` (port 8056: framing, decoding, reader, SI values) | done, tested |
-| `ec::command` (port 8055: codec, typed calls, client) | done, tested; all 184 calls typed, replies checked against the EA66 for a few (`ec_query --check-all` checks the rest) |
+| `ec::sdk` (port 8055: codec, typed calls, client) | done, tested; all 184 calls typed, replies checked against the EA66 for a few (`ec_query --check-all` checks the rest) |
 | `ec::log` (raw recordings; HDF5 logs in the optional `ec::hdf5`) | done, tested |
 | live state: `feedback::Receiver` (8056 thread, reconnects), `ec::Latest` (newest value) | done, tested; not yet on the robot |
 | `ec::Robot` and the motion families (`Move`, `Timestamped`, `ServoStream`, `move_along`; ADR 0018) | done, tested against a scripted controller and a simulated arm; a timestamped circle ran on the robot (`docs/motion.md` §5.0) |

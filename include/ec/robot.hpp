@@ -9,7 +9,7 @@
 ///
 ///     auto robot = ec::Robot::connect({.host = "192.168.0.200"});
 ///     robot->bring_up();
-///     auto mode = robot->call(ec::command::GetRobotMode{});   // any typed SDK call
+///     auto mode = robot->call(ec::sdk::GetRobotMode{});   // any typed SDK call
 ///     auto f = robot->feedback();                             // the newest frame, in SI
 ///     ec::motion::move_along(*robot, poses);                  // a TCP motion, planned and run
 
@@ -23,10 +23,10 @@
 #include <string>
 #include <utility>
 
-#include "ec/command/request.hpp"
 #include "ec/error.hpp"
 #include "ec/feedback/sample.hpp"
 #include "ec/feedback/state.hpp"
+#include "ec/sdk/request.hpp"
 #include "ec/stamped.hpp"
 #include "ec/units.hpp"
 
@@ -78,12 +78,12 @@ public:
 
     /// One typed SDK call, sent and answered. While a motion is open, only
     /// queries and computations: anything else is Busy.
-    template <command::Command C>
+    template <sdk::Command C>
     [[nodiscard]] std::expected<typename C::Reply, Error> call(const C& command) {
-        auto result = call_json(command::to_request(command), C::kind);
+        auto result = call_json(sdk::to_request(command), C::kind);
         if (!result) return std::unexpected(std::move(result.error()));
-        auto reply = command::decode_reply<C>(*result);
-        if (!reply) return std::unexpected(from_command(C::method, reply.error()));
+        auto reply = sdk::decode_reply<C>(*result);
+        if (!reply) return std::unexpected(from_call(C::method, reply.error()));
         return std::move(*reply);
     }
 
@@ -117,7 +117,7 @@ public:
 
 private:
     explicit Robot(std::shared_ptr<detail::Connection> c) : c_(std::move(c)) {}
-    [[nodiscard]] std::expected<command::Json, Error> call_json(const command::Request& request, command::Kind kind);
+    [[nodiscard]] std::expected<sdk::Json, Error> call_json(const sdk::Request& request, sdk::Kind kind);
 
     std::shared_ptr<detail::Connection> c_;
 };

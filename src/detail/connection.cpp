@@ -2,15 +2,15 @@
 
 #include <thread>
 
-#include "ec/command/param.hpp"
+#include "ec/sdk/param.hpp"
 #include "ec/status.hpp"
 
 namespace ec::detail {
 
-std::expected<command::Json, Error> Connection::call(const command::Request& request) {
+std::expected<sdk::Json, Error> Connection::call(const sdk::Request& request) {
     const std::lock_guard lock(calls);
     auto result = client.call(request);
-    if (!result) return std::unexpected(from_command(request.method, result.error()));
+    if (!result) return std::unexpected(from_call(request.method, result.error()));
     return std::move(*result);
 }
 
@@ -41,7 +41,7 @@ std::optional<std::expected<void, Error>> Connection::wait_stopped(Clock::time_p
     const auto deadline = Clock::now() + timeout;
     for (;;) {
         if (stop_requested.load()) return std::expected<void, Error>(std::unexpected(Error{Error::Kind::Stopped, ""}));
-        const auto state = send(command::GetRobotState{});
+        const auto state = send(sdk::GetRobotState{});
         if (!state) return std::expected<void, Error>(std::unexpected(state.error()));
         switch (*state) {
             case RobotState::Running: ran = true; break;

@@ -15,10 +15,10 @@ include(cmake/Sanitizers.cmake)
 # motion) only when something needs one layer without the others.
 add_library(ec_driver
     src/status.cpp
-    src/command/all.cpp
-    src/command/client.cpp
-    src/command/codec.cpp
-    src/command/line_framer.cpp
+    src/sdk/all.cpp
+    src/sdk/client.cpp
+    src/sdk/codec.cpp
+    src/sdk/line_framer.cpp
     src/feedback/frame.cpp
     src/feedback/framer.cpp
     src/feedback/reader.cpp

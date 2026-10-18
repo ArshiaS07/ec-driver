@@ -9,13 +9,13 @@
 #include <thread>
 #include <vector>
 
-#include "ec/command/movement.hpp"
-#include "ec/command/param.hpp"
 #include "ec/motion/move.hpp"
 #include "ec/motion/move_along.hpp"
 #include "ec/motion/servo_stream.hpp"
 #include "ec/motion/timestamped.hpp"
 #include "ec/robot.hpp"
+#include "ec/sdk/movement.hpp"
+#include "ec/sdk/param.hpp"
 #include "support/mini_controller.hpp"
 
 namespace {
@@ -110,10 +110,10 @@ TEST(Move, OneMotionAtATimeAndOnlyReadingCallsWhileItIsOpen) {
     auto move = ec::motion::Move::joints(robot, kHere);
     ASSERT_TRUE(move);
     EXPECT_EQ(ec::motion::Move::joints(robot, kHere).error().kind, Error::Kind::Busy);
-    EXPECT_TRUE(robot.call(ec::command::GetRobotMode{}));                                             // a query
-    EXPECT_EQ(robot.call(ec::command::SetSpeed{.value_pct = 50.0}).error().kind, Error::Kind::Busy);  // a setting
+    EXPECT_TRUE(robot.call(ec::sdk::GetRobotMode{}));                                             // a query
+    EXPECT_EQ(robot.call(ec::sdk::SetSpeed{.value_pct = 50.0}).error().kind, Error::Kind::Busy);  // a setting
     EXPECT_TRUE(move->wait());
-    EXPECT_TRUE(robot.call(ec::command::SetSpeed{.value_pct = 50.0}));  // ended: no longer open
+    EXPECT_TRUE(robot.call(ec::sdk::SetSpeed{.value_pct = 50.0}));  // ended: no longer open
 }
 
 TEST(Move, StopFromAnotherThreadEndsTheWait) {
