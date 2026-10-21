@@ -18,7 +18,7 @@ namespace ec::sdk {
 using JointsDeg = std::array<double, 6>;
 
 /// A pose as the commands here send and receive it: x, y, z [mm], then rx, ry,
-/// rz [rad], composed as R = Rz(rz) * Ry(ry) * Rx(rx) (ADR 0012). Every command
+/// rz [rad], composed as R = Rz(rz) * Ry(ry) * Rx(rx) (measured on the EA66). Every command
 /// with a `unit_type` parameter sends 1 (radians), so this is also what replies hold.
 using PoseMmRad = std::array<double, 6>;
 

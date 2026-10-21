@@ -61,7 +61,7 @@ struct ConvertPoseFromUserToCart {
     [[nodiscard]] Json params() const { return Json{{"targetPose", pose}, {"userNo", user_frame}, {"unit_type", 1}}; }
 };
 
-/// §2.2.4.5 The product T1 * T2 of two poses (measured on the EA66, ADR 0012).
+/// §2.2.4.5 The product T1 * T2 of two poses (measured on the EA66).
 struct PoseMul {
     static constexpr std::string_view method = "poseMul";
     static constexpr Kind kind = Kind::Compute;

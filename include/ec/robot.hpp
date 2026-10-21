@@ -1,6 +1,6 @@
 #pragma once
 /// @file
-/// ec::Robot: one controller (ADR 0018). It holds the command connection
+/// ec::Robot: one controller. It holds the command connection
 /// (8055), on which every call is sent and answered one at a time, and, if
 /// asked, the monitoring stream (8056), whose newest frame it keeps decoded.
 /// Motions are opened on it, one at a time (ec/motion/move.hpp,

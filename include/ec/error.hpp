@@ -1,6 +1,6 @@
 #pragma once
 /// @file
-/// The driver's error (ADR 0018): what failed, and what was observed. Every
+/// The driver's error: what failed, and what was observed. Every
 /// call of the API returns its result or one of these. The SDK layer keeps its
 /// own error below it (ec/sdk/error.hpp).
 

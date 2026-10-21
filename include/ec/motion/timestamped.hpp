@@ -1,6 +1,6 @@
 #pragma once
 /// @file
-/// The controller's timestamp service (SDK manual 2.2.9, ADR 0018): a joint
+/// The controller's timestamp service (SDK manual 2.2.9): a joint
 /// trajectory uploaded, then run on the controller's own clock. upload() is the
 /// manual's example (2.2.9.10): start_push_pos, 0.2 s, push_pos for every
 /// point, each answered before the next, 1 s, stop_push_pos, check_trajectory.

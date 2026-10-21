@@ -1,7 +1,7 @@
-// HDF5 logs, read back with HighFive: shapes, SI values, units, enum labels,
+// HDF5 recordings, read back with HighFive: shapes, SI values, units, enum labels,
 // the root attributes, and rows that span several chunks.
 
-#include "ec/log/hdf5.hpp"
+#include "ec/record/hdf5.hpp"
 
 #include <gtest/gtest.h>
 
@@ -19,8 +19,8 @@ namespace {
 
 using namespace std::chrono_literals;
 using ec::feedback::Sample;
-using ec::log::H5FeedbackWriter;
-using ec::log::H5File;
+using ec::record::H5FeedbackWriter;
+using ec::record::H5File;
 using ec::test::make_frame;
 using ec::test::TempFile;
 
@@ -43,7 +43,7 @@ std::vector<std::string> enum_labels(const HighFive::DataSet& set) {
     return labels;
 }
 
-TEST(H5Log, WritesSiColumnsWithUnitsAndLabels) {
+TEST(H5Recording, WritesSiColumnsWithUnitsAndLabels) {
     const TempFile file("log.h5");
     const auto t0 = std::chrono::steady_clock::now();
     {
@@ -63,7 +63,7 @@ TEST(H5Log, WritesSiColumnsWithUnitsAndLabels) {
     }
 
     const HighFive::File f(file.path().string(), HighFive::File::ReadOnly);
-    EXPECT_EQ(f.getAttribute("schema").read<std::string>(), std::string(ec::log::kH5Schema));
+    EXPECT_EQ(f.getAttribute("schema").read<std::string>(), std::string(ec::record::kH5Schema));
     EXPECT_GT(f.getAttribute("system_ns_at_start").read<std::int64_t>(), 1'600'000'000'000'000'000);
     EXPECT_TRUE(f.hasAttribute("steady_ns_at_start"));
 
@@ -78,7 +78,7 @@ TEST(H5Log, WritesSiColumnsWithUnitsAndLabels) {
     EXPECT_DOUBLE_EQ(read_all<double>(position)[0], 10.0 * std::numbers::pi / 180.0);
 
     const auto tcp = read_all<double>(f.getDataSet("/robot/feedback/tcp_position_base"));
-    EXPECT_DOUBLE_EQ(tcp[0], 0.100);  // mm on the wire, m in the log
+    EXPECT_DOUBLE_EQ(tcp[0], 0.100);  // mm on the wire, m in the recording
 
     EXPECT_EQ(read_all<std::int64_t>(f.getDataSet("/robot/feedback/controller_time")),
               (std::vector<std::int64_t>{1000, 1001, 1002}));
@@ -94,7 +94,7 @@ TEST(H5Log, WritesSiColumnsWithUnitsAndLabels) {
     EXPECT_EQ(f.getDataSet("/robot/feedback/analog_output").getDimensions(), (std::vector<std::size_t>{3, 5}));
 }
 
-TEST(H5Log, RowsSpanningSeveralChunksAllArrive) {
+TEST(H5Recording, RowsSpanningSeveralChunksAllArrive) {
     const TempFile file("chunks.h5");
     constexpr int kRows = 2500;  // more than two chunks, written on the way and at the end
     const auto t0 = std::chrono::steady_clock::now();
@@ -113,7 +113,7 @@ TEST(H5Log, RowsSpanningSeveralChunksAllArrive) {
     EXPECT_EQ(time.back(), kRows - 1);
 }
 
-TEST(H5Log, UnwritablePathIsAnError) {
+TEST(H5Recording, UnwritablePathIsAnError) {
     const auto h5 = H5File::create(std::filesystem::current_path() / "no_such_directory" / "log.h5");
     EXPECT_FALSE(h5);
 }

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """A fake EC controller that moves: ports 8055 and 8056 of one simulated arm,
-for testing the motion layer without the robot (docs/motion.md).
+for testing the driver without the robot (the robot: docs/ec66.md).
 
     python3 tools/fake_robot.py                  # 127.0.0.1: command 8055, monitor 8056, control 8057
     python3 tools/fake_robot.py --port 0         # free ports, printed on the first line
@@ -18,7 +18,8 @@ Simulated, at the monitor rate (8 ms), on an EC66-like arm (tools/kinematics.py)
 Not simulated: Cartesian moves (moveByLine, moveByArc, paths: the driver moves
 in joint space), jog, tools and user frames (the TCP is the flange, poses are
 in the base frame), dynamics, the controller's smoothing. Where the real
-controller is not yet measured, the fake does what docs/motion.md 7 assumes.
+controller is not yet measured (docs/ec66.md §8), the fake makes the assumption
+noted where it does it.
 
 Faults are injected through the control port, one command per line, answered
 with "ok" (or the state, as JSON):

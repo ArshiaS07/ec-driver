@@ -5,10 +5,10 @@
 //   ec_record --replay FILE --h5 FILE
 //
 // Live, every frame goes to the raw recording (--raw: the bytes as received)
-// and/or the HDF5 log (--h5: SI columns under /feedback), until Ctrl+C, --frames
+// and/or the HDF5 recording (--h5: SI columns under /feedback), until Ctrl+C, --frames
 // or --seconds. Replay reads a raw recording instead and keeps its arrival
-// times; that is how a raw recording becomes an HDF5 log later. Formats:
-// docs/log-format.md. Read-only: it never sends anything to the robot.
+// times; that is how a raw recording becomes an HDF5 recording later. Formats:
+// docs/recording-format.md. Read-only: it never sends anything to the robot.
 //
 // Exit codes: 0 done; 1 a file could not be written; 2 bad command line.
 
@@ -22,17 +22,17 @@
 
 #include "cli.hpp"
 #include "ec/feedback/reader.hpp"
-#include "ec/log/raw.hpp"
-#include "ec/log/sink.hpp"
+#include "ec/record/raw.hpp"
+#include "ec/record/sink.hpp"
 #if defined(EC_WITH_HDF5)
-#include "ec/log/hdf5.hpp"
+#include "ec/record/hdf5.hpp"
 #endif
 
 namespace {
 
 using namespace std::chrono_literals;
 using Clock = std::chrono::steady_clock;
-using Sink = ec::log::Sink<ec::feedback::Sample>;
+using Sink = ec::record::Sink<ec::feedback::Sample>;
 
 volatile std::sig_atomic_t g_stop = 0;
 extern "C" void on_signal(int) { g_stop = 1; }
@@ -52,7 +52,7 @@ int run(int argc, char** argv) {
         app.add_option("--port", port, "Monitoring port")->capture_default_str()->check(CLI::Range(1, 65535));
     auto* raw_option = app.add_option("--raw", raw_path, "Raw recording to write: every frame as received");
 #if defined(EC_WITH_HDF5)
-    app.add_option("--h5", h5_path, "HDF5 log to write: SI columns under /feedback");
+    app.add_option("--h5", h5_path, "HDF5 recording to write: SI columns under /feedback");
 #endif
     app.add_option("--frames", max_frames, "Stop after this many frames (0: no limit)")->capture_default_str();
     app.add_option("--seconds", seconds, "Stop after this long (0: no limit)")
@@ -71,9 +71,9 @@ int run(int argc, char** argv) {
 
     // The sinks. Each keeps its own error; the loop stops at the first one.
     std::vector<Sink*> sinks;
-    std::optional<ec::log::RawWriter> raw;
+    std::optional<ec::record::RawWriter> raw;
     if (!raw_path.empty()) {
-        auto writer = ec::log::RawWriter::create(raw_path);
+        auto writer = ec::record::RawWriter::create(raw_path);
         if (!writer) {
             cli::err("{}\n", writer.error());
             return cli::kFailed;
@@ -82,16 +82,16 @@ int run(int argc, char** argv) {
         sinks.push_back(&*raw);
     }
 #if defined(EC_WITH_HDF5)
-    std::optional<ec::log::H5File> h5_file;
-    std::optional<ec::log::H5FeedbackWriter> h5;  // declared after the file: destroyed before it
+    std::optional<ec::record::H5File> h5_file;
+    std::optional<ec::record::H5FeedbackWriter> h5;  // declared after the file: destroyed before it
     if (!h5_path.empty()) {
-        auto file = ec::log::H5File::create(h5_path);
+        auto file = ec::record::H5File::create(h5_path);
         if (!file) {
             cli::err("{}\n", file.error());
             return cli::kFailed;
         }
         h5_file.emplace(std::move(*file));
-        auto writer = ec::log::H5FeedbackWriter::create(*h5_file, "/feedback");
+        auto writer = ec::record::H5FeedbackWriter::create(*h5_file, "/feedback");
         if (!writer) {
             cli::err("{}\n", writer.error());
             return cli::kFailed;
@@ -124,7 +124,7 @@ int run(int argc, char** argv) {
     std::signal(SIGINT, on_signal);
     std::signal(SIGTERM, on_signal);
     if (!replay_path.empty()) {
-        auto reader = ec::log::RawReader::open(replay_path);
+        auto reader = ec::record::RawReader::open(replay_path);
         if (!reader) {
             cli::err("{}\n", reader.error());
             return cli::kFailed;
@@ -176,7 +176,8 @@ int run(int argc, char** argv) {
             cli::err("{}\n", flushed.error());
             status = cli::kFailed;
         }
-        if (h5->skipped() != 0) cli::err("{} frames did not decode; the HDF5 log leaves them out\n", h5->skipped());
+        if (h5->skipped() != 0)
+            cli::err("{} frames did not decode; the HDF5 recording leaves them out\n", h5->skipped());
     }
 #endif
     cli::err("stopped: {} frames\n", frames);

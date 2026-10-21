@@ -1,14 +1,14 @@
-# Log formats
+# Recording formats
 
 Two ways to keep the monitoring stream (port 8056). `ec_record` writes both;
-programs use the `ec::log` sinks (`RawWriter`, `H5FeedbackWriter`).
+programs use the `ec::record` sinks (`RawWriter`, `H5FeedbackWriter`).
 
 - **Raw recording** (`.ecraw`): every frame exactly as received, with its
   arrival time. Lossless, no dependencies; replays through the same decoder.
-- **HDF5 log** (`.h5`): the frames decoded and converted to SI units, one
+- **HDF5 recording** (`.h5`): the frames decoded and converted to SI units, one
   dataset per field. For analysis in Python, MATLAB or HDFView.
 
-A raw recording becomes an HDF5 log at any time:
+A raw recording becomes an HDF5 recording at any time:
 `ec_record --replay run.ecraw --h5 run.h5`.
 
 ## Time
@@ -51,7 +51,7 @@ t = records["t"]
 joints_deg = records["frame"][:, 13 : 13 + 8 * 8].copy().view(">f8")  # machinePos: 8 big-endian doubles at byte 13
 ```
 
-## HDF5 log
+## HDF5 recording
 
 - HDF5 1.10 file format: readable by HDF5 1.10 and later, so by h5py, MATLAB
   and HDFView.

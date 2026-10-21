@@ -1,5 +1,5 @@
 #pragma once
-// What a Robot and its motions share (ADR 0018): the command connection, on
+// What a Robot and its motions share: the command connection, on
 // which calls go one at a time; the open motion, of which there is at most one;
 // and the monitoring stream's newest frame. Private to the library.
 

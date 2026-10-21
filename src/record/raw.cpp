@@ -1,4 +1,4 @@
-#include "ec/log/raw.hpp"
+#include "ec/record/raw.hpp"
 
 #include <algorithm>
 #include <array>
@@ -6,7 +6,7 @@
 #include <format>
 #include <utility>
 
-namespace ec::log {
+namespace ec::record {
 namespace {
 
 constexpr std::array<char, 8> kMagic{'E', 'C', 'R', 'A', 'W', '0', '0', '1'};
@@ -91,4 +91,4 @@ std::optional<feedback::Sample> RawReader::next() {
     return sample;
 }
 
-}  // namespace ec::log
+}  // namespace ec::record

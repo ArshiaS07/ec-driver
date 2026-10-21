@@ -1,7 +1,7 @@
 #pragma once
 /// @file
 /// Raw recordings of the monitoring stream: every frame exactly as received,
-/// with its arrival time. The format is in docs/log-format.md.
+/// with its arrival time. The format is in docs/recording-format.md.
 
 #include <cstddef>
 #include <cstdint>
@@ -12,10 +12,10 @@
 #include <string>
 
 #include "ec/feedback/sample.hpp"
-#include "ec/log/clock.hpp"
-#include "ec/log/sink.hpp"
+#include "ec/record/clock.hpp"
+#include "ec/record/sink.hpp"
 
-namespace ec::log {
+namespace ec::record {
 
 inline constexpr std::size_t kRawHeaderSize = 24;                        ///< magic, then the ClockPair
 inline constexpr std::size_t kRawRecordSize = 8 + feedback::kFrameSize;  ///< arrival ns, then the frame
@@ -66,4 +66,4 @@ private:
     bool truncated_ = false;
 };
 
-}  // namespace ec::log
+}  // namespace ec::record

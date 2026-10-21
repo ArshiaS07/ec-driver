@@ -1,4 +1,4 @@
-#include "ec/log/hdf5.hpp"
+#include "ec/record/hdf5.hpp"
 
 #include <array>
 #include <concepts>
@@ -11,10 +11,10 @@
 #include <utility>
 
 #include "ec/feedback/frame.hpp"
-#include "ec/log/clock.hpp"
+#include "ec/record/clock.hpp"
 #include "ec/status.hpp"
 
-namespace ec::log {
+namespace ec::record {
 namespace {
 
 using feedback::State;
@@ -100,7 +100,7 @@ constexpr Column<T> column(const char* name, const char* unit, T State::* member
 }
 
 // Every field of feedback::State, in its order. Keep in step with the struct
-// and with docs/log-format.md.
+// and with docs/recording-format.md.
 constexpr auto kFeedbackColumns = std::make_tuple(
     column("controller_time", "ms", &State::controller_time_ms),
     column("joint_position", "rad", &State::joint_position), column("joint_velocity", "rad/s", &State::joint_velocity),
@@ -289,4 +289,4 @@ void H5FeedbackWriter::set_error(const char* what) noexcept {
     }
 }
 
-}  // namespace ec::log
+}  // namespace ec::record

@@ -1,4 +1,4 @@
-// ec_move: move the arm through the driver's motion families (ADR 0018).
+// ec_move: move the arm through the driver's motion families.
 //
 //   ec_move [--host H] [--command-port N] [--monitor-port N] [--yes] <command> ...
 //
@@ -28,9 +28,9 @@
 #include <vector>
 
 #include "cli.hpp"
-#include "ec/log/raw.hpp"
 #include "ec/motion/move.hpp"
 #include "ec/motion/servo_stream.hpp"
+#include "ec/record/raw.hpp"
 #include "ec/robot.hpp"
 #include "interrupt.hpp"
 
@@ -93,7 +93,7 @@ int run(int argc, char** argv) {
     double seconds = 0.0;
     int lookahead_ms = 40;
 
-    CLI::App app{"Move the arm through the driver's motion families; see docs/adr 0018."};
+    CLI::App app{"Move the arm through the driver's motion families."};
     app.add_option("--host", host, "Controller address")->capture_default_str();
     app.add_option("--command-port", command_port, "Command port")->capture_default_str()->check(CLI::Range(1, 65535));
     app.add_option("--monitor-port", monitor_port, "Monitoring port")
@@ -129,9 +129,9 @@ int run(int argc, char** argv) {
     if (const auto code = cli::parse(app, argc, argv)) return *code;
 
     // The recording outlives the robot, whose receiver thread writes to it.
-    std::optional<ec::log::RawWriter> recording;
+    std::optional<ec::record::RawWriter> recording;
     if (!record.empty()) {
-        auto writer = ec::log::RawWriter::create(record);
+        auto writer = ec::record::RawWriter::create(record);
         if (!writer) {
             cli::err("{}\n", writer.error());
             return cli::kFailed;

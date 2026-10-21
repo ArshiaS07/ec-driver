@@ -1,7 +1,7 @@
 #pragma once
 /// @file
-/// HDF5 logs: one file, one group per stream, one dataset per field and one row
-/// per record, in SI units. The format is in docs/log-format.md. Part of the
+/// HDF5 recordings: one file, one group per stream, one dataset per field and one row
+/// per record, in SI units. The format is in docs/recording-format.md. Part of the
 /// optional target ec::hdf5.
 
 #include <cstdint>
@@ -15,14 +15,14 @@
 
 #include "ec/feedback/sample.hpp"
 #include "ec/feedback/state.hpp"
-#include "ec/log/sink.hpp"
+#include "ec/record/sink.hpp"
 
-namespace ec::log {
+namespace ec::record {
 
 /// The format the files follow; the number changes when existing readers would break.
 inline constexpr std::string_view kH5Schema = "ec-driver.log/1";
 
-/// An HDF5 log file. It owns the file; writers add their groups to it. Use a
+/// An HDF5 recording file. It owns the file; writers add their groups to it. Use a
 /// file and its writers from one thread. Move-only; closed on destruction.
 class H5File {
 public:
@@ -85,4 +85,4 @@ private:
     std::uint64_t skipped_ = 0;
 };
 
-}  // namespace ec::log
+}  // namespace ec::record

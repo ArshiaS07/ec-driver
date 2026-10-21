@@ -5,7 +5,7 @@
 #include <chrono>
 #include <cstdint>
 
-namespace ec::log {
+namespace ec::record {
 
 /// A steady-clock time point as nanoseconds since that clock's epoch: the time
 /// base of every record (arrival times).
@@ -36,4 +36,4 @@ struct ClockPair {
     }
 };
 
-}  // namespace ec::log
+}  // namespace ec::record

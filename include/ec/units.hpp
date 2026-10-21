@@ -1,7 +1,7 @@
 #pragma once
 /// @file
 /// SI types and the conversions to and from the controller's units (deg, mm),
-/// for the one boundary where commands are built (ADR 0014).
+/// for the one boundary where commands are built.
 
 #include <array>
 #include <cmath>

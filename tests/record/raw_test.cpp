@@ -1,7 +1,7 @@
 // Raw recordings: what goes in comes back out, byte for byte, and files that
 // are cut short or are not recordings are told apart.
 
-#include "ec/log/raw.hpp"
+#include "ec/record/raw.hpp"
 
 #include <gtest/gtest.h>
 
@@ -16,8 +16,8 @@ namespace {
 
 using namespace std::chrono_literals;
 using ec::feedback::Sample;
-using ec::log::RawReader;
-using ec::log::RawWriter;
+using ec::record::RawReader;
+using ec::record::RawWriter;
 using ec::test::TempFile;
 
 std::vector<Sample> samples(int n) {
@@ -42,7 +42,7 @@ TEST(RawRecording, RoundTripIsExact) {
     const TempFile file("round_trip.ecraw");
     const auto in = samples(3);
     record(file, in);
-    EXPECT_EQ(std::filesystem::file_size(file.path()), ec::log::kRawHeaderSize + 3 * ec::log::kRawRecordSize);
+    EXPECT_EQ(std::filesystem::file_size(file.path()), ec::record::kRawHeaderSize + 3 * ec::record::kRawRecordSize);
 
     auto reader = RawReader::open(file.path());
     ASSERT_TRUE(reader) << reader.error();

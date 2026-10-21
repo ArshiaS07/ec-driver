@@ -6,7 +6,7 @@ option(EC_BUILD_APPS "Build command-line tools" ${PROJECT_IS_TOP_LEVEL})
 option(EC_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
 set(EC_SANITIZE "" CACHE STRING "Sanitizers (GCC/Clang): address (ASan + UBSan), thread (TSan), or empty for none")
 set_property(CACHE EC_SANITIZE PROPERTY STRINGS "" address thread)
-option(EC_WITH_HDF5 "Build the HDF5 log writer, ec::hdf5 (needs vcpkg feature hdf5)" OFF)
+option(EC_WITH_HDF5 "Build the HDF5 recording writer, ec::hdf5 (needs vcpkg feature hdf5)" OFF)
 
 include(cmake/CompilerWarnings.cmake)
 include(cmake/Sanitizers.cmake)
@@ -24,7 +24,7 @@ add_library(ec_driver
     src/feedback/reader.cpp
     src/feedback/receiver.cpp
     src/feedback/state.cpp
-    src/log/raw.cpp
+    src/record/raw.cpp
     src/detail/connection.cpp
     src/motion/move.cpp
     src/motion/servo_stream.cpp
@@ -52,11 +52,11 @@ if(WIN32)
     target_link_libraries(ec_driver PRIVATE ws2_32 winmm)  # winmm: timeBeginPeriod for the control loop
 endif()
 
-# Optional and separate, so that code which does not log never needs HDF5.
+# Optional and separate, so that code which does not record never needs HDF5.
 # HighFive stays private: it never reaches a public header.
 if(EC_WITH_HDF5)
     find_package(HighFive CONFIG REQUIRED)
-    add_library(ec_hdf5 src/log/hdf5.cpp)
+    add_library(ec_hdf5 src/record/hdf5.cpp)
     add_library(ec::hdf5 ALIAS ec_hdf5)
     target_link_libraries(ec_hdf5 PUBLIC ec::driver PRIVATE HighFive::HighFive)
     target_include_directories(ec_hdf5 PRIVATE ${PROJECT_SOURCE_DIR}/src)

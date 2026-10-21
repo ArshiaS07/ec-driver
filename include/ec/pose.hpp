@@ -11,7 +11,7 @@
 /// the current tool's centre point in the robot's base frame.
 ///
 /// The controller writes a pose as x, y, z [mm] and rx, ry, rz [rad], the
-/// rotation being R = Rz(rz) * Ry(ry) * Rx(rx) (measured on the EA66, ADR 0012).
+/// rotation being R = Rz(rz) * Ry(ry) * Rx(rx) (measured on the EA66: docs/ec66.md §5.6).
 
 #include <Eigen/Geometry>
 #include <array>

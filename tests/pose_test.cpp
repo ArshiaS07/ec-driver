@@ -63,7 +63,7 @@ TEST(Pose, TheNotationMapsCoordinatesFromBToA) {
     EXPECT_TRUE((T_ab * p_b).isApprox(Eigen::Vector3d(1, 3, 3), 1e-15));  // p_a: along a's y from b's origin
     const Eigen::Quaterniond q_ab(T_ab.linear());
     EXPECT_TRUE((q_ab * p_b).isApprox(Eigen::Vector3d(0, 1, 0), 1e-15));  // v_a = q_ab * v_b
-    // Chaining, as the controller's poseMul(p1, p2) = T1 * T2 (ADR 0012).
+    // Chaining, as the controller's poseMul(p1, p2) = T1 * T2 (measured on the EA66).
     const Eigen::Isometry3d T_bc = ec::from_mm_rad({0.0, 0.0, 100.0, 0.0, 0.0, 0.0});
     EXPECT_TRUE((T_ab * T_bc).translation().isApprox(Eigen::Vector3d(1, 2, 3.1), 1e-15));
     EXPECT_TRUE((T_ab.inverse() * T_ab).isApprox(Eigen::Isometry3d::Identity(), 1e-15));

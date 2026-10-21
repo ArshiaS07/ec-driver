@@ -2,7 +2,7 @@
 // Planning for the sandbox (application code, not part of the driver): a motion
 // of the TCP, poses stamped with their time, solved by the controller's inverse
 // kinematics into a checked joint trajectory, which ec::motion::Timestamped
-// runs (docs/motion.md 5.11). Temporary, until the application's own planning
+// runs (its reasoning: docs/archive/motion-2026-10-18.md §5.11). Temporary, until the application's own planning
 // replaces it.
 //
 // plan() fills in the poses (3 mm, 1 deg apart), solves each near the one
@@ -61,7 +61,7 @@ struct PlanOptions {
     double period = 0.02;                          ///< [s] between the trajectory's points
     Joints max_velocity = ec::kEc66MaxJointSpeed;  ///< [rad/s], between neighbouring points
     /// [rad/s^2]: the datasheet speeds reached in 0.5 s. The datasheet gives no
-    /// accelerations; to tune on the robot (docs/motion.md 7.2).
+    /// accelerations; to tune on the robot.
     Joints max_acceleration = ec::scale(ec::kEc66MaxJointSpeed, 2.0);
     double joint_limit = ec::kEc66JointLimit;  ///< [rad], on |q|
     std::size_t max_points = 10'000;           ///< solved points at most

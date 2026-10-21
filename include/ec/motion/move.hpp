@@ -1,6 +1,6 @@
 #pragma once
 /// @file
-/// Point-to-point moves (SDK manual 2.2.3.1-4, ADR 0018): the controller plans
+/// Point-to-point moves (SDK manual 2.2.3.1-4): the controller plans
 /// and times one move to a target, given as joint positions. joint() moves in
 /// joint space (moveByJoint); line() moves the TCP in a straight line to the
 /// target's pose (moveByLine); arc() along the circle through the pose of

@@ -1,11 +1,11 @@
 # Architecture: the robot as a composition of parts
 
-A proposal, written 2026-10-21 from the manuals (`docs/ec66.md`, cited as
-§R.n, with the reading notes in `docs/notes/`) and nothing else: earlier
-decisions and ADRs are set aside. It answers four questions: what the robot
-is made of, how the driver should be built around that, which workflow each
-task takes, and how to get there in a few weeks. Nothing is decided until the
-user says so.
+Written 2026-10-21 from the manuals (`docs/ec66.md`, cited as §R.n, with the
+reading notes in `docs/notes/`) and nothing else: earlier decisions and the
+archived ADRs do not apply. It answers four questions: what the robot is made
+of, how the driver should be built around that, which workflow each task
+takes, and how to get there in a few weeks. Agreed in outline the same day
+(§12 records the user's answers); details may still change as it is built.
 
 ## 1. The short answer
 
@@ -25,7 +25,8 @@ controller really has, and with joints as state, not as things you command.**
   its whole state every 8 ms on 8056 (§R.6.3). The driver turns each frame
   into one snapshot made of the parts' states: a mirror of what the controller
   reports, and nothing it doesn't (what IoT platforms call a device
-  shadow). A twin that simulates the arm would duplicate the controller's
+  shadow). Joints are stateful mirrors: you read them, you don't move them.
+  A twin that simulates the arm would duplicate the controller's
   kinematics and dynamics, which it owns. Our simulator is `tools/fake_robot.py`,
   for tests.
 - **Why the SDK looked huge and scattered**: the vendor groups its 184 calls
@@ -58,7 +59,7 @@ controller really has, and with joints as state, not as things you command.**
 
 | Part | What it is | Observed (8056 / queries) | Commanded | Configured |
 |---|---|---|---|---|
-| **Joints** ×6 | motor, reducer, brake, two encoders, a drive, in each joint (§R.3.2) | position (output and motor side), speed, acceleration, torque, external torque, motor speed, temperature; brake released | — (only through the motion controller) | soft limits (pendant) |
+| **Joints** ×6 | motor, reducer, brake, two encoders, a drive, in each joint (§R.3.2) | position (output and motor side), speed, acceleration, torque, external torque, motor speed, temperature; brake released | — (only through the motion controller; jogging an axis is the motion controller's too) | soft limits (pendant) |
 | **Tool flange / TCP** | the end of the arm, with the tool's TCP | TCP and flange poses (base and user frame), speed, acceleration, external wrench | — | through the model (tools) |
 | **Drives** | power, servo enable, brakes, encoder states, joint alarms (§R.3.3–§R.3.4, §R.5.2) | servo on, synchronised, E-stop, collision; precise, servo alarm, power (queries) | arm power, servo on/off, synchronise, calibrate, clear alarm, reset, backdrive | — |
 | **Motion controller** | plans, interpolates and times every motion (§R.5.7) | its state (stop, pause, running, alarm), the speed slider, hand guiding | the families: point-to-point, path, jog, speed, servo stream, timestamped trajectory, hand guiding; stop | speed slider, jog frame |
@@ -80,12 +81,12 @@ emergency stop, and the box's power switch.
  workflows      bring_up  shut_down  recover  calibrate  run_trajectory ...
                 (the operating manuals' sequences, built from parts; reports)
  ───────────────────────────────────────────────────────────────────────────
- robot          Robot: the composition root (one session, one state stream)
-                parts:  Drives  Motion(+families)  Model  Safety  Io  Programs  System
-                state:  State = { joints[6], tcp, drives, motion, safety, io, system }
+ robot          Robot: the composition root (one session; the latest observation)
+                parts:  Joint(i)  Drives  Motion(+families)  Model  Safety  Io  Programs  System
+                state:  State = { joints[6], tcp, drives, motion, io, system }   (from 8056)
  ───────────────────────────────────────────────────────────────────────────
  wire           sdk: the 184 typed calls, the JSON-RPC client (8055)
-                feedback: 8056 frames, decoder, reader, receiver
+                feedback: 8056 frames, decoder, reader, receiver (a component of its own)
                 controller log: the 8058 client (new, small)
  ───────────────────────────────────────────────────────────────────────────
  transport      net::TcpSocket
@@ -156,10 +157,16 @@ State state_from(const feedback::Frame&, Clock::time_point arrival);   // pure
 }
 ```
 
-What 8056 does not carry (precise, power, the last alarms, the speed slider,
-the tool numbers, which brakes are released) is read by the parts on demand,
-never polled behind the application's back: polling would occupy the one
-command channel. `ec::readiness(state, slow)` is a pure function that says
+**Two paths, each honest about its source** (the user's call): `robot.state()`
+is the latest 8056 observation, a snapshot of everything at one instant, free
+to read; the parts' getters ask the controller over 8055 and answer with
+what it says now, one call each (`robot.joint(2).temperature()`,
+`robot.drives().servo_on()`). The stream stays a component of its own
+(`ec::feedback`: reader, receiver); the robot only builds the `State` from its
+newest frame. What 8056 does not carry (precise, power, the last alarms, the
+speed slider, the tool numbers, which brakes are released) has only the second
+path, read on demand and never polled behind the application's back: polling
+would occupy the one command channel. `ec::readiness(state, slow)` is a pure function that says
 which step stands between the robot and a motion command, and its remedy
 (§6, start of a session).
 
@@ -182,6 +189,7 @@ auto q = robot.model().ik(T_base_tcp, s.positions()).value();
 
 | Part | Operations (first version) | Calls behind them |
 |---|---|---|
+| `Joint` (`robot.joint(i)`, i = 1..6) | read only, over 8055: `position()`, `motor_position()`, `velocity()`, `torque()`, `motor_torque()`, `temperature()`, `brake_released()`, `firmware()` | §R.3.2 |
 | `Drives` | `servo_on()`, `switch_servo(bool)`, `synced()`, `synchronise()`, `precise()`, `calibrate_encoders()` (moves the arm a little), `clear_alarm()`, `reset()`, `servo_alarm()`, `brakes_released()`, `enter_backdrive()`, `exit_backdrive()`; `power()` and `switch_power(bool)` once confirmed on V3.15.3 | §R.5.2 |
 | `Motion` | `state()`, `wait_until_stopped()`, `stop()`, `speed_scale()`, `set_speed_scale()`, `hand_guiding(bool)`; the families `Move`, `Path`, `Jog`, `SpeedStream`, `ServoStream`, `Timestamped` | §R.5.5, §R.5.7 |
 | `Model` | `ik`, `ik_all`, `fk`, `interpolate`, `to_user`, `from_user`, `dh`; `tool(n)`, `set_tool(n, tcp)`, `active_tool()`, `select_tool(n)`; `payload(n)`, `set_payload(n, mass, cog)`; `user_frame(n)`, `set_user_frame(n, pose)`, `select_user_frame(n)` | §R.5.6 |
@@ -213,7 +221,7 @@ compose the parts themselves.
 | **Set up a tool or frame** | at rest, REMOTE: write the tool, payload or frame; select its number; read it back | read back equal | §R.5.6 |
 | **Point move** | (ready) `Move`: one call; wait | state stop | [S 2.2.3.1-4] |
 | **Waypoint path** | clear; add each point; run; follow the index; wait | state stop | [S 2.2.3.5-7] |
-| **Timestamped trajectory** | (ready) a joint move to the first point; upload; check the arm is at the first point (§7); start; wait; optionally flush | state stop | [S 2.2.9.10] |
+| **Timestamped trajectory** | (ready) a joint move to the first point; upload; start; wait; optionally flush (a check of the start: postponed, §7) | state stop | [S 2.2.9.10] |
 | **Servo stream** | (ready, at the first point) open; one point per period; close | closed | [S 2.2.7.6] |
 | **Velocity stream** | (ready) a velocity before each `t` runs out; `stopj`/`stopl` | stopped | [S 2.2.3.16-19] |
 | **Jog** | (ready) repeat `jog` within 1 s; `stop` | stopped | [S 2.2.3.8] |
@@ -236,13 +244,19 @@ compose the parts themselves.
   controller's reasons, never with extra calls before every command.
 - **The driver's own guards** are few and named as ours: never two calls in
   flight or unconfirmed bursts (learned on the robot, §R.6.2); a timestamped
-  trajectory starts only with the arm within 0.01 rad of its first point (what
-  the controller does otherwise is unknown; MoveIt checks the same); its speed
-  factor at most 1 unless lifted.
-- **Lifetimes**: a motion object owns its motion (destroying an open one
-  sends its stop); the `Robot` owns the session (destroying it stops an open
-  motion; it does not switch the servo off, `shut_down` does). If the process
-  dies, the controller finishes or drains what was running (§R.5.7).
+  trajectory's speed factor at most 1 unless lifted. Postponed (the user,
+  2026-10-21): checking that the arm is at a trajectory's first point before
+  it starts, or moving it there. What the controller does when it is not is an
+  open question (§R.8 #7); it may handle it itself.
+- **Lifetimes** (recommended, and agreed): a motion object owns its motion,
+  so destroying an open one sends its stop; the `Robot` owns the session, so
+  destroying it stops an open motion (it does not switch the servo off,
+  `shut_down` does). The reason: a motion should never outlive the code that
+  can supervise it. Exceptions, early returns and Ctrl+C then stop the arm
+  instead of leaving it running unwatched, as `std::jthread` asks its thread
+  to stop when it goes out of scope. The cost: a move meant to run on must
+  keep its object, which shows in the code. If the process dies, nothing on
+  the PC runs; the controller finishes or drains what was running (§R.5.7).
 
 ## 8. How we build it
 
@@ -262,26 +276,24 @@ compose the parts themselves.
 
 **The toolchain stays:** CMake presets, Ninja, vcpkg in manifest mode,
 GCC 15, clang-format and clang-tidy, the CI. It is not what made the project
-feel heavy. What is missing is editor support, so VS Code works out of the
-box:
-
-- `.vscode/extensions.json`: CMake Tools, clangd, CodeLLDB;
-- `.vscode/settings.json`: use the CMake presets; clangd on
-  `build/linux-debug/compile_commands.json` with GCC 15's headers; format on
-  save with the pinned clang-format;
-- `.vscode/launch.json` and `tasks.json`: debug `ec_tests` with a test
-  filter, the tools against the fakes; format, clang-tidy, the app tests.
-
-`.vscode/` is ignored by git today; these four files would be tracked.
+feel heavy. Editor support is local: `.vscode/` (not tracked, the user's call)
+holds the settings for CMake Tools on the presets, IntelliSense (or clangd) on
+`build/linux-debug/compile_commands.json`, format on save with the pinned
+clang-format, debug launches for `ec_tests` and the tools, and tasks for the
+format, clang-tidy and the app tests.
 
 ## 9. What happens to the current code
 
 | Keep as it is | Reshape | New | Archive |
 |---|---|---|---|
-| `net/`, the 184 typed calls and the client (`sdk/`), the 8056 decoder, reader and receiver, the recorders (`log/`), `Latest`, units, poses, status enums, the fakes and their tests, `apps/planning.hpp` (the sandbox's) | `feedback::State` → `ec::State` made of parts; `Robot` → the composition root; `detail::Connection` → the session; the motion families under the motion part, with waits on the stream; `bring_up` → a workflow; `ec_move` on the workflows | the parts; `readiness`; the workflows; the 8058 log client; `Path`, `Jog`, `SpeedStream`; `ec_log` | `docs/motion.md` (its controller chapters are now `ec66.md`); the ADRs; `tools/rotation_convention.py` and `tools/poses.py` (done once); `docs/sdk_calls.md` merged into `docs/sdk_map.md` (the remote-mode and 8056 columns move over) |
+| `net/`, the 184 typed calls and the client (`sdk/`), the 8056 decoder, reader and receiver, the recorders (`record/`), `Latest`, units, poses, status enums, the fakes and their tests, `apps/planning.hpp` (the sandbox's) | `feedback::State` → `ec::State` made of parts; `Robot` → the composition root; `detail::Connection` → the session; the motion families under the motion part, with waits on the stream; `bring_up` → a workflow; `ec_move` on the workflows | the parts; `readiness`; the workflows; the 8058 log client; `Path`, `Jog`, `SpeedStream`; `ec_log` | done 2026-10-21: `docs/motion.md`, the old architecture and design, the ADRs (local) moved to `docs/archive/` |
 
-Also: `ec::log` (our recordings) becomes `ec::record`, so that "log" means the
-controller's log.
+Also done on day 1: `ec::log` (our recordings) is now `ec::record`, so that
+"log" means the controller's log; ADR citations in the code now point to
+`docs/ec66.md` or are gone. Kept after all: `tools/poses.py` (the fakes' pose
+library), `tools/rotation_convention.py` (how the convention was measured,
+with its test), and `docs/sdk_calls.md` beside `docs/sdk_map.md` (the manual's
+view of the calls beside the robot's).
 
 ## 10. Plan
 
@@ -289,7 +301,7 @@ About two and a half weeks; each block is tested before the next.
 
 | Days | Work |
 |---|---|
-| 1 | Clean-up (the archive column of §9, README), the VS Code files, the new headers as stubs |
+| 1 | Done 2026-10-21: clean-up (§9), README, the VS Code files (local) |
 | 2–3 | `State` and `state_from`, `readiness`, the state stream and its subscribers; unit tests |
 | 4–5 | `Drives`, `System` (with the 8058 client), `Model`: thin, against the scripted controller |
 | 6–7 | `Motion` with the existing families moved in, waits on the stream, the guards; `Io` |
@@ -302,7 +314,8 @@ About two and a half weeks; each block is tested before the next.
 ## 11. Where I push back
 
 - **Joints as objects with commands**: no; the hardware has none. A joint is
-  a value in the state, plus static facts (limits, firmware version).
+  a value in the state, and a read-only handle that asks the controller
+  (`robot.joint(i)`).
 - **A simulating twin**: no. The controller owns the kinematics and
   dynamics; duplicating them gives two answers to every question. The mirror
   in §4 is the useful part, and the fake robot is our simulator.
@@ -314,12 +327,17 @@ About two and a half weeks; each block is tested before the next.
 - **Peripherals** (serial ports, force sensor, force control): later, when an
   application needs them.
 
-## 12. Decisions for the user
+## 12. The user's answers (2026-10-21)
 
-1. The parts and their boundaries (§2, §5): agreed, or which to change?
-2. Parts as handles (`robot.drives().switch_servo(true)`), workflows as free
-   functions with reports (`ec::workflow::bring_up(robot)`): agreed?
-3. The lifetimes in §7 (a motion stops when its object is destroyed; the
-   `Robot` stops an open motion), and the start tolerance of 0.01 rad.
-4. Track the VS Code files?
-5. Go ahead with the plan, starting with the clean-up?
+1. The parts and their boundaries: almost; to be refined while building.
+   Jogging stays with the motion controller, not with a joint.
+2. Parts as handles and workflows as free functions with reports: go ahead,
+   change it if it does not work out.
+3. Lifetimes as recommended in §7: yes. The start check of a trajectory:
+   postponed.
+4. The VS Code files: local only, not tracked; IntelliSense must work.
+5. Two paths for observed values: the latest 8056 observation in
+   `robot.state()`, the controller asked over 8055 by the parts' getters (§4).
+   The 8056 reader stays a component of its own.
+6. Start with day 1, once and cleanly; nothing from the older talks carries
+   over unless this document takes it up.

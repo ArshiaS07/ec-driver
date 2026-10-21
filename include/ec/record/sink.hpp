@@ -3,7 +3,7 @@
 /// Where records go: the one interface every recorder, file writer or viewer
 /// implements.
 
-namespace ec::log {
+namespace ec::record {
 
 /// Receives records of one type, in order, one call per record. An
 /// implementation stores, shows or forwards them: a raw file, an HDF5 file, a
@@ -26,4 +26,4 @@ protected:
     Sink& operator=(Sink&&) = default;
 };
 
-}  // namespace ec::log
+}  // namespace ec::record

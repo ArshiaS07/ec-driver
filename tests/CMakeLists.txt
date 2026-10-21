@@ -15,7 +15,7 @@ add_executable(ec_tests
     feedback/receiver_test.cpp
     feedback/state_test.cpp
     latest_test.cpp
-    log/raw_test.cpp
+    record/raw_test.cpp
     motion/families_test.cpp
     net/tcp_socket_test.cpp
     pose_test.cpp
@@ -28,7 +28,7 @@ if(WIN32)
     target_link_libraries(ec_tests PRIVATE ws2_32)  # support/loopback_server.hpp uses Winsock directly
 endif()
 if(EC_WITH_HDF5)
-    target_sources(ec_tests PRIVATE log/hdf5_test.cpp)
+    target_sources(ec_tests PRIVATE record/hdf5_test.cpp)
     target_link_libraries(ec_tests PRIVATE ec::hdf5 HighFive::HighFive)  # the tests read files back directly
 endif()
 ec_set_warnings(ec_tests)

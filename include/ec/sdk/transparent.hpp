@@ -3,7 +3,7 @@
 /// Transparent transmission service, SDK manual section 2.2.7: position
 /// streaming. The controller keeps a queue of joint targets; after the
 /// lookahead time it takes one target per period and smooths the path through
-/// them (JBI manual 2.4.11; docs/motion.md 2.4). Remote mode only.
+/// them (JBI manual 2.4.11; docs/ec66.md §5.7). Remote mode only.
 
 #include <optional>
 #include <string_view>

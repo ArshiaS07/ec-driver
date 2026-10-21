@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Read-only measurements on the controller, for the assumptions listed in
-docs/motion.md section 7. Nothing here moves the arm or changes a setting: the
+docs/ec66.md §8. Nothing here moves the arm or changes a setting: the
 port-8055 checks send only the queries in QUERIES, and `drift` reads a
 recording made by ec_record.
 
@@ -26,10 +26,10 @@ import time
 
 QUERIES = ("getRobotState", "getRobotMode", "getSoftVersion")  # the only methods this tool sends
 REPLY_TIMEOUT = 2.0  # s
-CYCLE_MS = 8.0  # the planned control period (docs/motion.md)
-LOOKAHEAD_MS = 40.0  # the planned default stream lookahead (docs/motion.md)
+CYCLE_MS = 8.0  # the state stream's period
+LOOKAHEAD_MS = 40.0  # the servo stream's default lookahead
 
-RAW_MAGIC = b"ECRAW001"  # docs/log-format.md
+RAW_MAGIC = b"ECRAW001"  # docs/recording-format.md
 RAW_HEADER = 24  # magic, steady clock at start, system clock at start
 RAW_RECORD = 8 + 1024  # arrival time (ns, little-endian), then the frame as received
 FRAME_TIMESTAMP = 4  # offset of the controller's timestamp in a frame: uint64 ms, big-endian

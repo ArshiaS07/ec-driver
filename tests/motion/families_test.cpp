@@ -1,4 +1,4 @@
-// The motion families (ADR 0018) against a scripted controller: each sends its
+// The motion families against a scripted controller: each sends its
 // SDK calls as the manual, in the controller's units, every call answered; one
 // motion is open at a time; waits read getRobotState; Robot::stop() sends the
 // open motion's stop, then stop.

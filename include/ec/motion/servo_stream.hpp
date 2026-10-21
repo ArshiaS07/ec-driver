@@ -1,13 +1,13 @@
 #pragma once
 /// @file
 /// Servo streaming, the controller's transparent transmission (SDK manual
-/// 2.2.7, ADR 0018): joint targets into the controller's queue, which plays one
+/// 2.2.7): joint targets into the controller's queue, which plays one
 /// every `period` after `lookahead`. As the manual's example (2.2.7.6): open()
 /// clears a stream left open, then transparent_transmission_init; add_point()
 /// is tt_put_servo_joint_to_buf, each answered; close() is
 /// tt_clear_servo_joint_buf. The application paces the points and makes them
 /// smooth: the first where the arm rests (the manual moves it there with
-/// moveByJoint), the next ones close to it. No watchdog yet (ADR 0018, 4).
+/// moveByJoint), the next ones close to it. No watchdog yet.
 ///
 ///     ec::motion::ServoStream stream(robot, {.lookahead = 40ms, .period = 8ms});
 ///     stream.open();  // then stream.add_point(q) every period, stream.close()
