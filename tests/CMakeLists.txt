@@ -18,8 +18,11 @@ add_executable(ec_tests
     record/raw_test.cpp
     motion/families_test.cpp
     net/tcp_socket_test.cpp
+    monitor_test.cpp
     pose_test.cpp
+    readiness_test.cpp
     robot_test.cpp
+    state_test.cpp
     status_test.cpp
 )
 target_include_directories(ec_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

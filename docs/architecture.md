@@ -109,66 +109,75 @@ Rules, one sentence each:
 
 ## 4. The observed state
 
-One snapshot per 8056 frame, built by a pure function from the frame, made
-of the parts' states. It replaces today's flat `feedback::State`.
+Built on days 2–3 (`include/ec/state.hpp`, `monitor.hpp`, `readiness.hpp`).
+
+**Two paths to the same robot, each honest about its source** (the user's
+call). The command connection (8055) asks the controller now, one call at a
+time: `robot.call(...)` and the parts' getters (`robot.joint(3).temperature()`,
+`robot.drives().servo_on()`). The monitoring path (8056) is what the
+controller pushes every 8 ms: `robot.monitor()`, an `ec::Monitor`, a component
+of its own that the robot holds. Reading it sends nothing and never waits for
+a call, so the code says which path a value came from:
 
 ```cpp
-namespace ec {
-
-struct JointState {                    // one joint, from one frame
-    double position = 0;               // rad, output side
-    double velocity = 0;               // rad/s
-    double acceleration = 0;           // rad/s²
-    double torque = 0;                 // N·m
-    double external_torque = 0;        // N·m, the controller's estimate
-    double motor_torque = 0;           // fraction of the rated torque
-    double motor_speed = 0;            // rad/s
-    double temperature = 0;            // °C
-};
-
-struct TcpState {
-    Eigen::Isometry3d pose, pose_in_user, flange, flange_in_user;
-    double speed = 0, acceleration = 0;        // m/s, m/s²
-    Eigen::Matrix<double, 6, 1> wrench;        // estimated external, tool frame [N, N·m]
-};
-
-struct DriveState  { bool servo_on, synced, emergency_stop, collision; };
-struct MotionState { RobotState state; bool hand_guiding; };       // stop, pause, running, ...
-struct IoState     { std::bitset<64> inputs, outputs; std::array<double,3> analog_in;
-                     std::array<double,5> analog_out; };
-struct SystemState { RobotMode mode; CycleMode cycle; bool force_sensor; };
-
-struct State {
-    std::uint64_t seq;                  // one more per frame
-    Clock::time_point arrival;          // the PC's steady clock
-    std::int64_t controller_time_ms;    // the controller's clock
-    std::array<JointState, 6> joints;
-    TcpState tcp;
-    DriveState drives;
-    MotionState motion;
-    IoState io;
-    SystemState system;
-
-    Joints positions() const;           // the six joint positions, for the model's calls
-};
-
-State state_from(const feedback::Frame&, Clock::time_point arrival);   // pure
-
-}
+const ec::State s = robot.monitor().latest().value();   // 8056: the newest snapshot, at once
+double t3 = s.joints[2].temperature;                     // J3 [degC], as of s.arrival
+auto next = robot.monitor().next(s.seq, 100ms);          // the next one, for loops paced by the robot
+auto mode = robot.call(ec::sdk::GetRobotMode{});         // 8055: asked now
 ```
 
-**Two paths, each honest about its source** (the user's call): `robot.state()`
-is the latest 8056 observation, a snapshot of everything at one instant, free
-to read; the parts' getters ask the controller over 8055 and answer with
-what it says now, one call each (`robot.joint(2).temperature()`,
-`robot.drives().servo_on()`). The stream stays a component of its own
-(`ec::feedback`: reader, receiver); the robot only builds the `State` from its
-newest frame. What 8056 does not carry (precise, power, the last alarms, the
-speed slider, the tool numbers, which brakes are released) has only the second
-path, read on demand and never polled behind the application's back: polling
-would occupy the one command channel. `ec::readiness(state, slow)` is a pure function that says
-which step stands between the robot and a motion command, and its remedy
-(§6, start of a session).
+The monitor (`ec::Monitor`) is the receiver (`feedback::Receiver`, its own
+thread, reconnecting), the decoder and the newest value (`Latest<State>`),
+nothing more. Without a robot it runs on its own (`ec::Monitor m(host, {})`).
+`status()` says whether the stream is connected, how many frames it decoded or
+skipped, and why the last connection ended; a lost stream shows as states
+that stop arriving (`State::age()`). Two hooks run on its thread:
+`on_sample`, every frame as received (recordings, lossless, undecodable frames
+included), and `on_state`, every state. Subscribing at run time waits until an
+application needs it.
+
+**`ec::State`**: one snapshot per frame, made of the parts' states, grouped as
+`docs/sdk_map.md` groups the calls that read the same values:
+
+```cpp
+struct State {
+    std::uint64_t seq;                     // 1 for the first frame decoded, one more per frame
+    Clock::time_point arrival;             // this PC's steady clock
+    sys_time<milliseconds> controller_time;// the controller's clock
+    std::array<JointState, 6> joints;      // position, velocity, acceleration, torque, external_torque,
+                                           // torque_of_rated, motor_speed, temperature
+    TcpState tcp;                          // pose, pose_in_user, flange_pose, flange_pose_in_user
+                                           // (Isometry3d), speed, acceleration, force, torque
+    DriveState drives;                     // servo_on, synced
+    MotionState motion;                    // state (stop, pause, running, ...), hand_guiding
+    SafetyState safety;                    // emergency_stop, collision
+    IoState io;                            // digital_inputs/outputs (bitset<64>), analog_inputs/outputs
+    ProgramState programs;                 // cycle_mode
+    SystemState system;                    // mode (the key switch), force_sensor_connected
+    Joints positions() const;              // the six positions, for the model's calls
+};
+State state_from(const feedback::Frame&, std::uint64_t seq, Clock::time_point arrival);   // pure
+```
+
+`feedback::State`, the flat SI view of a frame field by field as the manual
+lists them, stays: `feedback::to_si` is still the one place where units are
+converted, and `state_from` regroups its result. The HDF5 recording is made
+from it (one dataset per manual field), since recordings sit beside the wire
+and should not depend on the robot layer above it.
+
+What 8056 does not carry (precise, power, the last alarms, the speed slider,
+the tool numbers, which brakes are released) has only the 8055 path, read on
+demand and never polled behind the application's back: polling would occupy
+the one command channel.
+
+**`ec::readiness(state, precise)`** is a pure function: the first step that
+stands between the robot and a motion command (`Blocker`), with `remedy()`
+in words and `needs_operator()` for the key and the button. The order: the
+key at REMOTE, the emergency stop, a collision (reset before its alarm), an
+alarm, synchronisation, the servo (calibrating needs it on), precise (only if
+the caller read it), the state back at stop (docs/ec66.md §5.2). It decides
+nothing for the controller, which checks every command itself; `ec_move status`
+prints it, and the start-up workflow will follow it.
 
 ## 5. The parts
 
@@ -179,7 +188,7 @@ or "driver" for who does the work.
 
 ```cpp
 auto robot  = ec::Robot::connect({.host = "192.168.0.200"}).value();
-ec::State s = robot.state();                  // newest snapshot
+ec::State s = robot.monitor().latest().value();   // newest snapshot (8056)
 double t3   = s.joints[2].temperature;        // °C
 
 auto drives = robot.drives();
@@ -232,8 +241,8 @@ compose the parts themselves.
 
 ## 7. Concurrency, errors, lifetimes
 
-- **Threads**: one, the 8056 receiver, which builds each `State` and hands it
-  to the latest-value store, to subscribers and to recorders. Commands run on
+- **Threads**: one, the monitor's (8056), which builds each `State` and hands
+  it to the latest-value store and to the hooks (recordings, `on_state`). Commands run on
   the caller's thread, one at a time on 8055 (a mutex), each answered before
   the next. `robot.stop()` works from any thread; it waits at most for the
   call in flight. If a second 8055 client proves allowed (§R.8), a separate
@@ -286,7 +295,7 @@ format, clang-tidy and the app tests.
 
 | Keep as it is | Reshape | New | Archive |
 |---|---|---|---|
-| `net/`, the 184 typed calls and the client (`sdk/`), the 8056 decoder, reader and receiver, the recorders (`record/`), `Latest`, units, poses, status enums, the fakes and their tests, `apps/planning.hpp` (the sandbox's) | `feedback::State` → `ec::State` made of parts; `Robot` → the composition root; `detail::Connection` → the session; the motion families under the motion part, with waits on the stream; `bring_up` → a workflow; `ec_move` on the workflows | the parts; `readiness`; the workflows; the 8058 log client; `Path`, `Jog`, `SpeedStream`; `ec_log` | done 2026-10-21: `docs/motion.md`, the old architecture and design, the ADRs (local) moved to `docs/archive/` |
+| `net/`, the 184 typed calls and the client (`sdk/`), the 8056 decoder, reader and receiver, the recorders (`record/`), `Latest`, units, poses, status enums, the fakes and their tests, `apps/planning.hpp` (the sandbox's) | `ec::State` made of parts, built from `feedback::State` (done); `Robot` → the composition root; `detail::Connection` → the session; the motion families under the motion part, with waits on the stream; `bring_up` → a workflow; `ec_move` on the workflows | the parts; `Monitor` and `readiness` (done); the workflows; the 8058 log client; `Path`, `Jog`, `SpeedStream`; `ec_log` | done 2026-10-21: `docs/motion.md`, the old architecture and design, the ADRs (local) moved to `docs/archive/` |
 
 Also done on day 1: `ec::log` (our recordings) is now `ec::record`, so that
 "log" means the controller's log; ADR citations in the code now point to
@@ -302,7 +311,7 @@ About two and a half weeks; each block is tested before the next.
 | Days | Work |
 |---|---|
 | 1 | Done 2026-10-21: clean-up (§9), README, the VS Code files (local) |
-| 2–3 | `State` and `state_from`, `readiness`, the state stream and its subscribers; unit tests |
+| 2–3 | Done 2026-10-21: `State` and `state_from`, `readiness`, the `Monitor` (the 8056 path) in `Robot`; unit tests |
 | 4–5 | `Drives`, `System` (with the 8058 client), `Model`: thin, against the scripted controller |
 | 6–7 | `Motion` with the existing families moved in, waits on the stream, the guards; `Io` |
 | 8 | Workflows: start, end, recover, with reports; `ec_move` on them |
@@ -337,7 +346,12 @@ About two and a half weeks; each block is tested before the next.
    postponed.
 4. The VS Code files: local only, not tracked; IntelliSense must work.
 5. Two paths for observed values: the latest 8056 observation in
-   `robot.state()`, the controller asked over 8055 by the parts' getters (§4).
+   `robot.state()` "or something", the controller asked over 8055 by the
+   parts' getters (§4).
    The 8056 reader stays a component of its own.
 6. Start with day 1, once and cleanly; nothing from the older talks carries
    over unless this document takes it up.
+7. Before days 2–3: the 8056 path should show in the code as a separate path
+   on the same robot (the user, not sure it is right): it is `robot.monitor()`
+   (§4). The existing stream code works, so change little. Where there is a
+   choice, take the safer, more idiomatic one.

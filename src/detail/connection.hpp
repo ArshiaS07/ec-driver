@@ -1,7 +1,7 @@
 #pragma once
 // What a Robot and its motions share: the command connection, on
 // which calls go one at a time; the open motion, of which there is at most one;
-// and the monitoring stream's newest frame. Private to the library.
+// and the monitor. Private to the library.
 
 #include <atomic>
 #include <chrono>
@@ -15,8 +15,7 @@
 #include <utility>
 
 #include "ec/error.hpp"
-#include "ec/feedback/receiver.hpp"
-#include "ec/latest.hpp"
+#include "ec/monitor.hpp"
 #include "ec/robot.hpp"
 #include "ec/sdk/client.hpp"
 #include "ec/sdk/request.hpp"
@@ -66,8 +65,7 @@ struct Connection {
     std::function<void()> stop_open;
     std::atomic<bool> stop_requested{false};
 
-    std::shared_ptr<Latest<Feedback>> latest = std::make_shared<Latest<Feedback>>();
-    std::unique_ptr<feedback::Receiver> receiver;  // last: stopped first, while the rest still exists
+    std::unique_ptr<Monitor> monitor = std::make_unique<Monitor>();  // last: stopped first; never null
 };
 
 }  // namespace ec::detail

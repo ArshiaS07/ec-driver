@@ -21,8 +21,9 @@ The architecture in `docs/architecture.md` is being built; this is what exists.
 | transport | `ec::net::TcpSocket` (Linux + Windows) | done, tested against a loopback server |
 | wire | `ec::sdk` (8055: codec, the 184 typed calls, client) | done, tested; replies checked on the EA66 for a few (`ec_query --check-all` checks the rest) |
 | wire | `ec::feedback` (8056: framing, decoding, reader, receiver thread, SI values) | done, tested |
-| robot | `ec::Robot`: one connection, the latest frame, `bring_up`, `stop`; motion families `Move` (joint, line, arc, rotate), `Timestamped`, `ServoStream` | done, tested against a scripted controller and the simulated arm; a timestamped circle ran on the robot |
-| robot | the parts (`Drives`, `Motion`, `Model`, `Safety`, `Io`, `Programs`, `System`), `ec::State`, the workflows | next (`docs/architecture.md` §10) |
+| robot | `ec::Robot`: the command connection, `bring_up`, `stop`; motion families `Move` (joint, line, arc, rotate), `Timestamped`, `ServoStream` | done, tested against a scripted controller and the simulated arm; a timestamped circle ran on the robot |
+| robot | `ec::Monitor` (the 8056 path, `robot.monitor()`), `ec::State` (one snapshot per frame, by part), `ec::readiness` | done, tested |
+| robot | the parts (`Drives`, `Motion`, `Model`, `Safety`, `Io`, `Programs`, `System`), the workflows | next (`docs/architecture.md` §10) |
 | recording | `ec::record` (raw recordings; HDF5 in the optional `ec::hdf5`) | done, tested |
 | tools | `ec_monitor`, `ec_record`, `ec_query`, `ec_move`, `sbx_trajectory` (sandbox, with its own planning in `apps/planning.hpp`) | done, tested end to end against the fakes |
 
@@ -173,6 +174,8 @@ working tree, on both systems, regardless of each user's `core.autocrlf`.
       record/             recordings: raw, HDF5 (optional)
       motion/             the motion families
       robot.hpp           ec::Robot
+      monitor.hpp         ec::Monitor: the 8056 path, the newest ec::State (state.hpp)
+      readiness.hpp       what stands between the robot and a motion command
     src/                  mirrors include/ec/; detail/ holds private headers
     apps/                 command-line tools on CLI11; the sandbox and its planning
     tests/                GoogleTest; support/ shared helpers; apps/ end-to-end tool tests

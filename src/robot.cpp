@@ -4,8 +4,6 @@
 #include <thread>
 
 #include "detail/connection.hpp"
-#include "ec/feedback/frame.hpp"
-#include "ec/feedback/receiver.hpp"
 #include "ec/sdk/client.hpp"
 #include "ec/sdk/movement.hpp"
 #include "ec/sdk/param.hpp"
@@ -22,25 +20,15 @@ std::expected<Robot, Error> Robot::connect(RobotOptions o) {
                                                                             o.command_port, client.error().message)});
     auto c = std::make_shared<detail::Connection>(std::move(*client));
     if (o.monitor) {
-        feedback::Receiver::Options receiver_options;
-        receiver_options.port = o.monitor_port;
-        // Each frame decoded and kept; the frames counted here are Latest's sequence numbers.
-        c->receiver = std::make_unique<feedback::Receiver>(
-            o.host, receiver_options,
-            [latest = c->latest, on_feedback = std::move(o.on_feedback),
-             seq = std::uint64_t{0}](const feedback::Sample& s) mutable {
-                const auto frame = feedback::decode(s.raw);
-                if (!frame) return;
-                const Feedback f{.seq = ++seq, .arrival = s.arrival, .state = feedback::to_si(*frame), .sample = s};
-                latest->publish(f);
-                if (on_feedback) on_feedback(f);
-            });
-        if (!c->latest->wait_newer(0, o.first_feedback_within)) {
-            const auto status = c->receiver->status();
+        c->monitor = std::make_unique<Monitor>(o.host, Monitor::Options{.receiver = {.port = o.monitor_port},
+                                                                        .on_sample = std::move(o.on_sample),
+                                                                        .on_state = std::move(o.on_state)});
+        if (!c->monitor->next(0, o.first_state_within)) {
+            const auto status = c->monitor->status().receiver;
             return std::unexpected(
                 Error{Error::Kind::Disconnected,
                       std::format("monitor port {}:{}: no frame within {} ms{}", o.host, o.monitor_port,
-                                  o.first_feedback_within.count(),
+                                  o.first_state_within.count(),
                                   status.last_error ? " (" + status.last_error->message() + ")" : std::string{})});
         }
     }
@@ -58,15 +46,7 @@ std::expected<sdk::Json, Error> Robot::call_json(const sdk::Request& request, sd
     return c_->call(request);
 }
 
-std::optional<Feedback> Robot::feedback() const {
-    if (const auto e = c_->latest->get()) return e->value;
-    return std::nullopt;
-}
-
-std::optional<Feedback> Robot::next_feedback(std::uint64_t after, std::chrono::nanoseconds timeout) const {
-    if (const auto e = c_->latest->wait_newer(after, timeout)) return e->value;
-    return std::nullopt;
-}
+const Monitor& Robot::monitor() const noexcept { return *c_->monitor; }
 
 std::expected<void, Error> Robot::bring_up() {
     using namespace std::chrono_literals;

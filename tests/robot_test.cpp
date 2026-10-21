@@ -1,6 +1,6 @@
 // ec::Robot against a scripted controller on 127.0.0.1 (tests/support/
-// mini_controller.hpp): connecting, the monitoring stream's newest frame,
-// typed calls, bring-up, and stop.
+// mini_controller.hpp): connecting, the monitor's newest state, typed calls,
+// bring-up, and stop.
 
 #include "ec/robot.hpp"
 
@@ -36,39 +36,47 @@ TEST(Robot, ConnectFailsWithoutTheCommandPort) {
 TEST(Robot, ConnectFailsWithoutFramesWhenItMonitors) {
     MiniController controller(/*frames=*/false);
     auto o = controller.options();
-    o.first_feedback_within = 300ms;
+    o.first_state_within = 300ms;
     const auto robot = ec::Robot::connect(o);
     ASSERT_FALSE(robot);
     EXPECT_EQ(robot.error().kind, Error::Kind::Disconnected);
     EXPECT_NE(robot.error().message.find("monitor port"), std::string::npos);
 }
 
-TEST(Robot, WithoutTheMonitorThereIsNoFeedbackButCallsWork) {
+TEST(Robot, WithoutTheMonitorThereIsNoStateButCallsWork) {
     MiniController controller(/*frames=*/false);
     auto robot = ec::Robot::connect(controller.options(/*monitor=*/false));
     ASSERT_TRUE(robot) << describe(robot.error());
-    EXPECT_FALSE(robot->feedback());
+    EXPECT_FALSE(robot->monitor().latest());
+    EXPECT_FALSE(robot->monitor().status().receiver.connected);
     const auto mode = robot->call(ec::sdk::GetRobotMode{});
     ASSERT_TRUE(mode) << describe(mode.error());
     EXPECT_EQ(*mode, ec::RobotMode::Remote);
 }
 
-TEST(Robot, FeedbackIsTheNewestFrameDecodedAndEveryFrameIsHandedOn) {
+TEST(Robot, TheMonitorHoldsTheNewestStateAndHandsOnEveryFrame) {
     MiniController controller;
-    std::atomic<int> handed{0};
+    std::atomic<int> samples{0};
+    std::atomic<int> states{0};
     auto o = controller.options();
-    o.on_feedback = [&handed](const ec::Feedback& f) {
-        if (f.seq > 0 && f.sample.raw.size() == ec::feedback::kFrameSize) ++handed;
+    o.on_sample = [&samples](const ec::feedback::Sample&) { ++samples; };
+    o.on_state = [&states](const ec::State& s) {
+        if (s.seq > 0) ++states;
     };
     auto robot = ec::Robot::connect(o);
     ASSERT_TRUE(robot) << describe(robot.error());
-    const auto first = robot->feedback();
+    const auto first = robot->monitor().latest();
     ASSERT_TRUE(first);
     EXPECT_LT(first->age(), 1s);
-    const auto next = robot->next_feedback(first->seq, 1s);
+    EXPECT_TRUE(first->drives.servo_on);  // the scripted frames: remote, servos on, synchronised, stop
+    const auto next = robot->monitor().next(first->seq, 1s);
     ASSERT_TRUE(next);
     EXPECT_GT(next->seq, first->seq);
-    EXPECT_GE(handed.load(), 2);
+    EXPECT_GE(states.load(), 2);
+    EXPECT_GE(samples.load(), states.load());
+
+    ec::Robot moved = std::move(*robot);  // the monitor stays where it was
+    EXPECT_TRUE(moved.monitor().next(next->seq, 1s));
 }
 
 TEST(Robot, CallsFromSeveralThreadsAreAnsweredOneByOne) {

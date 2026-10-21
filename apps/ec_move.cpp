@@ -2,7 +2,7 @@
 //
 //   ec_move [--host H] [--command-port N] [--monitor-port N] [--yes] <command> ...
 //
-//   status                       the state the monitoring port reports
+//   status                       the state the monitoring port reports, and what a motion still needs
 //   bring-up                     clear an alarm, synchronise, servos on: what is needed
 //   joint J1 J2 J3 J4 J5 J6      move to joint positions [deg]            (--speed F, default 0.1)
 //   nudge JOINT DEGREES          move one joint (1..6) by up to 30 deg    (--speed F)
@@ -30,6 +30,7 @@
 #include "cli.hpp"
 #include "ec/motion/move.hpp"
 #include "ec/motion/servo_stream.hpp"
+#include "ec/readiness.hpp"
 #include "ec/record/raw.hpp"
 #include "ec/robot.hpp"
 #include "interrupt.hpp"
@@ -139,7 +140,7 @@ int run(int argc, char** argv) {
         recording.emplace(std::move(*writer));
     }
     ec::RobotOptions options{.host = host, .command_port = command_port, .monitor_port = monitor_port};
-    if (recording) options.on_feedback = [&recording](const ec::Feedback& f) { recording->write(f.sample); };
+    if (recording) options.on_sample = [&recording](const ec::feedback::Sample& s) { recording->write(s); };
 
     int code = cli::kFailed;
     {
@@ -149,20 +150,22 @@ int run(int argc, char** argv) {
             return cli::kFailed;
         }
         const cli::StopOnInterrupt ctrl_c(*robot);
-        const auto now = robot->feedback();
+        const auto now = robot->monitor().latest();
         if (!now) {
             cli::err("no state from the monitoring port\n");
             return cli::kFailed;
         }
-        const ec::Joints here = now->state.joint_position;
+        const ec::Joints here = now->positions();
 
         if (status->parsed()) {
-            const auto& st = now->state;
-            cli::out("mode {}, state {}, servos {}, encoders {}, collision {}, emergency stop {}\n", st.robot_mode,
-                     st.robot_state, st.brakes_released ? "on" : "off",
-                     st.motors_synced ? "synchronised" : "not synchronised", st.collision ? "yes" : "no",
-                     st.emergency_stop ? "yes" : "no");
+            const ec::State& st = *now;
+            cli::out("mode {}, state {}, servos {}, encoders {}, collision {}, emergency stop {}\n", st.system.mode,
+                     st.motion.state, st.drives.servo_on ? "on" : "off",
+                     st.drives.synced ? "synchronised" : "not synchronised", st.safety.collision ? "yes" : "no",
+                     st.safety.emergency_stop ? "yes" : "no");
             cli::out("joints {}\n", degrees(here));
+            if (const auto blocker = ec::readiness(st); blocker != ec::Blocker::None)
+                cli::out("before a motion: {}: {}\n", blocker, ec::remedy(blocker));
             code = cli::kOk;
         } else if (stop->parsed()) {
             robot->stop();

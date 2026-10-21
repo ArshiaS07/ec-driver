@@ -30,8 +30,11 @@ add_library(ec_driver
     src/motion/servo_stream.cpp
     src/motion/timestamped.cpp
     src/net/tcp_socket.cpp
+    src/monitor.cpp
     src/pose.cpp
+    src/readiness.cpp
     src/robot.cpp
+    src/state.cpp
 )
 
 add_library(ec::driver ALIAS ec_driver)

@@ -414,6 +414,7 @@ class EcMove(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("mode remote, state stop, servos off", r.stdout)
         self.assertIn("joints [", r.stdout)
+        self.assertIn("before a motion: not synchronised: syncMotorStatus", r.stdout)
 
     def test_a_move_without_yes_only_prints_its_plan(self):
         fake = self.robot("--ready")
