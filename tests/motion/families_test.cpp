@@ -329,14 +329,14 @@ TEST(ServoStream, OptionsOutsideTheManualsRangesAreInvalidAndSendNothing) {
     EXPECT_TRUE(controller.calls().empty());
 }
 
-TEST(ServoStream, DestroyedOpenItSendsNothingAndTheRobotIsFree) {
+TEST(ServoStream, DestroyedOpenItClosesAndTheRobotIsFree) {
     MiniController controller;
     auto robot = connect(controller);
     {
         ec::motion::ServoStream stream(robot);
         ASSERT_TRUE(stream.open());
     }
-    EXPECT_EQ(controller.count("tt_clear_servo_joint_buf"), 0u);
+    EXPECT_EQ(controller.count("tt_clear_servo_joint_buf"), 1u);  // as close()
     EXPECT_TRUE(robot.call(ec::sdk::SetSpeed{.value_pct = 50.0}));
 }
 

@@ -88,7 +88,7 @@ ServoStream::ServoStream(ServoStream&& other) noexcept
 
 ServoStream& ServoStream::operator=(ServoStream&& other) noexcept {
     if (this != &other) {
-        if (id_ != 0) c_->close(id_);
+        close_quietly();
         c_ = std::move(other.c_);
         options_ = other.options_;
         id_ = std::exchange(other.id_, 0);
@@ -96,8 +96,16 @@ ServoStream& ServoStream::operator=(ServoStream&& other) noexcept {
     return *this;
 }
 
-ServoStream::~ServoStream() {
-    if (id_ != 0) c_->close(id_);
+ServoStream::~ServoStream() { close_quietly(); }
+
+void ServoStream::close_quietly() noexcept {
+    try {
+        if (id_ == 0) return;
+        const auto closed = close();
+        static_cast<void>(closed);  // nothing more to do if it fails
+    } catch (...) {                 // NOLINT(bugprone-empty-catch): noexcept; a failed close has no one to tell
+        if (id_ != 0) c_->close(std::exchange(id_, 0));
+    }
 }
 
 }  // namespace ec::motion

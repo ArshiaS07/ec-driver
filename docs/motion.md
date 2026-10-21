@@ -250,7 +250,8 @@ A family's constructor takes its inputs and sends nothing; its methods are its
 SDK calls, in the manual's order, with arguments checked against the manual's
 ranges only. Nothing else is asked or checked: no arrival, no first point, no
 speed limits; the controller refuses what is wrong. A failed call sends
-nothing to clean up, and destroying a motion sends nothing. Waits ask
+nothing to clean up; destroying an open `ServoStream` closes it, destroying
+the others sends nothing. Waits ask
 `getRobotState` every 10 ms. Until the motion is seen running, a stop counts
 only a second after the start, since a motion just started may not show yet.
 The only thread in the driver is the optional 8056 receiver.

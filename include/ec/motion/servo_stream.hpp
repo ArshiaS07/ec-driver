@@ -30,7 +30,7 @@ struct ServoOptions {
 };
 
 /// One stream. It is the robot's open motion from open() until close(), or
-/// the object's destruction, which sends nothing. Move-only.
+/// the object's destruction, which closes it as close() does. Move-only.
 class ServoStream {
 public:
     /// Sends nothing.
@@ -55,6 +55,8 @@ public:
     ~ServoStream();
 
 private:
+    void close_quietly() noexcept;  // close(), for the destructor and the move assignment
+
     std::shared_ptr<detail::Connection> c_;
     ServoOptions options_;
     std::uint64_t id_ = 0;  // the registration as the open motion, while open; 0: none
