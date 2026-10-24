@@ -1,5 +1,7 @@
-// ec_monitor: connect to the controller's monitoring port (8056) and print the
-// decoded robot state.
+// ec_monitor: connect to the controller's monitoring port (8056) and print its
+// frames as the manual lays them out, in the controller's units (deg, mm), to
+// compare with the teach pendant. The driver's SI view of the same frames is
+// ec::State (ec_record --h5 records it).
 //
 //   ec_monitor [host] [--port N] [--rate HZ | --all] [--frames N]
 //
@@ -112,9 +114,8 @@ std::string_view flag(bool on, std::string_view name) { return on ? name : ""; }
 void print_frame(const fb::Frame& f, std::uint64_t seq, const std::string& rate) {
     out("---- #{}  ctrl {} ms  | {}\n", seq, f.timestamp_ms, rate);
     out("mode {}, state {}, cycle {}  {}{}{}{}{}{}\n", f.robot_mode, f.robot_state, f.cycle_mode,
-        flag(f.servo_ready, "[brakes released] "), flag(f.motors_synced, "[synced] "),
-        flag(f.emergency_stop, "[E-STOP] "), flag(f.collision, "[COLLISION] "), flag(f.drag_enabled, "[drag] "),
-        flag(f.force_sensor_connected, "[F/T] "));
+        flag(f.servo_ready, "[servo on] "), flag(f.motors_synced, "[synced] "), flag(f.emergency_stop, "[E-STOP] "),
+        flag(f.collision, "[COLLISION] "), flag(f.drag_enabled, "[drag] "), flag(f.force_sensor_connected, "[F/T] "));
 
     out("{:9} {:>9} {:>9} {:>9} {:>9} {:>9} {:>9}\n", "", "J1", "J2", "J3", "J4", "J5", "J6");
     auto row = [](std::string_view name, const auto& v, std::string_view unit) {

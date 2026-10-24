@@ -110,8 +110,10 @@ struct State {
     [[nodiscard]] Clock::duration age() const noexcept { return Clock::now() - arrival; }
 };
 
-/// The state a decoded frame reports, its units converted by feedback::to_si
-/// (the one place they are); `seq` and `arrival` as given. Pure.
+/// The state a decoded frame reports, in SI units: the one place where the
+/// stream's units are converted (deg, mm, rpm, per mille). The wire's external
+/// axes 7 and 8 and its constant size field are left out. `seq` and `arrival`
+/// as given. Pure.
 [[nodiscard]] State state_from(const feedback::Frame& frame, std::uint64_t seq, Clock::time_point arrival) noexcept;
 
 }  // namespace ec

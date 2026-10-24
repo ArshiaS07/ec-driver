@@ -65,7 +65,7 @@ struct Frame {
     RobotState robot_state = RobotState::Stop;  ///< robotState
     RobotMode robot_mode = RobotMode::Teach;    ///< robotMode
     CycleMode cycle_mode = CycleMode::Step;     ///< autorun_cycelMode
-    bool servo_ready = false;                   ///< servoReady: the brakes are released
+    bool servo_ready = false;                   ///< servoReady: servo on, the brakes released
     bool motors_synced = false;                 ///< can_motor_run: encoders synchronized
     bool collision = false;                     ///< collision: collision alarm
     bool emergency_stop = false;                ///< emergencyStopState

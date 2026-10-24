@@ -13,11 +13,10 @@
 #include "ec/feedback/frame.hpp"
 #include "ec/record/clock.hpp"
 #include "ec/status.hpp"
+#include "ec/units.hpp"
 
 namespace ec::record {
 namespace {
-
-using feedback::State;
 
 constexpr std::size_t kChunkRows = 1024;  // rows per chunk, and per write
 constexpr unsigned kDeflateLevel = 4;     // past it, files barely shrink while writing keeps slowing
@@ -44,6 +43,30 @@ struct Storage<std::array<double, N>> {
     static HighFive::DataType type() { return HighFive::create_datatype<double>(); }
     static void append(std::vector<Element>& out, const std::array<double, N>& v) {
         out.insert(out.end(), v.begin(), v.end());
+    }
+};
+
+template <>
+struct Storage<Eigen::Vector3d> {
+    using Element = double;
+    static std::vector<std::size_t> cell() { return {3}; }
+    static HighFive::DataType type() { return HighFive::create_datatype<double>(); }
+    static void append(std::vector<Element>& out, const Eigen::Vector3d& v) {
+        out.insert(out.end(), {v.x(), v.y(), v.z()});
+    }
+};
+
+// A pose as its 4x4 homogeneous matrix, row by row (HDF5 is row-major; Eigen
+// stores columns).
+template <>
+struct Storage<Eigen::Isometry3d> {
+    using Element = double;
+    static std::vector<std::size_t> cell() { return {4, 4}; }
+    static HighFive::DataType type() { return HighFive::create_datatype<double>(); }
+    static void append(std::vector<Element>& out, const Eigen::Isometry3d& pose) {
+        const Eigen::Matrix4d& m = pose.matrix();
+        for (Eigen::Index r = 0; r < 4; ++r)
+            for (Eigen::Index c = 0; c < 4; ++c) out.push_back(m(r, c));
     }
 };
 
@@ -85,53 +108,72 @@ struct Storage<E> {
 
 // ---------------------------------------------------------------- columns
 
-// One dataset of a record type: the member it holds, and its unit (none for
-// enums, booleans and bit sets, which are not quantities).
-template <typename T>
+// One dataset: where it goes in the writer's group (`part`, empty for the
+// group itself), its name, its unit (none for enums, booleans and bit sets,
+// which are not quantities), and how a row's value is read from a State.
+template <typename Get>
 struct Column {
+    const char* part;
     const char* name;
     const char* unit;
-    T State::* member;
+    Get get;
 };
 
-template <typename T>
-constexpr Column<T> column(const char* name, const char* unit, T State::* member) {
-    return {name, unit, member};
+template <typename Get>
+constexpr Column<Get> column(const char* part, const char* name, const char* unit, Get get) {
+    return {part, name, unit, get};
 }
 
-// Every field of feedback::State, in its order. Keep in step with the struct
-// and with docs/recording-format.md.
-constexpr auto kFeedbackColumns = std::make_tuple(
-    column("controller_time", "ms", &State::controller_time_ms),
-    column("joint_position", "rad", &State::joint_position), column("joint_velocity", "rad/s", &State::joint_velocity),
-    column("joint_acceleration", "rad/s^2", &State::joint_acceleration),
-    column("joint_torque", "N m", &State::joint_torque),
-    column("joint_torque_external", "N m", &State::joint_torque_external),
-    column("joint_torque_rated", "1", &State::joint_torque_rated), column("motor_speed", "rad/s", &State::motor_speed),
-    column("joint_temperature", "degC", &State::joint_temperature),
-    column("tcp_position_base", "m", &State::tcp_position_base),
-    column("tcp_rotation_base", "rad", &State::tcp_rotation_base),
-    column("tcp_position_user", "m", &State::tcp_position_user),
-    column("tcp_rotation_user", "rad", &State::tcp_rotation_user),
-    column("flange_position_base", "m", &State::flange_position_base),
-    column("flange_rotation_base", "rad", &State::flange_rotation_base),
-    column("flange_position_user", "m", &State::flange_position_user),
-    column("flange_rotation_user", "rad", &State::flange_rotation_user), column("tcp_speed", "m/s", &State::tcp_speed),
-    column("tcp_acceleration", "m/s^2", &State::tcp_acceleration), column("tcp_force", "N", &State::tcp_force),
-    column("tcp_torque", "N m", &State::tcp_torque), column("robot_state", "", &State::robot_state),
-    column("robot_mode", "", &State::robot_mode), column("cycle_mode", "", &State::cycle_mode),
-    column("brakes_released", "", &State::brakes_released), column("motors_synced", "", &State::motors_synced),
-    column("collision", "", &State::collision), column("emergency_stop", "", &State::emergency_stop),
-    column("drag_enabled", "", &State::drag_enabled),
-    column("force_sensor_connected", "", &State::force_sensor_connected),
-    column("digital_input", "", &State::digital_input), column("digital_output", "", &State::digital_output),
-    column("analog_input", "V", &State::analog_input), column("analog_output", "V", &State::analog_output));
+// One member of every joint, J1..J6.
+template <double JointState::* Member>
+std::array<double, kJointCount> per_joint(const State& s) {
+    std::array<double, kJointCount> out{};
+    for (std::size_t i = 0; i < kJointCount; ++i) out[i] = s.joints[i].*Member;
+    return out;
+}
+
+// Every member of ec::State, in its order and under its part's name. Keep in
+// step with the struct and with docs/recording-format.md.
+constexpr auto kStateColumns = std::make_tuple(
+    column("", "arrival", "ns", [](const State& s) { return to_ns(s.arrival); }),
+    column("", "controller_time", "ms", [](const State& s) { return s.controller_time.time_since_epoch().count(); }),
+    column("joints", "position", "rad", per_joint<&JointState::position>),
+    column("joints", "velocity", "rad/s", per_joint<&JointState::velocity>),
+    column("joints", "acceleration", "rad/s^2", per_joint<&JointState::acceleration>),
+    column("joints", "torque", "N m", per_joint<&JointState::torque>),
+    column("joints", "external_torque", "N m", per_joint<&JointState::external_torque>),
+    column("joints", "torque_of_rated", "1", per_joint<&JointState::torque_of_rated>),
+    column("joints", "motor_speed", "rad/s", per_joint<&JointState::motor_speed>),
+    column("joints", "temperature", "degC", per_joint<&JointState::temperature>),
+    column("tcp", "pose", "m", [](const State& s) { return s.tcp.pose; }),
+    column("tcp", "pose_in_user", "m", [](const State& s) { return s.tcp.pose_in_user; }),
+    column("tcp", "flange_pose", "m", [](const State& s) { return s.tcp.flange_pose; }),
+    column("tcp", "flange_pose_in_user", "m", [](const State& s) { return s.tcp.flange_pose_in_user; }),
+    column("tcp", "speed", "m/s", [](const State& s) { return s.tcp.speed; }),
+    column("tcp", "acceleration", "m/s^2", [](const State& s) { return s.tcp.acceleration; }),
+    column("tcp", "force", "N", [](const State& s) { return s.tcp.force; }),
+    column("tcp", "torque", "N m", [](const State& s) { return s.tcp.torque; }),
+    column("drives", "servo_on", "", [](const State& s) { return s.drives.servo_on; }),
+    column("drives", "synced", "", [](const State& s) { return s.drives.synced; }),
+    column("motion", "state", "", [](const State& s) { return s.motion.state; }),
+    column("motion", "hand_guiding", "", [](const State& s) { return s.motion.hand_guiding; }),
+    column("safety", "emergency_stop", "", [](const State& s) { return s.safety.emergency_stop; }),
+    column("safety", "collision", "", [](const State& s) { return s.safety.collision; }),
+    column("io", "digital_inputs", "",
+           [](const State& s) { return static_cast<std::uint64_t>(s.io.digital_inputs.to_ullong()); }),
+    column("io", "digital_outputs", "",
+           [](const State& s) { return static_cast<std::uint64_t>(s.io.digital_outputs.to_ullong()); }),
+    column("io", "analog_inputs", "V", [](const State& s) { return s.io.analog_inputs; }),
+    column("io", "analog_outputs", "V", [](const State& s) { return s.io.analog_outputs; }),
+    column("programs", "cycle_mode", "", [](const State& s) { return s.programs.cycle_mode; }),
+    column("system", "mode", "", [](const State& s) { return s.system.mode; }),
+    column("system", "force_sensor_connected", "", [](const State& s) { return s.system.force_sensor_connected; }));
 
 // ---------------------------------------------------------------- writing
 
-// The group at `path`, created with its parents if missing.
-HighFive::Group require_group(HighFive::File& file, std::string_view path) {
-    HighFive::Group group = file.getGroup("/");
+// The group at `path` below `group` (from the root if `path` starts with a
+// slash), created with its parents if missing.
+HighFive::Group require_group(HighFive::Group group, std::string_view path) {
     std::size_t begin = 0;
     while (begin < path.size()) {
         const std::size_t end = std::min(path.find('/', begin), path.size());
@@ -178,13 +220,17 @@ void append(HighFive::Group& group, const std::string& name, std::string_view un
     set.select(offset, count).write_raw(values.data(), type);
 }
 
-template <typename T>
-void append_column(HighFive::Group& group, const Column<T>& column, const std::vector<State>& rows) {
+template <typename Get>
+void append_column(HighFive::Group& group, const Column<Get>& column, const std::vector<State>& rows) {
+    using T = std::remove_cvref_t<std::invoke_result_t<Get, const State&>>;
     using S = Storage<T>;
+    std::size_t per_row = 1;
+    for (const std::size_t n : S::cell()) per_row *= n;
     std::vector<typename S::Element> values;
-    values.reserve(rows.size() * (S::cell().empty() ? 1 : S::cell()[0]));
-    for (const State& row : rows) S::append(values, row.*column.member);
-    append(group, column.name, column.unit, S::cell(), S::type(), values, rows.size());
+    values.reserve(rows.size() * per_row);
+    for (const State& row : rows) S::append(values, column.get(row));
+    HighFive::Group part = require_group(group, column.part);
+    append(part, column.name, column.unit, S::cell(), S::type(), values, rows.size());
 }
 
 }  // namespace
@@ -218,61 +264,56 @@ std::expected<H5File, std::string> H5File::create(const std::filesystem::path& p
     }
 }
 
-// ---------------------------------------------------------------- H5FeedbackWriter
+// ---------------------------------------------------------------- H5StateWriter
 
-H5FeedbackWriter::H5FeedbackWriter(H5File::Impl* file, std::string group) noexcept
-    : file_(file), group_(std::move(group)) {}
+H5StateWriter::H5StateWriter(H5File::Impl* file, std::string group) noexcept : file_(file), group_(std::move(group)) {}
 
 // The Sink base has no state, so it is default-constructed rather than moved.
-H5FeedbackWriter::H5FeedbackWriter(H5FeedbackWriter&& other) noexcept
+H5StateWriter::H5StateWriter(H5StateWriter&& other) noexcept
     : file_(std::exchange(other.file_, nullptr)),
       group_(std::move(other.group_)),
-      t_(std::move(other.t_)),
       rows_(std::move(other.rows_)),
       error_(std::move(other.error_)),
       written_(other.written_),
       skipped_(other.skipped_) {}
 
-H5FeedbackWriter::~H5FeedbackWriter() { write_buffered(); }
+H5StateWriter::~H5StateWriter() { write_buffered(); }
 
-std::expected<H5FeedbackWriter, std::string> H5FeedbackWriter::create(H5File& file, std::string group) {
+std::expected<H5StateWriter, std::string> H5StateWriter::create(H5File& file, std::string group) {
     try {
         const HighFive::SilenceHDF5 silence;
-        require_group(file.impl_->file, group);  // now, so that a bad path fails here
+        require_group(file.impl_->file.getGroup("/"), group);  // now, so that a bad path fails here
     } catch (const std::exception& e) {
         return std::unexpected(std::format("{}: {}", group, e.what()));
     }
-    return H5FeedbackWriter(file.impl_.get(), std::move(group));
+    return H5StateWriter(file.impl_.get(), std::move(group));
 }
 
-void H5FeedbackWriter::write(const feedback::Sample& sample) {
+void H5StateWriter::write(const feedback::Sample& sample) {
     if (error_) return;
     const auto frame = feedback::decode(sample.raw);
     if (!frame) {
         ++skipped_;
         return;
     }
-    t_.push_back(to_ns(sample.arrival));
-    rows_.push_back(feedback::to_si(*frame));
+    rows_.push_back(state_from(*frame, written_ + rows_.size() + 1, sample.arrival));
     if (rows_.size() >= kChunkRows) write_buffered();
 }
 
-std::expected<void, std::string> H5FeedbackWriter::flush() {
+std::expected<void, std::string> H5StateWriter::flush() {
     write_buffered();
     if (error_) return std::unexpected(*error_);
     return {};
 }
 
-void H5FeedbackWriter::write_buffered() noexcept {
+void H5StateWriter::write_buffered() noexcept {
     if (error_ || rows_.empty() || file_ == nullptr) return;
     try {
         const HighFive::SilenceHDF5 silence;
-        HighFive::Group group = require_group(file_->file, group_);
-        append(group, "t", "ns", {}, HighFive::create_datatype<std::int64_t>(), t_, rows_.size());
-        std::apply([&](const auto&... columns) { (append_column(group, columns, rows_), ...); }, kFeedbackColumns);
+        HighFive::Group group = require_group(file_->file.getGroup("/"), group_);
+        std::apply([&](const auto&... columns) { (append_column(group, columns, rows_), ...); }, kStateColumns);
         file_->file.flush();  // what is written survives a crash of this process
         written_ += rows_.size();
-        t_.clear();
         rows_.clear();
     } catch (const std::exception& e) {
         set_error(e.what());
@@ -281,7 +322,7 @@ void H5FeedbackWriter::write_buffered() noexcept {
     }
 }
 
-void H5FeedbackWriter::set_error(const char* what) noexcept {
+void H5StateWriter::set_error(const char* what) noexcept {
     try {
         error_ = std::format("{}: {}", group_, what);
     } catch (...) {

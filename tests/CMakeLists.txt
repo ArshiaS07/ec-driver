@@ -13,7 +13,6 @@ add_executable(ec_tests
     feedback/framer_test.cpp
     feedback/reader_test.cpp
     feedback/receiver_test.cpp
-    feedback/state_test.cpp
     latest_test.cpp
     record/raw_test.cpp
     motion/families_test.cpp

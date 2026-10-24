@@ -5,7 +5,7 @@
 //   ec_record --replay FILE --h5 FILE
 //
 // Live, every frame goes to the raw recording (--raw: the bytes as received)
-// and/or the HDF5 recording (--h5: SI columns under /feedback), until Ctrl+C, --frames
+// and/or the HDF5 recording (--h5: ec::State, in SI, under /state), until Ctrl+C, --frames
 // or --seconds. Replay reads a raw recording instead and keeps its arrival
 // times; that is how a raw recording becomes an HDF5 recording later. Formats:
 // docs/recording-format.md. Read-only: it never sends anything to the robot.
@@ -52,7 +52,7 @@ int run(int argc, char** argv) {
         app.add_option("--port", port, "Monitoring port")->capture_default_str()->check(CLI::Range(1, 65535));
     auto* raw_option = app.add_option("--raw", raw_path, "Raw recording to write: every frame as received");
 #if defined(EC_WITH_HDF5)
-    app.add_option("--h5", h5_path, "HDF5 recording to write: SI columns under /feedback");
+    app.add_option("--h5", h5_path, "HDF5 recording to write: the robot state in SI under /state");
 #endif
     app.add_option("--frames", max_frames, "Stop after this many frames (0: no limit)")->capture_default_str();
     app.add_option("--seconds", seconds, "Stop after this long (0: no limit)")
@@ -83,7 +83,7 @@ int run(int argc, char** argv) {
     }
 #if defined(EC_WITH_HDF5)
     std::optional<ec::record::H5File> h5_file;
-    std::optional<ec::record::H5FeedbackWriter> h5;  // declared after the file: destroyed before it
+    std::optional<ec::record::H5StateWriter> h5;  // declared after the file: destroyed before it
     if (!h5_path.empty()) {
         auto file = ec::record::H5File::create(h5_path);
         if (!file) {
@@ -91,7 +91,7 @@ int run(int argc, char** argv) {
             return cli::kFailed;
         }
         h5_file.emplace(std::move(*file));
-        auto writer = ec::record::H5FeedbackWriter::create(*h5_file, "/feedback");
+        auto writer = ec::record::H5StateWriter::create(*h5_file, "/state");
         if (!writer) {
             cli::err("{}\n", writer.error());
             return cli::kFailed;

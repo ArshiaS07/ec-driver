@@ -23,7 +23,6 @@ add_library(ec_driver
     src/feedback/framer.cpp
     src/feedback/reader.cpp
     src/feedback/receiver.cpp
-    src/feedback/state.cpp
     src/record/raw.cpp
     src/detail/connection.cpp
     src/motion/move.cpp

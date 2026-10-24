@@ -14,13 +14,13 @@
 #include <vector>
 
 #include "ec/feedback/sample.hpp"
-#include "ec/feedback/state.hpp"
 #include "ec/record/sink.hpp"
+#include "ec/state.hpp"
 
 namespace ec::record {
 
 /// The format the files follow; the number changes when existing readers would break.
-inline constexpr std::string_view kH5Schema = "ec-driver.log/1";
+inline constexpr std::string_view kH5Schema = "ec-driver.recording/2";
 
 /// An HDF5 recording file. It owns the file; writers add their groups to it. Use a
 /// file and its writers from one thread. Move-only; closed on destruction.
@@ -37,23 +37,24 @@ public:
     ~H5File();
 
 private:
-    friend class H5FeedbackWriter;
+    friend class H5StateWriter;
     struct Impl;
     explicit H5File(std::unique_ptr<Impl> impl) noexcept;
     std::unique_ptr<Impl> impl_;
 };
 
-/// Writes feedback samples into one group of an H5File: each frame decoded and
-/// converted to SI (feedback::State), one row per frame, plus `t`, its arrival
-/// time. Rows are buffered and written a chunk at a time, on flush(), and on
-/// destruction. Frames that do not decode are skipped and counted; a raw
-/// recording keeps them.
-class H5FeedbackWriter final : public Sink<feedback::Sample> {
+/// Writes the monitoring stream into one group of an H5File as ec::State: each
+/// frame decoded (state_from), one row per frame, one dataset per member, in
+/// groups laid out as the struct is (`joints/position`, `tcp/pose`,
+/// `drives/servo_on`, ...). Rows are buffered and written a chunk at a time,
+/// on flush(), and on destruction. Frames that do not decode are skipped and
+/// counted; a raw recording keeps them.
+class H5StateWriter final : public Sink<feedback::Sample> {
 public:
-    /// A writer for the group `group` (e.g. "/feedback") of `file`; the caller
+    /// A writer for the group `group` (e.g. "/state") of `file`; the caller
     /// chooses where it goes. The file must outlive the writer (moving the
     /// H5File handle is fine).
-    [[nodiscard]] static std::expected<H5FeedbackWriter, std::string> create(H5File& file, std::string group);
+    [[nodiscard]] static std::expected<H5StateWriter, std::string> create(H5File& file, std::string group);
 
     /// Buffers one row. After a failure, writes nothing more; see error().
     void write(const feedback::Sample& sample) override;
@@ -65,21 +66,20 @@ public:
     [[nodiscard]] std::uint64_t written() const noexcept { return written_; }  ///< rows in the file
     [[nodiscard]] std::uint64_t skipped() const noexcept { return skipped_; }  ///< frames that did not decode
 
-    H5FeedbackWriter(H5FeedbackWriter&& other) noexcept;
-    H5FeedbackWriter& operator=(H5FeedbackWriter&&) = delete;
-    H5FeedbackWriter(const H5FeedbackWriter&) = delete;
-    H5FeedbackWriter& operator=(const H5FeedbackWriter&) = delete;
-    ~H5FeedbackWriter() override;
+    H5StateWriter(H5StateWriter&& other) noexcept;
+    H5StateWriter& operator=(H5StateWriter&&) = delete;
+    H5StateWriter(const H5StateWriter&) = delete;
+    H5StateWriter& operator=(const H5StateWriter&) = delete;
+    ~H5StateWriter() override;
 
 private:
-    H5FeedbackWriter(H5File::Impl* file, std::string group) noexcept;
+    H5StateWriter(H5File::Impl* file, std::string group) noexcept;
     void write_buffered() noexcept;  // the buffered rows to the file; failures go to error_
     void set_error(const char* what) noexcept;
 
     H5File::Impl* file_;  // the file's state, which stays put when the H5File handle moves
     std::string group_;
-    std::vector<std::int64_t> t_;  // buffered rows
-    std::vector<feedback::State> rows_;
+    std::vector<State> rows_;  // buffered
     std::optional<std::string> error_;
     std::uint64_t written_ = 0;
     std::uint64_t skipped_ = 0;

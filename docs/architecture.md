@@ -159,11 +159,12 @@ struct State {
 State state_from(const feedback::Frame&, std::uint64_t seq, Clock::time_point arrival);   // pure
 ```
 
-`feedback::State`, the flat SI view of a frame field by field as the manual
-lists them, stays: `feedback::to_si` is still the one place where units are
-converted, and `state_from` regroups its result. The HDF5 recording is made
-from it (one dataset per manual field), since recordings sit beside the wire
-and should not depend on the robot layer above it.
+`state_from` is the one place where the stream's units are converted, and
+`ec::State` the one SI view of a frame: the HDF5 recording stores it member by
+member (`docs/recording-format.md`). `ec::feedback` is the wire below it,
+the frame as the manual lays it out (`Frame`, `decode`, framing, reader,
+receiver), as `ec::sdk` is for 8055; `ec_monitor` prints frames at that level,
+in the controller's units, to compare with the pendant.
 
 What 8056 does not carry (precise, power, the last alarms, the speed slider,
 the tool numbers, which brakes are released) has only the 8055 path, read on
@@ -295,7 +296,7 @@ format, clang-tidy and the app tests.
 
 | Keep as it is | Reshape | New | Archive |
 |---|---|---|---|
-| `net/`, the 184 typed calls and the client (`sdk/`), the 8056 decoder, reader and receiver, the recorders (`record/`), `Latest`, units, poses, status enums, the fakes and their tests, `apps/planning.hpp` (the sandbox's) | `ec::State` made of parts, built from `feedback::State` (done); `Robot` → the composition root; `detail::Connection` → the session; the motion families under the motion part, with waits on the stream; `bring_up` → a workflow; `ec_move` on the workflows | the parts; `Monitor` and `readiness` (done); the workflows; the 8058 log client; `Path`, `Jog`, `SpeedStream`; `ec_log` | done 2026-10-21: `docs/motion.md`, the old architecture and design, the ADRs (local) moved to `docs/archive/` |
+| `net/`, the 184 typed calls and the client (`sdk/`), the 8056 decoder, reader and receiver, the recorders (`record/`), `Latest`, units, poses, status enums, the fakes and their tests, `apps/planning.hpp` (the sandbox's) | `feedback::State` → `ec::State` made of parts, the HDF5 recording on it (done); `Robot` → the composition root; `detail::Connection` → the session; the motion families under the motion part, with waits on the stream; `bring_up` → a workflow; `ec_move` on the workflows | the parts; `Monitor` and `readiness` (done); the workflows; the 8058 log client; `Path`, `Jog`, `SpeedStream`; `ec_log` | done 2026-10-21: `docs/motion.md`, the old architecture and design, the ADRs (local) moved to `docs/archive/` |
 
 Also done on day 1: `ec::log` (our recordings) is now `ec::record`, so that
 "log" means the controller's log; ADR citations in the code now point to
