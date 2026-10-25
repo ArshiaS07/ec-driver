@@ -4,6 +4,7 @@
 #include <string_view>
 
 #include "detail/connection.hpp"
+#include "detail/part.hpp"
 #include "ec/pose.hpp"
 #include "ec/sdk/kinematics.hpp"
 #include "ec/sdk/param.hpp"
@@ -13,16 +14,10 @@ namespace {
 
 constexpr double kMmPerMetre = 1000.0;
 
-// Tools and user frames: 0..7 [S 2.2.2.11, 2.2.2.13].
-std::expected<void, Error> check_number(std::string_view what, int n) {
-    if (n < 0 || n > 7) return std::unexpected(Error{Error::Kind::Invalid, std::format("{} {}: 0..7", what, n)});
-    return {};
-}
+using detail::done;
 
-std::expected<void, Error> done(const std::expected<sdk::Ok, Error>& ok) {
-    if (!ok) return std::unexpected(ok.error());
-    return {};
-}
+// Tools and user frames: 0..7 [S 2.2.2.11, 2.2.2.13].
+std::expected<void, Error> check_number(std::string_view what, int n) { return detail::in_range(what, n, 0, 7); }
 
 std::expected<Eigen::Isometry3d, Error> pose(const std::expected<sdk::PoseMmRad, Error>& p) {
     if (!p) return std::unexpected(p.error());
@@ -54,6 +49,15 @@ std::expected<Eigen::Isometry3d, Error> Model::from_user(const Eigen::Isometry3d
     return pose(
         detail::send(session_, sdk::ConvertPoseFromUserToCart{.pose = to_mm_rad(T_user_x), .user_frame = user}));
 }
+
+std::expected<double, Error> Model::dh(int index) const {
+    if (auto ok = detail::in_range("getDH index", index, 0, 11); !ok) return std::unexpected(ok.error());
+    return detail::send(session_, sdk::GetDH{.index = index});
+}
+
+std::expected<int, Error> Model::robot_type() const { return detail::send(session_, sdk::GetRobotType{}); }
+
+std::expected<int, Error> Model::robot_subtype() const { return detail::send(session_, sdk::GetRobotSubtype{}); }
 
 std::expected<int, Error> Model::active_tool() const { return detail::send(session_, sdk::GetAutoRunToolNumber{}); }
 

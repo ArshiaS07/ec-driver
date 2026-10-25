@@ -31,11 +31,15 @@ add_library(ec_driver
     src/motion/timestamped.cpp
     src/net/tcp_socket.cpp
     src/drives.cpp
+    src/io.cpp
+    src/joint.cpp
     src/model.cpp
     src/monitor.cpp
     src/pose.cpp
+    src/programs.cpp
     src/readiness.cpp
     src/robot.cpp
+    src/safety.cpp
     src/state.cpp
     src/system.cpp
 )

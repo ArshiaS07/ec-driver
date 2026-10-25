@@ -1,4 +1,4 @@
-// The parts (Drives, Model, System) against a scripted controller on
+// The parts (Joint, Drives, Model, Safety, Io, Programs, System) against a scripted controller on
 // 127.0.0.1 (tests/support/mini_controller.hpp): each operation is its call,
 // with its arguments in the controller's units and its reply in SI; ranges
 // are checked before anything is sent; settings wait while a motion is open;
@@ -204,6 +204,133 @@ TEST(System, TheLogIsReadFromTheLogPort) {
     for (int i = 0; i < 200 && controller.log_requests().empty(); ++i) std::this_thread::sleep_for(10ms);
     EXPECT_EQ(controller.log_requests(), (std::vector<std::string>{"Type=Error|2|exit"}));
     EXPECT_TRUE(controller.calls().empty());  // nothing on the command connection
+}
+
+TEST(Model, DhParametersAndTheRobotsType) {
+    MiniController controller;
+    const auto robot = connect(controller);
+    const auto model = robot.model();
+    controller.answer("getDH", [](const ec::sdk::Json& p) {
+        return std::optional<std::string>(p["index"] == 0 ? "95.431" : "418.0");
+    });
+    controller.answer("getRobotType", "62");
+    EXPECT_EQ(model.dh(0), 95.431);  // as sent: no unit conversion
+    EXPECT_EQ(model.dh(1), 418.0);
+    EXPECT_EQ(model.dh(12).error().kind, Error::Kind::Invalid);
+    EXPECT_EQ(model.robot_type(), 62);
+    EXPECT_EQ(controller.count("getDH"), 2u);
+}
+
+TEST(Joint, EachReadingIsThisJointsEntry) {
+    MiniController controller;  // get_joint_pos: 0, -90, 90, -90, -90, 0 deg
+    const auto robot = connect(controller);
+    controller.answer("get_joint_speed", "[1.0,2.0,3.0,4.0,5.0,6.0]");
+    controller.answer("get_joint_torques", "[10.0,20.0,30.0,40.0,50.0,60.0]");
+    controller.answer("get_motor_torque", "[100.0,200.0,300.0,400.0,500.0,600.0]");
+    controller.answer("get_joint_temp", "[31.0,32.0,33.0,34.0,35.0,36.0]");
+    controller.answer("get_servo_brake_off_status", "[1,1,0,1,1,1]");
+    controller.answer("getJointVersion", R"("11.2")");
+    const auto j3 = robot.joint(3);
+    EXPECT_EQ(j3.number(), 3);
+    EXPECT_DOUBLE_EQ(j3.position().value(), ec::deg_to_rad(90.0));
+    EXPECT_DOUBLE_EQ(j3.velocity().value(), ec::deg_to_rad(3.0));
+    EXPECT_DOUBLE_EQ(j3.torque().value(), 30.0);
+    EXPECT_DOUBLE_EQ(j3.torque_of_rated().value(), 0.3);
+    EXPECT_DOUBLE_EQ(j3.temperature().value(), 33.0);
+    EXPECT_EQ(j3.brake_released(), false);
+    EXPECT_EQ(j3.firmware(), "11.2");
+    EXPECT_EQ(controller.last("getJointVersion")["axis"], 2);
+
+    controller.forget();
+    EXPECT_EQ(robot.joint(7).temperature().error().kind, Error::Kind::Invalid);
+    EXPECT_EQ(robot.joint(0).position().error().kind, Error::Kind::Invalid);
+    EXPECT_TRUE(controller.calls().empty());
+}
+
+TEST(Io, ChannelsWithinTheManualsAddresses) {
+    MiniController controller;
+    const auto robot = connect(controller);
+    const auto io = robot.io();
+    controller.answer("getInput", "1");
+    controller.answer("getAnalogInput", "2.5");
+    controller.answer("getVirtualOutput", "1");
+    controller.answer("checkFlangeButton", "1");
+
+    EXPECT_EQ(io.input(48), true);
+    EXPECT_EQ(controller.last("getInput")["addr"], 48);
+    EXPECT_TRUE(io.set_output(3, true));
+    EXPECT_EQ(controller.last("setOutput")["status"], 1);
+    EXPECT_EQ(io.analog_input(2), 2.5);
+    EXPECT_TRUE(io.set_analog_output(0, -5.0));
+    EXPECT_EQ(io.virtual_output(472), true);
+    EXPECT_TRUE(io.set_virtual_output(600, true));
+    EXPECT_EQ(io.flange_button(ec::sdk::FlangeButton::Green), ec::sdk::FlangeButtonFunction::Drag);
+
+    controller.forget();
+    EXPECT_EQ(io.input(20).error().kind, Error::Kind::Invalid);
+    EXPECT_EQ(io.set_output(50, true).error().kind, Error::Kind::Invalid);  // 48..49 only
+    EXPECT_EQ(io.analog_input(3).error().kind, Error::Kind::Invalid);
+    EXPECT_EQ(io.set_analog_output(4, -1.0).error().kind, Error::Kind::Invalid);  // output 4: 0..10 V
+    EXPECT_EQ(io.set_analog_output(1, 10.5).error().kind, Error::Kind::Invalid);
+    EXPECT_EQ(io.virtual_input(400).error().kind, Error::Kind::Invalid);
+    EXPECT_EQ(io.set_virtual_output(527, true).error().kind, Error::Kind::Invalid);
+    EXPECT_TRUE(controller.calls().empty());
+}
+
+TEST(Safety, StopsAndLimits) {
+    MiniController controller;
+    const auto robot = connect(controller);
+    const auto safety = robot.safety();
+    controller.answer("get_estop_status", "0");
+    controller.answer("getCollisionState", "1");
+    controller.answer("get_collision_enable_status", "1");
+    controller.answer("getCollisionSensitivity", "80");
+    controller.answer("getRobotSafetyParamsEnabled", "1");
+    controller.answer("getRobotSafetyPower", "[300.0,150.0]");
+    controller.answer("getRobotSpeedPercentage", "[100.0,30.0]");
+
+    EXPECT_EQ(safety.emergency_stop(), false);
+    EXPECT_EQ(safety.collision(), true);
+    EXPECT_TRUE(safety.reset_collision());
+    EXPECT_EQ(safety.collision_detection(), true);
+    EXPECT_DOUBLE_EQ(safety.collision_sensitivity().value(), 0.8);
+    EXPECT_EQ(safety.limits_enabled(), true);
+    EXPECT_DOUBLE_EQ(safety.power_limit()->reduced, 150.0);
+    EXPECT_DOUBLE_EQ(safety.speed_limit()->reduced, 0.3);
+}
+
+TEST(Programs, ProgramsAndVariables) {
+    MiniController controller;
+    const auto robot = connect(controller);
+    const auto programs = robot.programs();
+    controller.answer("checkJbiExist", "1");
+    controller.answer("getJbiState", R"({"jbiName":"pick","runState":3})");
+    controller.answer("getSysVarP", "[0.0,-90.0,90.0,0.0,0.0,0.0,0.0,0.0]");
+    controller.answer("getSysVarV", "[100.0,0.0,0.0,0.0,0.0,0.0]");
+
+    EXPECT_EQ(programs.exists("pick"), true);
+    EXPECT_TRUE(programs.run("pick"));
+    EXPECT_EQ(controller.last("runJbi")["filename"], "pick");
+    EXPECT_EQ(programs.state()->state, ec::sdk::JbiRunState::Running);
+    EXPECT_TRUE(programs.pause());
+    EXPECT_TRUE(programs.resume());
+    EXPECT_TRUE(programs.set_cycle_mode(ec::CycleMode::Continuous));
+    EXPECT_EQ(controller.last("setCycleMode")["cycle_mode"], 2);
+
+    EXPECT_DOUBLE_EQ(programs.p(1).value()[1], ec::deg_to_rad(-90.0));
+    EXPECT_TRUE(programs.set_p(1, ec::Joints{0.0, ec::deg_to_rad(45.0), 0.0, 0.0, 0.0, 0.0}));
+    EXPECT_NEAR(controller.last("setSysVarP")["pos"][1].get<double>(), 45.0, 1e-9);
+    EXPECT_NEAR(programs.v(2)->translation().x(), 0.1, 1e-12);
+    EXPECT_TRUE(programs.set_i(5, -32767));
+    EXPECT_TRUE(programs.save_variables());
+
+    controller.forget();
+    EXPECT_EQ(programs.b(256).error().kind, Error::Kind::Invalid);
+    EXPECT_EQ(programs.set_i(0, 40000).error().kind, Error::Kind::Invalid);
+    EXPECT_EQ(programs.set_b(0, -1).error().kind, Error::Kind::Invalid);
+    EXPECT_EQ(programs.set_d(0, 2e9).error().kind, Error::Kind::Invalid);
+    EXPECT_EQ(programs.run("").error().kind, Error::Kind::Invalid);
+    EXPECT_TRUE(controller.calls().empty());
 }
 
 }  // namespace

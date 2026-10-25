@@ -51,6 +51,18 @@ public:
     /// convertPoseFromUserToCart [S 2.2.4.4]: T_user_x, in user frame `user`, as T_base_x.
     [[nodiscard]] std::expected<Eigen::Isometry3d, Error> from_user(const Eigen::Isometry3d& T_user_x, int user) const;
 
+    /// getDH [S 2.2.2.29]: link parameter `index` (0..11, the manual's d1..d12)
+    /// as the controller sends it, unconverted. The manual gives no unit and no
+    /// table: index 0 read 95.431 on the EA66, the user manual's d1 is 96 mm,
+    /// so millimetres (inferred); which DH entry each index is, is unverified
+    /// (compare with docs/ec66.md §3.1; ec_info prints all twelve).
+    [[nodiscard]] std::expected<double, Error> dh(int index) const;
+    /// getRobotType [S 2.2.2.28]: 62 six-axis collaborative, 60 vertical
+    /// articulated, 41 four-axis, 40 palletizing, 43 SCARA, 30 delta.
+    [[nodiscard]] std::expected<int, Error> robot_type() const;
+    /// getRobotSubtype [S 2.2.2.40]; the manual lists no values.
+    [[nodiscard]] std::expected<int, Error> robot_subtype() const;
+
     /// getAutoRunToolNumber [S 2.2.2.36]: the tool REMOTE and PLAY use. (TEACH
     /// has its own, getToolNumber.)
     [[nodiscard]] std::expected<int, Error> active_tool() const;

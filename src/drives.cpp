@@ -1,24 +1,14 @@
 #include "ec/drives.hpp"
 
 #include "detail/connection.hpp"
+#include "detail/part.hpp"
 #include "ec/sdk/backdrive.hpp"
 #include "ec/sdk/param.hpp"
 #include "ec/sdk/servo.hpp"
 
 namespace ec {
-namespace {
-
-std::expected<bool, Error> on(const std::expected<sdk::Flag, Error>& flag) {
-    if (!flag) return std::unexpected(flag.error());
-    return sdk::is_on(*flag);
-}
-
-std::expected<void, Error> done(const std::expected<sdk::Ok, Error>& ok) {
-    if (!ok) return std::unexpected(ok.error());
-    return {};
-}
-
-}  // namespace
+using detail::done;
+using detail::on;
 
 std::expected<bool, Error> Drives::servo_on() const { return detail::send(session_, sdk::GetServoStatus{}); }
 

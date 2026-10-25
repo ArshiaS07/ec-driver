@@ -2,8 +2,8 @@
 /// @file
 /// ec::Robot: one controller, reached on two paths. The command connection
 /// (8055), on which every call is sent and answered one at a time: the typed
-/// calls (call()) and the parts that group them (drives(), model(),
-/// system()). And, if asked, the monitoring stream (8056), which the
+/// calls (call()) and the parts that group them (joint(i), drives(),
+/// model(), safety(), io(), programs(), system()). And, if asked, the monitoring stream (8056), which the
 /// controller pushes about every 8 ms and the robot's Monitor turns into
 /// ec::State (monitor()). Motions are opened on it, one at a time
 /// (ec/motion/move.hpp, timestamped.hpp, servo_stream.hpp). Several arms are
@@ -26,8 +26,12 @@
 #include "ec/drives.hpp"
 #include "ec/error.hpp"
 #include "ec/feedback/sample.hpp"
+#include "ec/io.hpp"
+#include "ec/joint.hpp"
 #include "ec/model.hpp"
 #include "ec/monitor.hpp"
+#include "ec/programs.hpp"
+#include "ec/safety.hpp"
 #include "ec/sdk/request.hpp"
 #include "ec/state.hpp"
 #include "ec/system.hpp"
@@ -83,8 +87,12 @@ public:
 
     /// The parts: handles onto this robot's command connection, cheap to copy;
     /// once the robot is gone their operations fail with Disconnected.
+    [[nodiscard]] Joint joint(int number) const noexcept { return Joint(c_, number); }  ///< 1..6
     [[nodiscard]] Drives drives() const noexcept { return Drives(c_); }
     [[nodiscard]] Model model() const noexcept { return Model(c_); }
+    [[nodiscard]] Safety safety() const noexcept { return Safety(c_); }
+    [[nodiscard]] Io io() const noexcept { return Io(c_); }
+    [[nodiscard]] Programs programs() const noexcept { return Programs(c_); }
     [[nodiscard]] System system() const noexcept { return System(c_); }
 
     /// The monitoring path: the newest State, the next one, the stream's
