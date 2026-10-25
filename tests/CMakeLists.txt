@@ -14,10 +14,12 @@ add_executable(ec_tests
     feedback/reader_test.cpp
     feedback/receiver_test.cpp
     latest_test.cpp
+    log/reader_test.cpp
     record/raw_test.cpp
     motion/families_test.cpp
     net/tcp_socket_test.cpp
     monitor_test.cpp
+    parts_test.cpp
     pose_test.cpp
     readiness_test.cpp
     robot_test.cpp

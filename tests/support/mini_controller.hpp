@@ -1,8 +1,9 @@
 #pragma once
-// Ports 8055 and 8056 of a scripted controller on 127.0.0.1, for the tests of
-// Robot and the motion families: every call is recorded and answered from a
-// script (true unless told otherwise); getRobotState follows a queue of states;
-// get_joint_pos answers the joints set; frames go out every 8 ms.
+// Ports 8055, 8056 and 8058 of a scripted controller on 127.0.0.1, for the
+// tests of Robot, its parts and the motion families: every call is recorded
+// and answered from a script (true unless told otherwise); getRobotState
+// follows a queue of states; get_joint_pos answers the joints set; frames go
+// out every 8 ms; the log port records each request and answers the lines set.
 
 #include <atomic>
 #include <chrono>
@@ -37,6 +38,7 @@ public:
     explicit MiniController(bool frames = true) {
         commands_thread_ = std::jthread([this](const std::stop_token& stop) { serve_commands(stop); });
         if (frames) frames_thread_ = std::jthread([this](const std::stop_token& stop) { send_frames(stop); });
+        log_thread_ = std::jthread([this](const std::stop_token& stop) { serve_log(stop); });
     }
     ~MiniController() { stop_.store(true); }
     MiniController(const MiniController&) = delete;
@@ -47,6 +49,7 @@ public:
         return RobotOptions{.host = "127.0.0.1",
                             .command_port = commands_.port(),
                             .monitor_port = frames_.port(),
+                            .log_port = log_.port(),
                             .monitor = monitor,
                             .reply_timeout = 2s};
     }
@@ -67,6 +70,17 @@ public:
     void joints_deg(const std::array<double, 6>& q) {
         const std::lock_guard lock(mutex_);
         joints_ = q;
+    }
+
+    // What the log port answers: these lines, each ended by "\n".
+    void log_lines(std::vector<std::string> lines) {
+        const std::lock_guard lock(mutex_);
+        log_lines_ = std::move(lines);
+    }
+    // The log requests so far, each as its lines joined by '|', e.g. "Type=Info|50|exit".
+    [[nodiscard]] std::vector<std::string> log_requests() const {
+        const std::lock_guard lock(mutex_);
+        return log_requests_;
     }
 
     [[nodiscard]] std::vector<Call> calls() const {
@@ -153,6 +167,28 @@ private:
         }
     }
 
+    // The manual's exchange: the type, a count or "all", the reply, "exit".
+    void serve_log(const std::stop_token& stop) {
+        while (auto connection = accept_or_quit(log_, stop)) {
+            Peer& peer = *connection;
+            std::string request = peer.receive_line();
+            request += "|" + peer.receive_line();
+            std::string reply;
+            {
+                const std::lock_guard lock(mutex_);
+                for (const auto& line : log_lines_) reply += line + "\n";
+            }
+            try {
+                if (!reply.empty()) peer.send(reply);
+            } catch (const std::runtime_error&) {
+                continue;  // the client is gone
+            }
+            request += "|" + peer.receive_line();
+            const std::lock_guard lock(mutex_);
+            log_requests_.push_back(std::move(request));
+        }
+    }
+
     // Waits for the robot to connect, in slices so that a stop is seen; nullopt once stopped.
     std::optional<Peer> accept_or_quit(LoopbackServer& server, const std::stop_token& stop) {
         while (!stop.stop_requested() && !stop_.load()) {
@@ -167,15 +203,19 @@ private:
 
     LoopbackServer commands_;
     LoopbackServer frames_;
+    LoopbackServer log_;
     mutable std::mutex mutex_;
     std::vector<Call> calls_;
     std::map<std::string, Answer> answers_;
     std::deque<int> states_;
     int state_after_ = 0;
     std::array<double, 6> joints_{0.0, -90.0, 90.0, -90.0, -90.0, 0.0};
+    std::vector<std::string> log_lines_;
+    std::vector<std::string> log_requests_;
     std::atomic<bool> stop_{false};
     std::jthread commands_thread_;
     std::jthread frames_thread_;
+    std::jthread log_thread_;
 };
 
 }  // namespace ec::test

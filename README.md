@@ -21,9 +21,11 @@ The architecture in `docs/architecture.md` is being built; this is what exists.
 | transport | `ec::net::TcpSocket` (Linux + Windows) | done, tested against a loopback server |
 | wire | `ec::sdk` (8055: codec, the 184 typed calls, client) | done, tested; replies checked on the EA66 for a few (`ec_query --check-all` checks the rest) |
 | wire | `ec::feedback` (8056: the frame as the manual lays it out, framing, decoding, reader, receiver thread) | done, tested |
+| wire | `ec::log` (8058: the controller's log, `ec::log::read`) | done, tested against a scripted port; the line format unverified on the EA66 |
 | robot | `ec::Robot`: the command connection, `bring_up`, `stop`; motion families `Move` (joint, line, arc, rotate), `Timestamped`, `ServoStream` | done, tested against a scripted controller and the simulated arm; a timestamped circle ran on the robot |
 | robot | `ec::Monitor` (the 8056 path, `robot.monitor()`), `ec::State` (one snapshot per frame, by part), `ec::readiness` | done, tested |
-| robot | the parts (`Drives`, `Motion`, `Model`, `Safety`, `Io`, `Programs`, `System`), the workflows | next (`docs/architecture.md` §10) |
+| robot | the parts `Drives`, `Model`, `System` (`robot.drives()`, ...: handles over 8055; the log over 8058) | done, tested against a scripted controller |
+| robot | `Motion` (the families moved in), `Io`, `Safety`, `Programs`, `Joint`; the workflows | next (`docs/architecture.md` §10) |
 | recording | `ec::record` (raw recordings; HDF5 of `ec::State` in the optional `ec::hdf5`) | done, tested |
 | tools | `ec_monitor`, `ec_record`, `ec_query`, `ec_move`, `sbx_trajectory` (sandbox, with its own planning in `apps/planning.hpp`) | done, tested end to end against the fakes |
 
@@ -171,11 +173,13 @@ working tree, on both systems, regardless of each user's `core.autocrlf`.
       net/                TCP transport (both ports)
       sdk/                port 8055: one type per SDK call, codec, client
       feedback/           port 8056: frame, framer, reader, receiver thread
+      log/                port 8058: the controller's log
       record/             recordings: raw, HDF5 (optional)
       motion/             the motion families
       robot.hpp           ec::Robot
       monitor.hpp         ec::Monitor: the 8056 path, the newest ec::State (state.hpp)
       readiness.hpp       what stands between the robot and a motion command
+      drives.hpp, model.hpp, system.hpp   the parts: handles over the command connection
     src/                  mirrors include/ec/; detail/ holds private headers
     apps/                 command-line tools on CLI11; the sandbox and its planning
     tests/                GoogleTest; support/ shared helpers; apps/ end-to-end tool tests

@@ -1,20 +1,23 @@
 #pragma once
-// What a Robot and its motions share: the command connection, on
-// which calls go one at a time; the open motion, of which there is at most one;
-// and the monitor. Private to the library.
+// What a Robot, its parts and its motions share (the session): the command
+// connection, on which calls go one at a time; the open motion, of which there
+// is at most one; the monitor; where the log port is. Private to the library.
 
 #include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <expected>
+#include <format>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <utility>
 
 #include "ec/error.hpp"
+#include "ec/log/reader.hpp"
 #include "ec/monitor.hpp"
 #include "ec/robot.hpp"
 #include "ec/sdk/client.hpp"
@@ -24,7 +27,7 @@
 namespace ec::detail {
 
 struct Connection {
-    explicit Connection(sdk::Client c) : client(std::move(c)) {}
+    Connection(sdk::Client c, std::string h) : client(std::move(c)), host(std::move(h)) {}
 
     /// Sends one call and waits for its answer; other threads wait their turn.
     [[nodiscard]] std::expected<sdk::Json, Error> call(const sdk::Request& request);
@@ -33,6 +36,19 @@ struct Connection {
     template <sdk::Command C>
     [[nodiscard]] std::expected<typename C::Reply, Error> send(const C& c) {
         const auto json = call(sdk::to_request(c));
+        if (!json) return std::unexpected(json.error());
+        auto reply = sdk::decode_reply<C>(*json);
+        if (!reply) return std::unexpected(from_call(C::method, reply.error()));
+        return std::move(*reply);
+    }
+
+    /// For the robot's users (Robot::call, the parts): the same, but while a
+    /// motion is open only queries and computations; anything else is Busy.
+    [[nodiscard]] std::expected<sdk::Json, Error> call_checked(const sdk::Request& request, sdk::Kind kind);
+
+    template <sdk::Command C>
+    [[nodiscard]] std::expected<typename C::Reply, Error> send_checked(const C& c) {
+        const auto json = call_checked(sdk::to_request(c), C::kind);
         if (!json) return std::unexpected(json.error());
         auto reply = sdk::decode_reply<C>(*json);
         if (!reply) return std::unexpected(from_call(C::method, reply.error()));
@@ -58,6 +74,8 @@ struct Connection {
 
     std::mutex calls;
     sdk::Client client;
+    const std::string host;
+    log::Options log{};  // the log port (8058) and its timeouts
 
     mutable std::mutex motions;
     std::uint64_t open_motion = 0;  // 0: none
@@ -67,5 +85,15 @@ struct Connection {
 
     std::unique_ptr<Monitor> monitor = std::make_unique<Monitor>();  // last: stopped first; never null
 };
+
+/// What a part holds: its robot's session, without keeping it. The typed call
+/// through it (Connection::send_checked); Disconnected once the robot is gone.
+template <sdk::Command C>
+[[nodiscard]] std::expected<typename C::Reply, Error> send(const std::weak_ptr<Connection>& session, const C& c) {
+    const auto connection = session.lock();
+    if (!connection)
+        return std::unexpected(Error{Error::Kind::Disconnected, std::format("{}: the robot is gone", C::method)});
+    return connection->send_checked(c);
+}
 
 }  // namespace ec::detail

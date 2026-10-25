@@ -87,7 +87,7 @@ emergency stop, and the box's power switch.
  ───────────────────────────────────────────────────────────────────────────
  wire           sdk: the 184 typed calls, the JSON-RPC client (8055)
                 feedback: 8056 frames, decoder, reader, receiver (a component of its own)
-                controller log: the 8058 client (new, small)
+                log: the 8058 reader, ec::log::read (one exchange per connection)
  ───────────────────────────────────────────────────────────────────────────
  transport      net::TcpSocket
 ```
@@ -182,31 +182,41 @@ prints it, and the start-up workflow will follow it.
 
 ## 5. The parts
 
-Each part is a small handle that shares the robot's session (copyable, valid
-while the `Robot` lives). Its operations are the typed calls of its part,
-converted to SI, each documented with the manual's section and "controller"
-or "driver" for who does the work.
+`Drives`, `Model` and `System` are built (days 4–5: `include/ec/drives.hpp`,
+`model.hpp`, `system.hpp`). Each part is a small handle onto the robot's
+session: cheap to copy, usable from any thread (calls wait for each other).
+It holds the session without keeping it alive (a `std::weak_ptr`), so a part
+that outlives its robot fails with Disconnected instead of reaching freed
+memory, and the `Robot` stays the session's owner. Each operation is one
+typed call, converted to SI, answered before it returns, documented with the
+manual's section; the controller does the work and checks every request
+itself. The driver's only checks are the manual's ranges (tool and frame
+numbers 0..7, the TCP within ±0.5 m, the EA66's payload 0..7.2 kg) and the
+session's rule: while a motion is open, only queries and computations; the
+settings and actions are Busy.
 
 ```cpp
 auto robot  = ec::Robot::connect({.host = "192.168.0.200"}).value();
 ec::State s = robot.monitor().latest().value();   // newest snapshot (8056)
-double t3   = s.joints[2].temperature;        // °C
+double t3   = s.joints[2].temperature;            // °C
 
 auto drives = robot.drives();
-drives.switch_servo(true);                    // set_servo_status 1, waits until reported on
+drives.switch_servo(true);          // set_servo_status 1: accepted; on once the state says so
 auto q = robot.model().ik(T_base_tcp, s.positions()).value();
+auto log = robot.system().log({.level = ec::log::Level::Error, .lines = 20}).value();   // port 8058
 ```
 
-| Part | Operations (first version) | Calls behind them |
-|---|---|---|
+Waiting for an effect (the servo on, the encoders synchronised) is not a
+part's: it is one read of the monitoring path, or a workflow's step.
+
 | `Joint` (`robot.joint(i)`, i = 1..6) | read only, over 8055: `position()`, `motor_position()`, `velocity()`, `torque()`, `motor_torque()`, `temperature()`, `brake_released()`, `firmware()` | §R.3.2 |
-| `Drives` | `servo_on()`, `switch_servo(bool)`, `synced()`, `synchronise()`, `precise()`, `calibrate_encoders()` (moves the arm a little), `clear_alarm()`, `reset()`, `servo_alarm()`, `brakes_released()`, `enter_backdrive()`, `exit_backdrive()`; `power()` and `switch_power(bool)` once confirmed on V3.15.3 | §R.5.2 |
+| `Drives` (built) | `servo_on()`, `switch_servo(bool)`, `synced()`, `synchronise()`, `precise()`, `servo_alarm()`, `clear_alarm()`, `reset()`, `brakes_released()`, `backdrive()`, `enter_backdrive()`, `exit_backdrive()`. Not yet: calibrating the encoders, until what `calibrate_encoder_zero_position` does is known (§R.8); the arm's power, which is not in the 3.11.2 SDK | §R.5.2 |
 | `Motion` | `state()`, `wait_until_stopped()`, `stop()`, `speed_scale()`, `set_speed_scale()`, `hand_guiding(bool)`; the families `Move`, `Path`, `Jog`, `SpeedStream`, `ServoStream`, `Timestamped` | §R.5.5, §R.5.7 |
-| `Model` | `ik`, `ik_all`, `fk`, `interpolate`, `to_user`, `from_user`, `dh`; `tool(n)`, `set_tool(n, tcp)`, `active_tool()`, `select_tool(n)`; `payload(n)`, `set_payload(n, mass, cog)`; `user_frame(n)`, `set_user_frame(n, pose)`, `select_user_frame(n)` | §R.5.6 |
+| `Model` (built) | `ik`, `fk`, `to_user`, `from_user`; `active_tool()`, `select_tool(n)` (the REMOTE and PLAY tool; TEACH has its own), `tool(n)`, `set_tool(n, T_flange_tcp)`, `payload(n)`, `set_payload(n, payload)`; `active_user_frame()`, `select_user_frame(n)`, `user_frame(n)`, `set_user_frame(n, T_base_user)`. Not yet: `ik_all` (its reply's shape is unclear in the manual, §R.8), `dh` (its unit is not stated), `interpolate` | §R.5.6 |
 | `Safety` | `collision()`, `reset_collision()`, `collision_detection()`, `limits()` (normal and reduced); setters later (they need the remote password) | §R.5.8 |
 | `Io` | `input(i)`, `output(i)`, `set_output(i, on)`, `analog_input(i)`, `analog_output(i)`, `set_analog_output(i, v)`, `virtual_bit(i)`, `set_virtual_bit(i, on)`, `flange_button(b)` | §R.4.3 |
 | `Programs` | `exists(name)`, `run(name)`, `state()`, `line()`, `pause()`, `resume()`, `stop()`, `cycle_mode()`, variables `b/i/d/p/v(n)` and setters, `save_variables()` | §R.4.2 |
-| `System` | `mode()`, `versions()`, `alarms()` (the last five), `log(lines, level)` (8058), `set_clock(t)` | §R.5.1, §R.5.9 |
+| `System` (built) | `mode()`, `version()`, `alarms()` (the last five), `log(request)` (port 8058, `ec::log::read`: one connection per read, beside 8055), `set_clock(t)`. The joints' firmware goes to `Joint` | §R.5.1, §R.5.9 |
 
 The motion families keep their present shape (the constructor takes the
 inputs and sends nothing; the methods are the family's calls in the manual's
@@ -267,6 +277,8 @@ compose the parts themselves.
   to stop when it goes out of scope. The cost: a move meant to run on must
   keep its object, which shows in the code. If the process dies, nothing on
   the PC runs; the controller finishes or drains what was running (§R.5.7).
+  The parts already hold the session without keeping it (§5); the motion
+  families, which still keep it, follow when they move under `Motion`.
 
 ## 8. How we build it
 
@@ -296,7 +308,7 @@ format, clang-tidy and the app tests.
 
 | Keep as it is | Reshape | New | Archive |
 |---|---|---|---|
-| `net/`, the 184 typed calls and the client (`sdk/`), the 8056 decoder, reader and receiver, the recorders (`record/`), `Latest`, units, poses, status enums, the fakes and their tests, `apps/planning.hpp` (the sandbox's) | `feedback::State` → `ec::State` made of parts, the HDF5 recording on it (done); `Robot` → the composition root; `detail::Connection` → the session; the motion families under the motion part, with waits on the stream; `bring_up` → a workflow; `ec_move` on the workflows | the parts; `Monitor` and `readiness` (done); the workflows; the 8058 log client; `Path`, `Jog`, `SpeedStream`; `ec_log` | done 2026-10-21: `docs/motion.md`, the old architecture and design, the ADRs (local) moved to `docs/archive/` |
+| `net/`, the 184 typed calls and the client (`sdk/`), the 8056 decoder, reader and receiver, the recorders (`record/`), `Latest`, units, poses, status enums, the fakes and their tests, `apps/planning.hpp` (the sandbox's) | `feedback::State` → `ec::State` made of parts, the HDF5 recording on it (done); `Robot` → the composition root; `detail::Connection` → the session; the motion families under the motion part, with waits on the stream; `bring_up` → a workflow; `ec_move` on the workflows | the parts (`Drives`, `Model`, `System` done); `Monitor` and `readiness` (done); the workflows; the 8058 log reader (done); `Path`, `Jog`, `SpeedStream`; `ec_log` | done 2026-10-21: `docs/motion.md`, the old architecture and design, the ADRs (local) moved to `docs/archive/` |
 
 Also done on day 1: `ec::log` (our recordings) is now `ec::record`, so that
 "log" means the controller's log; ADR citations in the code now point to
@@ -313,7 +325,7 @@ About two and a half weeks; each block is tested before the next.
 |---|---|
 | 1 | Done 2026-10-21: clean-up (§9), README, the VS Code files (local) |
 | 2–3 | Done 2026-10-21: `State` and `state_from`, `readiness`, the `Monitor` (the 8056 path) in `Robot`; unit tests |
-| 4–5 | `Drives`, `System` (with the 8058 client), `Model`: thin, against the scripted controller |
+| 4–5 | Done 2026-10-25: `Drives`, `System` (with the 8058 reader), `Model`: thin, against the scripted controller |
 | 6–7 | `Motion` with the existing families moved in, waits on the stream, the guards; `Io` |
 | 8 | Workflows: start, end, recover, with reports; `ec_move` on them |
 | 9 | End to end against the fake (taught the flags it lacks: precise, power, alarms) |

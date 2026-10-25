@@ -18,7 +18,8 @@ std::expected<Robot, Error> Robot::connect(RobotOptions o) {
     if (!client)
         return std::unexpected(Error{Error::Kind::Disconnected, std::format("command port {}:{}: {}", o.host,
                                                                             o.command_port, client.error().message)});
-    auto c = std::make_shared<detail::Connection>(std::move(*client));
+    auto c = std::make_shared<detail::Connection>(std::move(*client), o.host);
+    c->log.port = o.log_port;
     if (o.monitor) {
         c->monitor = std::make_unique<Monitor>(o.host, Monitor::Options{.receiver = {.port = o.monitor_port},
                                                                         .on_sample = std::move(o.on_sample),
@@ -40,10 +41,7 @@ Robot& Robot::operator=(Robot&&) noexcept = default;
 Robot::~Robot() = default;
 
 std::expected<sdk::Json, Error> Robot::call_json(const sdk::Request& request, sdk::Kind kind) {
-    if (!sdk::is_read_only(kind) && c_->motion_open())
-        return std::unexpected(Error{
-            Error::Kind::Busy, std::format("{}: a motion is open: only queries and computations", request.method)});
-    return c_->call(request);
+    return c_->call_checked(request, kind);
 }
 
 const Monitor& Robot::monitor() const noexcept { return *c_->monitor; }

@@ -1,5 +1,6 @@
 #include "detail/connection.hpp"
 
+#include <format>
 #include <thread>
 
 #include "ec/sdk/param.hpp"
@@ -12,6 +13,13 @@ std::expected<sdk::Json, Error> Connection::call(const sdk::Request& request) {
     auto result = client.call(request);
     if (!result) return std::unexpected(from_call(request.method, result.error()));
     return std::move(*result);
+}
+
+std::expected<sdk::Json, Error> Connection::call_checked(const sdk::Request& request, sdk::Kind kind) {
+    if (!sdk::is_read_only(kind) && motion_open())
+        return std::unexpected(Error{
+            Error::Kind::Busy, std::format("{}: a motion is open: only queries and computations", request.method)});
+    return call(request);
 }
 
 std::expected<std::uint64_t, Error> Connection::open(std::function<void()> stop) {

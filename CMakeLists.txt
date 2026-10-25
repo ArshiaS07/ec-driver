@@ -25,15 +25,19 @@ add_library(ec_driver
     src/feedback/receiver.cpp
     src/record/raw.cpp
     src/detail/connection.cpp
+    src/log/reader.cpp
     src/motion/move.cpp
     src/motion/servo_stream.cpp
     src/motion/timestamped.cpp
     src/net/tcp_socket.cpp
+    src/drives.cpp
+    src/model.cpp
     src/monitor.cpp
     src/pose.cpp
     src/readiness.cpp
     src/robot.cpp
     src/state.cpp
+    src/system.cpp
 )
 
 add_library(ec::driver ALIAS ec_driver)
