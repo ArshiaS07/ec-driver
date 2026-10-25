@@ -14,8 +14,11 @@
 #include <utility>
 #include <vector>
 
+#include "ec/motion/jog.hpp"
 #include "ec/motion/move.hpp"
+#include "ec/motion/path.hpp"
 #include "ec/motion/servo_stream.hpp"
+#include "ec/motion/speed_stream.hpp"
 #include "ec/motion/timestamped.hpp"
 #include "ec/robot.hpp"
 #include "ec/sdk/movement.hpp"
@@ -471,6 +474,129 @@ TEST(Controller, TheWaitForRestIsNotEndedByAStop) {
     ASSERT_TRUE(rest);
     EXPECT_TRUE(*rest);
     EXPECT_EQ(controller.count("getRobotState"), 3u);
+}
+
+// ------------------------------------------------------------------------ Path
+
+TEST(Path, ClearsAddsEachWaypointRunsAndWaits) {
+    MiniController controller;
+    auto robot = connect(controller);
+    controller.answer("moveByPath", "2");
+    controller.answer("getPathPointIndex", "1");
+    controller.states({kRunning, kRunning, kStop});
+    Joints far = kHere;
+    far[0] = ec::deg_to_rad(10.0);
+    ec::motion::Path path(robot, {{.target = far, .speed = 0.2, .blend_radius = 0.02},
+                                  {.target = kHere, .move = ec::sdk::PathMoveType::Line, .speed = 0.1}});
+    EXPECT_TRUE(controller.calls().empty());  // constructed: nothing sent
+    ASSERT_TRUE(path.run());
+    EXPECT_EQ(controller.methods(),
+              (std::vector<std::string>{"clearPathPoint", "addPathPoint", "addPathPoint", "moveByPath"}));
+    const auto first = controller.calls()[1].params;
+    EXPECT_NEAR(first["wayPoint"][0].get<double>(), 10.0, 1e-9);  // deg
+    EXPECT_EQ(first["moveType"], 0);
+    EXPECT_NEAR(first["speed"].get<double>(), 20.0, 1e-9);            // % of the joints' maximum
+    EXPECT_NEAR(first["circular_radius"].get<double>(), 20.0, 1e-9);  // mm
+    const auto second = controller.calls()[2].params;
+    EXPECT_EQ(second["moveType"], 1);
+    EXPECT_NEAR(second["speed"].get<double>(), 100.0, 1e-9);  // mm/s
+    EXPECT_EQ(path.index(), 1);
+    EXPECT_TRUE(path.wait());
+}
+
+TEST(Path, WaypointsOutsideTheManualsRangesAreInvalidAndSendNothing) {
+    MiniController controller;
+    auto robot = connect(controller);
+    const auto kind = [&robot](std::vector<ec::motion::Waypoint> w) {
+        ec::motion::Path path(robot, std::move(w));
+        const auto r = path.run();
+        return r ? std::optional<Error::Kind>{} : r.error().kind;
+    };
+    EXPECT_EQ(kind({}), Error::Kind::Invalid);
+    EXPECT_EQ(kind({{.target = kHere, .speed = 0.005}}), Error::Kind::Invalid);        // under 1 %
+    EXPECT_EQ(kind({{.target = kHere, .blend_radius = 0.01}}), Error::Kind::Invalid);  // the last one blends
+    EXPECT_EQ(kind({{.target = kHere, .move = ec::sdk::PathMoveType::Line, .speed = 4.0}}), Error::Kind::Invalid);
+    EXPECT_TRUE(controller.calls().empty());
+}
+
+TEST(Path, AnotherCountFromTheControllerIsAnErrorAndStops) {
+    MiniController controller;
+    auto robot = connect(controller);
+    controller.answer("moveByPath", "1");
+    ec::motion::Path path(robot, {{.target = kHere}, {.target = kHere}});
+    const auto r = path.run();
+    ASSERT_FALSE(r);
+    EXPECT_EQ(r.error().kind, Error::Kind::Command);
+    EXPECT_EQ(controller.count("stop"), 1u);
+    EXPECT_TRUE(robot.call(ec::sdk::SetSpeed{.value_pct = 50.0}));  // nothing left open
+}
+
+// ------------------------------------------------------------------------- Jog
+
+TEST(Jog, SelectsTheFrameOnceThenRepeatsJogAndStops) {
+    MiniController controller;
+    auto robot = connect(controller);
+    ec::motion::Jog jog(robot, {.frame = ec::sdk::CoordinateSystem::Base, .speed = 0.1});
+    ASSERT_TRUE(jog.step(3, ec::motion::Direction::Minus));  // -z
+    ASSERT_TRUE(jog.step(3, ec::motion::Direction::Minus));
+    ASSERT_TRUE(jog.step(1, ec::motion::Direction::Plus));  // +x
+    EXPECT_EQ(controller.methods(), (std::vector<std::string>{"setCurrentCoord", "jog", "jog", "jog"}));
+    EXPECT_EQ(controller.calls()[0].params["coord_mode"], 1);
+    EXPECT_EQ(controller.calls()[1].params["index"], 4);
+    EXPECT_EQ(controller.calls()[3].params["index"], 1);
+    EXPECT_NEAR(controller.calls()[1].params["speed"].get<double>(), 10.0, 1e-9);
+    EXPECT_EQ(robot.call(ec::sdk::SetSpeed{.value_pct = 50.0}).error().kind, Error::Kind::Busy);  // open
+    ASSERT_TRUE(jog.stop());
+    EXPECT_EQ(controller.count("stop"), 1u);
+    EXPECT_TRUE(robot.call(ec::sdk::SetSpeed{.value_pct = 50.0}));  // ended
+    EXPECT_EQ(jog.step(7, ec::motion::Direction::Plus).error().kind, Error::Kind::Invalid);
+}
+
+TEST(Jog, DestroyedOpenItStops) {
+    MiniController controller;
+    auto robot = connect(controller);
+    {
+        ec::motion::Jog jog(robot);
+        ASSERT_TRUE(jog.step(6, ec::motion::Direction::Plus));
+    }
+    EXPECT_EQ(controller.count("stop"), 1u);
+}
+
+// ----------------------------------------------------------------- SpeedStream
+
+TEST(SpeedStream, JointVelocitiesInTheControllersUnitsThenStopj) {
+    MiniController controller;
+    auto robot = connect(controller);
+    ec::motion::SpeedStream speed(robot);
+    Joints qd{};
+    qd[5] = ec::deg_to_rad(10.0);
+    ASSERT_TRUE(speed.joints(qd, {.acceleration = ec::deg_to_rad(50.0), .valid_for = 200ms}));
+    ASSERT_TRUE(speed.joints(qd, {.acceleration = ec::deg_to_rad(80.0), .valid_for = 200ms}));
+    const auto sent = controller.last("moveBySpeedj");
+    EXPECT_NEAR(sent["vj"][5].get<double>(), 10.0, 1e-9);
+    EXPECT_EQ(sent["acc"], 80);
+    EXPECT_NEAR(sent["t"].get<double>(), 0.2, 1e-12);
+    EXPECT_EQ(speed.tcp(Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero()).error().kind, Error::Kind::Invalid);
+    ASSERT_TRUE(speed.stop());
+    EXPECT_EQ(controller.last("stopj")["acc"], 80);
+    EXPECT_EQ(speed.stop().error().kind, Error::Kind::Invalid);  // nothing open
+}
+
+TEST(SpeedStream, TcpVelocitiesAndTheRobotsStopUsesTheFamilysOwn) {
+    MiniController controller;
+    auto robot = connect(controller);
+    ec::motion::SpeedStream speed(robot);
+    ASSERT_TRUE(speed.tcp(Eigen::Vector3d(0.0, 0.0, -0.02), Eigen::Vector3d(0.0, 0.0, ec::deg_to_rad(5.0)),
+                          {.acceleration = 0.1, .rotational_acceleration = ec::deg_to_rad(30.0)}));
+    const auto sent = controller.last("moveBySpeedl");
+    EXPECT_NEAR(sent["v"][2].get<double>(), -20.0, 1e-9);  // mm/s
+    EXPECT_NEAR(sent["v"][5].get<double>(), 5.0, 1e-9);    // deg/s
+    EXPECT_EQ(sent["acc"], 100);                           // mm/s^2
+    EXPECT_EQ(sent["arot"], 30);
+    robot.motion().stop();
+    EXPECT_EQ(controller.methods().back(), "stop");
+    EXPECT_EQ(controller.count("stopl"), 1u);  // the stream's own stop first
+    EXPECT_EQ(speed.joints(Joints{}, {.acceleration = 0.0}).error().kind, Error::Kind::Invalid);
 }
 
 TEST(Timestamped, ASpeedAboveThePlannedOneIsInvalid) {

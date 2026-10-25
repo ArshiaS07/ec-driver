@@ -27,8 +27,11 @@ add_library(ec_driver
     src/detail/connection.cpp
     src/log/reader.cpp
     src/motion/controller.cpp
+    src/motion/jog.cpp
     src/motion/move.cpp
+    src/motion/path.cpp
     src/motion/servo_stream.cpp
+    src/motion/speed_stream.cpp
     src/motion/timestamped.cpp
     src/net/tcp_socket.cpp
     src/drives.cpp

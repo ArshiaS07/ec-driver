@@ -1,34 +1,16 @@
 #include "ec/motion/move.hpp"
 
-#include <cmath>
-#include <format>
-#include <string>
 #include <utility>
 
 #include "detail/connection.hpp"
+#include "motion/checks.hpp"
 
 namespace ec::motion {
 namespace {
 
-std::unexpected<Error> invalid(std::string message) {
-    return std::unexpected(Error{Error::Kind::Invalid, std::move(message)});
-}
-
-// Whether every joint is within the manual's [-360, 360] deg.
-std::expected<void, Error> check_target(std::string_view name, const Joints& q) {
-    for (std::size_t j = 0; j < kJointCount; ++j)
-        if (!(std::abs(q[j]) <= kEc66JointLimit))
-            return invalid(std::format("{}: joint {} at {} rad is outside [-360, 360] deg", name, j + 1, q[j]));
-    return {};
-}
-
-// A fraction as the manual's percentage, int [1, 100]; none stays the controller's default.
-std::expected<std::optional<int>, Error> percent(std::string_view name, const std::optional<double>& fraction) {
-    if (!fraction) return std::optional<int>{};
-    if (!(*fraction >= 0.01 && *fraction <= 1.0))
-        return invalid(std::format("{} must be in [0.01, 1], not {}", name, *fraction));
-    return std::optional<int>(static_cast<int>(std::lround(*fraction * 100.0)));
-}
+using checks::check_target;
+using checks::invalid;
+using checks::percent;
 
 // A move of the TCP's speed and acceleration, in the controller's units.
 struct Profile {
@@ -38,29 +20,13 @@ struct Profile {
 };
 
 std::expected<Profile, Error> profile(const PathMoveOptions& o) {
-    Profile p;
-    switch (o.speed_type) {
-        case sdk::SpeedType::Linear:
-            if (!(o.speed >= 0.001 && o.speed <= 3.0))
-                return invalid(std::format("speed must be in [0.001, 3] m/s, not {} m/s", o.speed));
-            p.speed = o.speed * 1000.0;
-            break;
-        case sdk::SpeedType::Rotational:
-            if (!(o.speed >= deg_to_rad(1.0) && o.speed <= deg_to_rad(300.0)))
-                return invalid(std::format("speed must be in [1, 300] deg/s, not {} deg/s", rad_to_deg(o.speed)));
-            p.speed = rad_to_deg(o.speed);
-            break;
-        case sdk::SpeedType::AbsoluteLinear: p.speed = o.speed * 1000.0; break;
-        case sdk::SpeedType::AbsoluteRotational: p.speed = rad_to_deg(o.speed); break;
-        default: return invalid("unknown speed type");
-    }
-    auto acc = percent("acceleration", o.acceleration);
+    const auto speed = checks::tcp_speed(o.speed_type, o.speed);
+    if (!speed) return std::unexpected(speed.error());
+    const auto acc = percent("acceleration", o.acceleration);
     if (!acc) return std::unexpected(acc.error());
-    auto dec = percent("deceleration", o.deceleration);
+    const auto dec = percent("deceleration", o.deceleration);
     if (!dec) return std::unexpected(dec.error());
-    p.acc_pct = *acc;
-    p.dec_pct = *dec;
-    return p;
+    return Profile{.speed = *speed, .acc_pct = *acc, .dec_pct = *dec};
 }
 
 }  // namespace
@@ -69,17 +35,14 @@ Move::Move(Robot& robot) : session_(robot.session()) {}
 
 std::expected<void, Error> Move::joint(const Joints& target, const JointMoveOptions& o) {
     if (auto ok = check_target("target", target); !ok) return ok;
-    if (!(o.speed >= 0.0001 && o.speed <= 1.0))
-        return invalid(std::format("speed must be in [0.0001, 1], not {}", o.speed));
+    const auto speed = checks::joint_speed(o.speed, 0.0001);
+    if (!speed) return std::unexpected(speed.error());
     const auto acc = percent("acceleration", o.acceleration);
     if (!acc) return std::unexpected(acc.error());
     const auto dec = percent("deceleration", o.deceleration);
     if (!dec) return std::unexpected(dec.error());
-    return start(sdk::MoveByJoint{.target = rad_to_deg(target),
-                                  .speed_pct = o.speed * 100.0,
-                                  .acc_pct = *acc,
-                                  .dec_pct = *dec,
-                                  .until = o.until});
+    return start(sdk::MoveByJoint{
+        .target = rad_to_deg(target), .speed_pct = *speed, .acc_pct = *acc, .dec_pct = *dec, .until = o.until});
 }
 
 std::expected<void, Error> Move::line(const Joints& target, const PathMoveOptions& o) {
