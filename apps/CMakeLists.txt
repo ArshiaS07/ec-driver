@@ -24,3 +24,7 @@ ec_set_warnings(ec_move)
 add_executable(sbx_trajectory sbx_trajectory.cpp)
 target_link_libraries(sbx_trajectory PRIVATE ec::driver CLI11::CLI11)
 ec_set_warnings(sbx_trajectory)
+
+add_executable(ec_info ec_info.cpp)
+target_link_libraries(ec_info PRIVATE ec::driver CLI11::CLI11)
+ec_set_warnings(ec_info)

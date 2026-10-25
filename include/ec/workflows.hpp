@@ -11,6 +11,7 @@
 ///     if (!report.ok()) return;
 
 #include <chrono>
+#include <expected>
 #include <optional>
 #include <string>
 #include <vector>
@@ -44,6 +45,12 @@ struct Report {
 
 /// The report, one line per step and the ending, for people.
 [[nodiscard]] std::string describe(const Report& report);
+
+/// The conditions readiness() judges, asked over the command connection, one
+/// call each: getRobotMode, get_estop_status, getCollisionState,
+/// getRobotState, getMotorStatus, getServoStatus, and
+/// get_servo_precise_position_status if `with_precise`.
+[[nodiscard]] std::expected<Conditions, Error> read_conditions(const Robot& robot, bool with_precise = false);
 
 struct BringUpOptions {
     /// Also require precise encoders (get_servo_precise_position_status).

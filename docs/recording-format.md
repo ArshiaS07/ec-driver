@@ -1,7 +1,9 @@
 # Recording formats
 
-Two ways to keep the monitoring stream (port 8056). `ec_record` writes both;
-programs use the `ec::record` sinks (`RawWriter`, `H5StateWriter`).
+Two ways to keep the monitoring stream (port 8056), and a log of the command
+connection (8055) beside them. `ec_record` writes the first two, `ec_move
+--calls` the third; programs use the `ec::record` sinks (`RawWriter`,
+`H5StateWriter`, `CallWriter`).
 
 - **Raw recording** (`.ecraw`): every frame exactly as received, with its
   arrival time. Lossless, no dependencies; replays through the same decoder.
@@ -135,3 +137,26 @@ t = double(h5read("run.h5", "/state/arrival")) * 1e-9;
 q = h5read("run.h5", "/state/joints/position");  % 6 x N: MATLAB shows row-major data transposed
 T = h5read("run.h5", "/state/tcp/pose");         % 4 x 4 x N, each matrix transposed: use T(:,:,k).'
 ```
+
+## Call log
+
+Every exchange on the command connection (`RobotOptions::on_call`,
+`record::CallWriter`), as JSON lines, UTF-8, one object per line, written and
+flushed as each call is answered. Times are this PC's steady clock in ns, the
+same clock as the recordings' arrival times, so the two line up.
+
+- The first line: `{"format": "ec-driver.calls/1", "steady_ns_at_start": ..., "system_ns_at_start": ...}`.
+- Then one line per call, in the order they were sent (calls are answered one
+  at a time): `sent`, `answered` [ns]; `method`; `params` (null when the call
+  has none, in the controller's units, as sent); and either `result` (the
+  reply, unwrapped from the controller's string) or `error` (`kind`,
+  `message`: no reply, a refusal, a timeout).
+
+```python
+import json
+
+with open("run.calls.jsonl") as f:
+    header, *calls = [json.loads(line) for line in f]
+slow = [c for c in calls if c["answered"] - c["sent"] > 50e6]  # answered after 50 ms
+```
+

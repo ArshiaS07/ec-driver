@@ -16,6 +16,7 @@
 #include <string_view>
 #include <utility>
 
+#include "ec/call_record.hpp"
 #include "ec/error.hpp"
 #include "ec/log/reader.hpp"
 #include "ec/monitor.hpp"
@@ -82,6 +83,7 @@ struct Connection {
 
     std::mutex calls;
     sdk::Client client;
+    std::function<void(const CallRecord&)> on_call;  // every exchange, under `calls`
     const std::string host;
     log::Options log{};  // the log port (8058) and its timeouts
 

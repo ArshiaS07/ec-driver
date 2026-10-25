@@ -14,7 +14,8 @@
 //
 // Anything that moves the arm prints its plan and does nothing unless --yes is
 // given. Ctrl+C stops the arm. The controller must be in remote mode.
-// --record FILE writes every monitoring frame while the tool runs, as ec_record --raw does.
+// --record FILE writes every monitoring frame while the tool runs, as ec_record --raw does;
+// --calls FILE every exchange on the command connection, as JSON lines (docs/recording-format.md).
 // Motions of the TCP are code, not options: apps/sbx_trajectory.cpp.
 //
 // Exit codes: 0 done (or a plan printed); 1 refused, failed or stopped; 2 bad command line.
@@ -33,6 +34,7 @@
 #include "ec/motion/move.hpp"
 #include "ec/motion/servo_stream.hpp"
 #include "ec/readiness.hpp"
+#include "ec/record/calls.hpp"
 #include "ec/record/raw.hpp"
 #include "ec/robot.hpp"
 #include "ec/workflows.hpp"
@@ -95,6 +97,7 @@ int run(int argc, char** argv) {
     std::uint16_t monitor_port = 8056;
     std::uint16_t log_port = 8058;
     std::string record;
+    std::string calls;
     bool yes = false;
     double speed = 0.1;
     std::vector<double> positions;
@@ -115,6 +118,7 @@ int run(int argc, char** argv) {
         ->check(CLI::Range(1, 65535));
     app.add_flag("--yes", yes, "Really move the arm; without it, only the plan is printed");
     app.add_option("--record", record, "Write every monitoring frame to this raw recording while the tool runs");
+    app.add_option("--calls", calls, "Write every exchange on the command connection to this call log (JSON lines)");
     app.require_subcommand(1, 1);
     app.fallthrough();
 
@@ -154,9 +158,19 @@ int run(int argc, char** argv) {
         }
         recording.emplace(std::move(*writer));
     }
+    std::optional<ec::record::CallWriter> call_log;
+    if (!calls.empty()) {
+        auto writer = ec::record::CallWriter::create(calls);
+        if (!writer) {
+            cli::err("{}\n", writer.error());
+            return cli::kFailed;
+        }
+        call_log.emplace(std::move(*writer));
+    }
     ec::RobotOptions options{
         .host = host, .command_port = command_port, .monitor_port = monitor_port, .log_port = log_port};
     if (recording) options.on_sample = [&recording](const ec::feedback::Sample& s) { recording->write(s); };
+    if (call_log) options.on_call = [&call_log](const ec::CallRecord& c) { call_log->write(c); };
 
     int code = cli::kFailed;
     {

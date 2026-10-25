@@ -15,6 +15,7 @@ std::expected<Robot, Error> Robot::connect(RobotOptions o) {
                                                                             o.command_port, client.error().message)});
     auto c = std::make_shared<detail::Connection>(std::move(*client), o.host);
     c->log.port = o.log_port;
+    c->on_call = std::move(o.on_call);
     if (o.monitor) {
         c->monitor = std::make_unique<Monitor>(o.host, Monitor::Options{.receiver = {.port = o.monitor_port},
                                                                         .on_sample = std::move(o.on_sample),

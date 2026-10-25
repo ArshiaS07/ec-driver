@@ -5,11 +5,9 @@
 #include <utility>
 
 namespace ec {
-namespace {
 
 using namespace std::chrono_literals;
 
-// The conditions, asked over the command connection, one call each.
 std::expected<Conditions, Error> read_conditions(const Robot& robot, bool with_precise) {
     Conditions c;
     const auto mode = robot.system().mode();
@@ -37,6 +35,8 @@ std::expected<Conditions, Error> read_conditions(const Robot& robot, bool with_p
     }
     return c;
 }
+
+namespace {
 
 std::string summary(const Conditions& c) {
     std::string s = std::format("mode {}, state {}, {}, servos {}{}{}", c.mode, c.state,

@@ -22,7 +22,8 @@ Simulated, at the monitor rate (8 ms), on an EC66-like arm (tools/kinematics.py)
   - timestamped trajectories: upload, check, start, pause, resume, stop, flush.
 Not simulated: Cartesian moves (moveByLine, moveByArc, paths: the driver moves
 in joint space), jog, tools and user frames (the TCP is the flange, poses are
-in the base frame), dynamics, the controller's smoothing. Where the real
+in the base frame; the readings say so), dynamics, the controller's smoothing,
+the safety settings. getDH answers index 0 only, as recorded from the EA66. Where the real
 controller is not yet measured (docs/ec66.md §8), the fake makes the assumption
 noted where it does it.
 
@@ -359,11 +360,24 @@ class Arm:
             "getCollisionState": lambda: 1 if self.collision else 0,
             "get_servo_precise_position_status": lambda: 1 if self.precise else 0,
             "getAlarmNum": lambda: list(self.alarms),
+            # The fake's model: the TCP is the flange, every user frame the base, no payload.
+            "getAutoRunToolNumber": lambda: 0,
+            "getToolNumber": lambda: 0,
+            "getUserNumber": lambda: 0,
+            "getRobotType": lambda: 62,  # assumed: the manual's six-axis collaborative
             "get_transparent_transmission_state": lambda: 1 if self.stream is not None else 0,
             "check_trajectory": self.trajectory.check,
         }
         if method in queries:
             return queries[method]()
+        if method in ("getTcpPos", "getUserFrame"):
+            return [0.0] * 6
+        if method == "get_tool_payload":
+            return {"m": 0.0, "tool_cog": [0.0, 0.0, 0.0]}
+        if method == "getDH":
+            if int(p.get("index", -1)) == 0:
+                return 95.431  # recorded from the EA66
+            raise RpcError(-32693, "the fake knows getDH index 0 only (recorded from the EA66)")
         if method in ("get_tcp_pose", "positiveKinematic", "inverseKinematic"):
             return self.kinematics(method, p)
 

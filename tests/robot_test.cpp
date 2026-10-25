@@ -97,6 +97,26 @@ TEST(Robot, CallsFromSeveralThreadsAreAnsweredOneByOne) {
     EXPECT_EQ(controller.count("getRobotMode"), 100u);
 }
 
+TEST(Robot, EveryExchangeReachesTheCallLogInOrder) {
+    MiniController controller;
+    std::vector<ec::CallRecord> calls;  // on the calling thread: this one
+    auto o = controller.options(/*monitor=*/false);
+    o.on_call = [&calls](const ec::CallRecord& c) { calls.push_back(c); };
+    auto robot = ec::Robot::connect(o);
+    ASSERT_TRUE(robot);
+    controller.answer("getDH", [](const auto&) { return std::optional<std::string>{}; });  // an error reply
+    EXPECT_TRUE(robot->call(ec::sdk::GetRobotMode{}));
+    EXPECT_FALSE(robot->model().dh(3));
+    ASSERT_EQ(calls.size(), 2u);
+    EXPECT_EQ(calls[0].method, "getRobotMode");
+    EXPECT_EQ(*calls[0].reply, 2);
+    EXPECT_EQ(calls[1].method, "getDH");
+    EXPECT_EQ(calls[1].params["index"], 3);
+    EXPECT_FALSE(calls[1].reply);
+    EXPECT_LE(calls[0].sent, calls[0].answered);
+    EXPECT_LE(calls[0].answered, calls[1].sent);
+}
+
 TEST(Robot, StopWithNothingOpenSendsStop) {
     MiniController controller;
     auto robot = ec::Robot::connect(controller.options());

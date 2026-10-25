@@ -23,6 +23,7 @@
 #include <string>
 #include <utility>
 
+#include "ec/call_record.hpp"
 #include "ec/drives.hpp"
 #include "ec/error.hpp"
 #include "ec/feedback/sample.hpp"
@@ -59,6 +60,10 @@ struct RobotOptions {
     /// every frame as received, for recordings; every state.
     std::function<void(const feedback::Sample&)> on_sample{};
     std::function<void(const State&)> on_state{};
+    /// Every exchange on the command connection, once answered (or failed), in
+    /// order, on the calling thread while the next call waits: quick, for a
+    /// call log (record::CallWriter). Its exceptions are swallowed.
+    std::function<void(const CallRecord&)> on_call{};
 };
 
 /// See the file comment. Move-only; it owns the session. Destroying it (or

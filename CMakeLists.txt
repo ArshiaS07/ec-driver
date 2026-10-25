@@ -23,6 +23,7 @@ add_library(ec_driver
     src/feedback/framer.cpp
     src/feedback/reader.cpp
     src/feedback/receiver.cpp
+    src/record/calls.cpp
     src/record/raw.cpp
     src/detail/connection.cpp
     src/log/reader.cpp

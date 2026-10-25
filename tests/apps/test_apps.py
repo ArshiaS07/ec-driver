@@ -458,6 +458,20 @@ class EcMove(unittest.TestCase):
         self.assertIn("clearAlarm: done", r.stdout)
         self.assertEqual(fake.state()["state"], 0)
 
+    def test_the_call_log_holds_every_exchange(self):
+        fake = self.robot("--ready")
+        tmp = tempfile.TemporaryDirectory(dir=PATHS.ec_move.parent)  # in the build tree, next to the tool
+        self.addCleanup(tmp.cleanup)
+        log = Path(tmp.name) / "calls.jsonl"
+        r = self.move(fake, "--yes", "--calls", str(log), "bring-up")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        lines = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(lines[0]["format"], "ec-driver.calls/1")
+        methods = [line["method"] for line in lines[1:]]
+        self.assertEqual(methods[0], "getRobotMode")
+        self.assertIn("getSpeed", methods)
+        self.assertTrue(all(line["answered"] >= line["sent"] for line in lines[1:]))
+
     def test_shut_down_switches_the_servos_off(self):
         fake = self.robot("--ready")
         r = self.move(fake, "--yes", "shut-down")
@@ -499,6 +513,32 @@ class EcMove(unittest.TestCase):
         for args in (["nudge", "7", "5"], ["nudge", "1", "45"], ["sine", "6", "25", "1"], ["joint", "1", "2"], []):
             with self.subTest(args=args):
                 self.assertEqual(self.move(fake, *args).returncode, 2)
+
+
+class EcInfo(unittest.TestCase):
+    """ec_info against the moving fake: it reads everything, changes nothing,
+    and marks what the fake does not answer."""
+
+    def test_reads_the_model_and_changes_nothing(self):
+        fake = FakeRobot()
+        self.addCleanup(fake.stop)
+        before = fake.state()
+        r = run(PATHS.ec_info, "--host", LOCAL, "--command-port", str(fake.command))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("V3.15.3", r.stdout)
+        self.assertIn("index 0 (d1)", r.stdout)
+        self.assertIn("95.431", r.stdout)  # getDH as the EA66 answers index 0
+        self.assertRegex(r.stdout, r"(?m)^! index 1 \(d2\)")  # the fake knows index 0 only: marked, and on
+        self.assertIn("62 (six-axis collaborative)", r.stdout)
+        self.assertIn("tool 0 TCP", r.stdout)
+        self.assertIn("before a motion", r.stdout)
+        after = fake.state()
+        self.assertEqual((before["servo"], before["synced"], before["state"]),
+                         (after["servo"], after["synced"], after["state"]))
+
+    def test_no_controller_is_a_failure(self):
+        r = run(PATHS.ec_info, "--host", LOCAL, "--command-port", str(closed_port()))
+        self.assertEqual(r.returncode, 1)
 
 
 class SbxTrajectory(unittest.TestCase):
@@ -566,6 +606,7 @@ def main() -> None:
     p.add_argument("--ec-record", type=Path, required=True)
     p.add_argument("--ec-move", type=Path, required=True)
     p.add_argument("--sbx-trajectory", type=Path, required=True)
+    p.add_argument("--ec-info", type=Path, required=True)
     p.add_argument("--tools", type=Path, required=True)
     args, rest = p.parse_known_args()
     vars(PATHS).update(vars(args))

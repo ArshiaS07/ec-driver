@@ -12,9 +12,21 @@ namespace ec::detail {
 
 std::expected<sdk::Json, Error> Connection::call(const sdk::Request& request) {
     const std::lock_guard lock(calls);
+    const auto sent = Clock::now();
     auto result = client.call(request);
-    if (!result) return std::unexpected(from_call(request.method, result.error()));
-    return std::move(*result);
+    std::expected<sdk::Json, Error> reply = result ? std::expected<sdk::Json, Error>(std::move(*result))
+                                                   : std::unexpected(from_call(request.method, result.error()));
+    if (on_call) {
+        try {
+            on_call(CallRecord{.method = std::string(request.method),
+                               .params = request.params,
+                               .reply = reply,
+                               .sent = sent,
+                               .answered = Clock::now()});
+        } catch (...) {  // NOLINT(bugprone-empty-catch): a log must not break the call it records
+        }
+    }
+    return reply;
 }
 
 std::expected<sdk::Json, Error> Connection::call_checked(const sdk::Request& request, sdk::Kind kind) {

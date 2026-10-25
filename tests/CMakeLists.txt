@@ -15,6 +15,7 @@ add_executable(ec_tests
     feedback/receiver_test.cpp
     latest_test.cpp
     log/reader_test.cpp
+    record/calls_test.cpp
     record/raw_test.cpp
     motion/families_test.cpp
     net/tcp_socket_test.cpp
@@ -46,11 +47,12 @@ gtest_discover_tests(ec_tests DISCOVERY_MODE PRE_TEST)
 # standard library only). Native builds only: cross-compiled tools do not run here.
 find_package(Python3 COMPONENTS Interpreter)
 if(Python3_FOUND AND TARGET ec_query AND TARGET ec_monitor AND TARGET ec_record AND TARGET ec_move
-   AND NOT CMAKE_CROSSCOMPILING)
+   AND TARGET ec_info AND NOT CMAKE_CROSSCOMPILING)
     add_test(NAME apps
              COMMAND Python3::Interpreter ${CMAKE_CURRENT_SOURCE_DIR}/apps/test_apps.py
                      --ec-query $<TARGET_FILE:ec_query> --ec-monitor $<TARGET_FILE:ec_monitor>
                      --ec-record $<TARGET_FILE:ec_record>
                      --ec-move $<TARGET_FILE:ec_move> --sbx-trajectory $<TARGET_FILE:sbx_trajectory>
+                     --ec-info $<TARGET_FILE:ec_info>
                      --tools ${PROJECT_SOURCE_DIR}/tools)
 endif()
