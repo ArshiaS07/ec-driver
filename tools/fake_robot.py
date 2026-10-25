@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
-"""A fake EC controller that moves: ports 8055 and 8056 of one simulated arm,
-for testing the driver without the robot (the robot: docs/ec66.md).
+"""A fake EC controller that moves: ports 8055, 8056 and 8058 of one simulated
+arm, for testing the driver without the robot (the robot: docs/ec66.md).
 
-    python3 tools/fake_robot.py                  # 127.0.0.1: command 8055, monitor 8056, control 8057
+    python3 tools/fake_robot.py                  # 127.0.0.1: command 8055, monitor 8056, control 8057, log 8058
     python3 tools/fake_robot.py --port 0         # free ports, printed on the first line
 
 Simulated, at the monitor rate (8 ms), on an EC66-like arm (tools/kinematics.py):
-  - modes, servo power, encoder synchronisation, alarms, collision, E-stop;
+  - modes, servo power, encoder synchronisation, precise encoders, alarms
+    (getAlarmNum: the fake's own numbers, 1030 alarm, 1031 collision, 40
+    emergency stop), collision, E-stop;
+  - the log port (8058): the manual's exchange, answered from the fake's
+    own log of what happened (its line format is invented: the real one is
+    not yet seen, docs/ec66.md §8);
   - joint moves (moveByJoint), stop, the speed setting (setSpeed), which scales
     joint moves;
   - forward and inverse kinematics (positiveKinematic, inverseKinematic, the
@@ -26,6 +31,7 @@ with "ok" (or the state, as JSON):
     estop on | estop off        emergency stop: the arm stops, the servos go off; state 2, then alarm
     collision                   the arm stops; state 5 and the collision flag until resetCollisionState
     alarm                       the arm stops; state 4 until clearAlarm
+    precise on | precise off    what get_servo_precise_position_status reports
     mode teach | play | remote  the pendant's key switch
     freeze on | freeze off      stop / resume sending monitor frames
     drop                        close every command connection
@@ -240,6 +246,15 @@ class Arm:
         self.pose = kinematics.forward(self.q)  # the TCP: the flange [mm, rad]
         self.tcp_speed = 0.0
         self.trace = None  # the poses recorded since "trace start"
+        self.precise = True
+        self.alarms = []  # the last alarm numbers, newest last
+        self.log = []  # (level, line): the fake's own log
+
+    def note(self, level: str, line: str, alarm: int = 0) -> None:
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        self.log.append((level, f"{stamp} {level}: {line}"))
+        if alarm:
+            self.alarms = (self.alarms + [alarm])[-5:]
 
     # -- the simulation
 
@@ -342,6 +357,8 @@ class Arm:
             "getSpeed": lambda: self.speed_pct,
             "get_estop_status": lambda: 1 if self.estop else 0,
             "getCollisionState": lambda: 1 if self.collision else 0,
+            "get_servo_precise_position_status": lambda: 1 if self.precise else 0,
+            "getAlarmNum": lambda: list(self.alarms),
             "get_transparent_transmission_state": lambda: 1 if self.stream is not None else 0,
             "check_trajectory": self.trajectory.check,
         }
@@ -366,6 +383,7 @@ class Arm:
             if on and (self.estop or self.state == ALARM or not self.synced):
                 return False
             self.pending.append((now + 0.05, lambda: setattr(self, "servo", on)))
+            self.note("Info", f"servo {'on' if on else 'off'}")
             return True
         if method == "syncMotorStatus":
             if self.estop:
@@ -377,6 +395,7 @@ class Arm:
                 return False
             if self.state == ALARM:
                 self.state = STOP
+                self.note("Info", "alarm cleared")
             return True
         if method == "resetCollisionState":
             self.collision = False
@@ -486,13 +505,19 @@ class Arm:
                 self.halt(ESTOP)
                 self.servo = False
                 self.estop_at = now
+                self.note("Error", "emergency stop", 40)
             return "ok"
         if cmd == "collision":
             self.collision = True
             self.halt(COLLISION)
+            self.note("Error", "collision detected", 1031)
             return "ok"
         if cmd == "alarm":
             self.halt(ALARM)
+            self.note("Error", "alarm (injected)", 1030)
+            return "ok"
+        if cmd == "precise":
+            self.precise = arg == "on"
             return "ok"
         if cmd == "mode":
             self.mode = {"teach": TEACH, "play": PLAY, "remote": REMOTE}[arg]
@@ -594,6 +619,23 @@ class Robot:
                     except OSError:
                         return
 
+    def serve_log(self, conn: socket.socket) -> None:
+        """The manual's exchange: Type=Error|Warning|Info, a count or all, the reply, exit."""
+        levels = {"Error": {"Error"}, "Warning": {"Error", "Warning"}, "Info": {"Error", "Warning", "Info"}}
+        with conn, conn.makefile("rw", encoding="utf-8", newline="\n") as f:
+            wanted = levels.get(f.readline().strip().removeprefix("Type="), levels["Info"])
+            count = f.readline().strip()
+            with self.arm.lock:
+                lines = [line for level, line in self.arm.log if level in wanted]
+            if count != "all":
+                lines = lines[-int(count):] if count.isdigit() and int(count) > 0 else []
+            try:
+                f.write("".join(line + "\n" for line in lines))
+                f.flush()
+                f.readline()  # exit
+            except OSError:
+                pass
+
     def serve_control(self, conn: socket.socket) -> None:
         with conn, conn.makefile("rw", encoding="utf-8", newline="\n") as f:
             for line in f:
@@ -632,15 +674,15 @@ def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8055,
-                   help="the command port; monitor and control follow it (0: three free ports)")
+                   help="the command port; monitor, control and log follow it (0: four free ports)")
     p.add_argument("--ready", action="store_true", help="start with the servos on and synchronised")
     args = p.parse_args()
 
     if args.port == 0:
-        servers = [listen(args.host, 0) for _ in range(3)]
+        servers = [listen(args.host, 0) for _ in range(4)]
     else:
-        servers = [listen(args.host, args.port + i) for i in range(3)]
-    command, monitor, control = servers
+        servers = [listen(args.host, args.port + i) for i in range(4)]
+    command, monitor, control, log = servers
     robot = Robot(args.ready)
 
     def on_command(conn):
@@ -655,8 +697,9 @@ def main() -> None:
     threading.Thread(target=robot.simulate, daemon=True).start()
     threading.Thread(target=accept_forever, args=(command, on_command), daemon=True).start()
     threading.Thread(target=accept_forever, args=(monitor, on_monitor), daemon=True).start()
+    threading.Thread(target=accept_forever, args=(log, robot.serve_log), daemon=True).start()
     ports = [s.getsockname()[1] for s in servers]
-    print(f"fake robot on {args.host}: command {ports[0]}, monitor {ports[1]}, control {ports[2]}, "
+    print(f"fake robot on {args.host}: command {ports[0]}, monitor {ports[1]}, control {ports[2]}, log {ports[3]}, "
           f"Ctrl+C to quit", flush=True)
     accept_forever(control, robot.serve_control)
 

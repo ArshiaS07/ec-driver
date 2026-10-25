@@ -1,6 +1,6 @@
 // ec::Robot against a scripted controller on 127.0.0.1 (tests/support/
 // mini_controller.hpp): connecting, the monitor's newest state, typed calls,
-// bring-up, and stop.
+// and stop.
 
 #include "ec/robot.hpp"
 
@@ -95,34 +95,6 @@ TEST(Robot, CallsFromSeveralThreadsAreAnsweredOneByOne) {
     }
     EXPECT_EQ(answered.load(), 100);
     EXPECT_EQ(controller.count("getRobotMode"), 100u);
-}
-
-TEST(Robot, BringUpSendsOnlyWhatTheStateNeeds) {
-    MiniController controller;
-    auto robot = ec::Robot::connect(controller.options());
-    ASSERT_TRUE(robot);
-    controller.forget();
-    ASSERT_TRUE(robot->bring_up());
-    EXPECT_EQ(controller.methods(), (std::vector<std::string>{"getRobotState", "getMotorStatus", "getServoStatus"}));
-
-    controller.forget();
-    controller.states({4});  // an alarm
-    controller.answer("getMotorStatus", "false");
-    int asked = 0;  // the servos are off until switched on, and report on at the second question after
-    controller.answer("getServoStatus",
-                      [&asked](const auto&) { return std::optional<std::string>(++asked >= 3 ? "true" : "false"); });
-    ASSERT_TRUE(robot->bring_up());
-    EXPECT_EQ(controller.methods(),
-              (std::vector<std::string>{"getRobotState", "clearAlarm", "getMotorStatus", "syncMotorStatus",
-                                        "getServoStatus", "set_servo_status", "getServoStatus", "getServoStatus"}));
-    EXPECT_EQ(controller.last("set_servo_status")["status"], 1);
-
-    controller.answer("getServoStatus", "false");
-    controller.answer("set_servo_status", [](const auto&) { return std::optional<std::string>{}; });
-    const auto failed = robot->bring_up();
-    ASSERT_FALSE(failed);
-    EXPECT_EQ(failed.error().kind, Error::Kind::Command);
-    EXPECT_NE(failed.error().message.find("set_servo_status"), std::string::npos);
 }
 
 TEST(Robot, StopWithNothingOpenSendsStop) {

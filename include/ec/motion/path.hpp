@@ -7,8 +7,9 @@
 /// answered), moveByPath; index() is getPathPointIndex; wait() waits for the
 /// end. Remote mode only; the arm at rest.
 ///
-///     ec::motion::Path path(robot, {{.target = q1}, {.target = q2, .move = ec::sdk::PathMoveType::Line, .speed =
-///     0.1}}); path.run();  // then path.wait()
+///     using ec::sdk::PathMoveType;
+///     ec::motion::Path path(robot, {{.target = q1}, {.target = q2, .move = PathMoveType::Line, .speed = 0.1}});
+///     path.run();  // then path.wait()
 
 #include <chrono>
 #include <cstdint>

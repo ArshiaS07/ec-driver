@@ -128,6 +128,8 @@ private:
         if (method == "get_joint_pos") return sdk::Json(joints_).dump();
         if (method == "getRobotMode") return "2";
         if (method == "getMotorStatus" || method == "getServoStatus") return "true";
+        if (method == "get_estop_status" || method == "getCollisionState") return "0";
+        if (method == "getSpeed") return "100.0";
         if (method == "get_transparent_transmission_state") return "0";
         if (method == "check_trajectory") return "0";
         if (method == "inverseKinematic")  // the reference itself: the arm stands still

@@ -24,6 +24,7 @@
 #include "ec/motion/timestamped.hpp"
 #include "ec/pose.hpp"
 #include "ec/robot.hpp"
+#include "ec/workflows.hpp"
 #include "interrupt.hpp"
 #include "planning.hpp"
 
@@ -93,7 +94,10 @@ int run(int argc, char** argv) {
     const cli::StopOnInterrupt ctrl_c(*robot);
 
     // 1. Bring up: clear an alarm, synchronise the encoders, servos on; only what is needed.
-    if (auto up = robot->bring_up(); !up) return fail("bring-up", up.error());
+    if (const auto up = ec::bring_up(*robot); !up.ok()) {
+        cli::err("{}", describe(up));
+        return cli::kFailed;
+    }
 
     // 2. Verify: every pose solved by the controller's inverse kinematics near the
     // one before (the first near the joints now) and checked: no jump, no

@@ -2,18 +2,32 @@
 
 namespace ec {
 
-Blocker readiness(const State& s, std::optional<bool> precise) noexcept {
-    if (s.system.mode != RobotMode::Remote) return Blocker::NotRemote;
-    if (s.safety.emergency_stop) return Blocker::EmergencyStop;
-    if (s.safety.collision || s.motion.state == RobotState::Collision) return Blocker::Collision;
+Conditions conditions_from(const State& s, std::optional<bool> precise) noexcept {
+    return {.mode = s.system.mode,
+            .emergency_stop = s.safety.emergency_stop,
+            .collision = s.safety.collision,
+            .state = s.motion.state,
+            .synced = s.drives.synced,
+            .servo_on = s.drives.servo_on,
+            .precise = precise};
+}
+
+Blocker readiness(const Conditions& c) noexcept {
+    if (c.mode != RobotMode::Remote) return Blocker::NotRemote;
+    if (c.emergency_stop) return Blocker::EmergencyStop;
+    if (c.collision || c.state == RobotState::Collision) return Blocker::Collision;
     // The emergency-stop state "will only exist for a short time and will be
     // covered by the alarm soon" [S 2.2.2.1]; with the button released, it is the alarm.
-    if (s.motion.state == RobotState::Alarm || s.motion.state == RobotState::EmergencyStop) return Blocker::Alarm;
-    if (!s.drives.synced) return Blocker::NotSynced;
-    if (!s.drives.servo_on) return Blocker::ServoOff;
-    if (precise.has_value() && !*precise) return Blocker::NotPrecise;
-    if (s.motion.state != RobotState::Stop) return Blocker::NotStopped;
+    if (c.state == RobotState::Alarm || c.state == RobotState::EmergencyStop) return Blocker::Alarm;
+    if (!c.synced) return Blocker::NotSynced;
+    if (!c.servo_on) return Blocker::ServoOff;
+    if (c.precise.has_value() && !*c.precise) return Blocker::NotPrecise;
+    if (c.state != RobotState::Stop) return Blocker::NotStopped;
     return Blocker::None;
+}
+
+Blocker readiness(const State& s, std::optional<bool> precise) noexcept {
+    return readiness(conditions_from(s, precise));
 }
 
 std::string_view remedy(Blocker b) noexcept {

@@ -31,12 +31,32 @@ enum class Blocker : std::uint8_t {
     NotStopped,     ///< a motion is running or paused (or the state is one the manual does not define)
 };
 
-/// The first blocker in `state`. `precise` is get_servo_precise_position_status
-/// if the caller has read it; without it, precise is not judged. The order:
-/// the operator's steps first (the key; the button); then a collision, reset
-/// before its alarm is cleared [S 2.2.2.35]; the alarm [S 2.2.1.4]; the
-/// synchronisation [S 2.2.1.3]; the servo, which calibrating needs on
-/// [S 2.2.3.21]; precise; and the state back at stop.
+/// The facts readiness judges, from either path: the monitoring stream
+/// (conditions_from) or the command connection (the bring-up workflow asks
+/// getRobotMode, get_estop_status, getCollisionState, getRobotState,
+/// getMotorStatus, getServoStatus).
+struct Conditions {
+    RobotMode mode = RobotMode::Teach;
+    bool emergency_stop = false;
+    bool collision = false;
+    RobotState state = RobotState::Stop;
+    bool synced = false;
+    bool servo_on = false;
+    /// get_servo_precise_position_status, if read; without it, precise is not
+    /// judged (8056 does not carry it).
+    std::optional<bool> precise{};
+};
+
+/// The conditions a State reports.
+[[nodiscard]] Conditions conditions_from(const State& state, std::optional<bool> precise = std::nullopt) noexcept;
+
+/// The first blocker. The order: the operator's steps first (the key; the
+/// button); then a collision, reset before its alarm is cleared
+/// [S 2.2.2.35]; the alarm [S 2.2.1.4]; the synchronisation [S 2.2.1.3]; the
+/// servo, which calibrating needs on [S 2.2.3.21]; precise; and the state
+/// back at stop.
+[[nodiscard]] Blocker readiness(const Conditions& conditions) noexcept;
+/// The first blocker in an observed state: readiness(conditions_from(state, precise)).
 [[nodiscard]] Blocker readiness(const State& state, std::optional<bool> precise = std::nullopt) noexcept;
 
 /// What removes it, in words, naming the SDK calls or the pendant step.

@@ -10,7 +10,7 @@
 /// several Robots.
 ///
 ///     auto robot = ec::Robot::connect({.host = "192.168.0.200"});
-///     robot->bring_up();
+///     ec::bring_up(*robot);                                 // a workflow (ec/workflows.hpp)
 ///     auto on = robot->drives().servo_on();               // 8055: asks the controller now
 ///     auto mode = robot->call(ec::sdk::GetRobotMode{});  // 8055: any typed call
 ///     auto s = robot->monitor().latest();                 // 8056: the newest state, sends nothing
@@ -63,7 +63,7 @@ struct RobotOptions {
 
 /// See the file comment. Move-only; it owns the session. Destroying it (or
 /// assigning another to it) stops a motion still open, as motion().stop(), and
-/// closes the connections; it does not switch the servos off (shut_down does).
+/// closes the connections; it does not switch the servos off (ec::shut_down does).
 /// Its member functions may be called from any thread; calls wait for each other.
 class Robot {
 public:
@@ -102,11 +102,6 @@ public:
     /// status. Without the monitor (RobotOptions::monitor), it receives
     /// nothing. Valid as long as this robot (or the one it is moved into) lives.
     [[nodiscard]] const Monitor& monitor() const noexcept;
-
-    /// As the manual's examples: clears an alarm, synchronises the encoders,
-    /// switches the servos on; only what the state needs. Returns once the
-    /// servos report on (3 s at most).
-    [[nodiscard]] std::expected<void, Error> bring_up();
 
     /// The motion controller: the state, the wait for rest, the stop (from any
     /// thread), the speed slider, hand guiding. Its kinds of motion are the

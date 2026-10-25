@@ -65,14 +65,14 @@ class FakeRobot:
             stderr=subprocess.STDOUT,
             text=True,
         )
-        first = self.proc.stdout.readline()  # "fake robot on 127.0.0.1: command P, monitor P, control P, ..."
-        match = re.search(r"command (\d+), monitor (\d+), control (\d+)", first)
+        first = self.proc.stdout.readline()  # "fake robot on 127.0.0.1: command P, monitor P, control P, log P, ..."
+        match = re.search(r"command (\d+), monitor (\d+), control (\d+), log (\d+)", first)
         if not match:
             self.proc.kill()
             self.proc.wait()
             self.proc.stdout.close()
             raise RuntimeError(f"fake_robot.py did not start: {first!r}")
-        self.command, self.monitor, self.control_port = map(int, match.groups())
+        self.command, self.monitor, self.control_port, self.log = map(int, match.groups())
         self.drain = threading.Thread(target=self.proc.stdout.read, daemon=True)
         self.drain.start()
 
@@ -406,7 +406,7 @@ class EcMove(unittest.TestCase):
 
     def move(self, fake: FakeRobot, *args: str, timeout: float = 30.0) -> subprocess.CompletedProcess:
         return run(PATHS.ec_move, "--host", LOCAL, "--command-port", str(fake.command), "--monitor-port",
-                   str(fake.monitor), *args, timeout=timeout)
+                   str(fake.monitor), "--log-port", str(fake.log), *args, timeout=timeout)
 
     def test_status_reads_only(self):
         fake = self.robot()
@@ -437,6 +437,33 @@ class EcMove(unittest.TestCase):
         r = self.move(fake, "--yes", "joint", "10", "-90", "0", "-90", "90", "0", "--speed", "0.3")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertAlmostEqual(fake.state()["q"][0], 10.0, places=3)
+
+    def test_bring_up_in_teach_mode_names_the_operators_step(self):
+        fake = self.robot()
+        fake.control("mode teach")
+        r = self.move(fake, "--yes", "bring-up")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("not in remote mode: turn the key switch to REMOTE", r.stdout)
+        self.assertIn("(the operator's step)", r.stdout)
+        self.assertFalse(fake.state()["servo"])  # nothing was switched
+
+    def test_recover_explains_then_brings_up(self):
+        fake = self.robot("--ready")
+        fake.control("alarm")
+        r = self.move(fake, "--yes", "recover")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("getAlarmNum: the last alarms", r.stdout)
+        self.assertIn("1030", r.stdout)
+        self.assertIn("Error: alarm (injected)", r.stdout)  # the fake's log, through port 8058
+        self.assertIn("clearAlarm: done", r.stdout)
+        self.assertEqual(fake.state()["state"], 0)
+
+    def test_shut_down_switches_the_servos_off(self):
+        fake = self.robot("--ready")
+        r = self.move(fake, "--yes", "shut-down")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("the servos report off", r.stdout)
+        self.assertFalse(fake.state()["servo"])
 
     def test_nudge_and_a_streamed_sine(self):
         fake = self.robot("--ready")

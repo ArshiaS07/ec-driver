@@ -25,6 +25,7 @@ add_executable(ec_tests
     robot_test.cpp
     state_test.cpp
     status_test.cpp
+    workflows_test.cpp
 )
 target_include_directories(ec_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(ec_tests PRIVATE ec::driver GTest::gtest_main Threads::Threads)

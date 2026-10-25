@@ -46,6 +46,7 @@ add_library(ec_driver
     src/safety.cpp
     src/state.cpp
     src/system.cpp
+    src/workflows.cpp
 )
 
 add_library(ec::driver ALIAS ec_driver)

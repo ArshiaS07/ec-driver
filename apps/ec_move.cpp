@@ -1,9 +1,11 @@
 // ec_move: move the arm through the driver's motion families.
 //
-//   ec_move [--host H] [--command-port N] [--monitor-port N] [--yes] <command> ...
+//   ec_move [--host H] [--command-port N] [--monitor-port N] [--log-port N] [--yes] <command> ...
 //
 //   status                       the state the monitoring port reports, and what a motion still needs
-//   bring-up                     clear an alarm, synchronise, servos on: what is needed
+//   bring-up                     clear an alarm, synchronise, servos on: what is needed (ec::bring_up)
+//   recover                      the last alarms and log errors, then bring-up (ec::recover)
+//   shut-down                    stop, wait for rest, servos off (ec::shut_down)
 //   joint J1 J2 J3 J4 J5 J6      move to joint positions [deg]            (--speed F, default 0.1)
 //   nudge JOINT DEGREES          move one joint (1..6) by up to 30 deg    (--speed F)
 //   sine JOINT AMPLITUDE PERIOD  stream a sine [deg, s] on one joint, from where it is
@@ -33,6 +35,7 @@
 #include "ec/readiness.hpp"
 #include "ec/record/raw.hpp"
 #include "ec/robot.hpp"
+#include "ec/workflows.hpp"
 #include "interrupt.hpp"
 
 namespace {
@@ -52,6 +55,12 @@ int report(const std::expected<void, ec::Error>& result, std::string_view what) 
     }
     cli::err("{}: {}\n", what, describe(result.error()));
     return cli::kFailed;
+}
+
+// A workflow's report: every step to stdout; 1 if it stopped short.
+int report(const ec::Report& r) {
+    cli::out("{}", describe(r));
+    return r.ok() ? cli::kOk : cli::kFailed;
 }
 
 int dry_run(const std::string& plan) {
@@ -84,6 +93,7 @@ int run(int argc, char** argv) {
     std::string host = "192.168.0.200";  // this tool's default; the library has none
     std::uint16_t command_port = 8055;
     std::uint16_t monitor_port = 8056;
+    std::uint16_t log_port = 8058;
     std::string record;
     bool yes = false;
     double speed = 0.1;
@@ -100,6 +110,9 @@ int run(int argc, char** argv) {
     app.add_option("--monitor-port", monitor_port, "Monitoring port")
         ->capture_default_str()
         ->check(CLI::Range(1, 65535));
+    app.add_option("--log-port", log_port, "The controller's log port (recover reads it)")
+        ->capture_default_str()
+        ->check(CLI::Range(1, 65535));
     app.add_flag("--yes", yes, "Really move the arm; without it, only the plan is printed");
     app.add_option("--record", record, "Write every monitoring frame to this raw recording while the tool runs");
     app.require_subcommand(1, 1);
@@ -107,6 +120,8 @@ int run(int argc, char** argv) {
 
     auto* status = app.add_subcommand("status", "The state the monitoring port reports");
     auto* bring_up = app.add_subcommand("bring-up", "Clear an alarm, synchronise, servos on");
+    auto* recover = app.add_subcommand("recover", "The last alarms and log errors, then bring-up");
+    auto* shut_down = app.add_subcommand("shut-down", "Stop, wait for rest, servos off");
     auto* move = app.add_subcommand("joint", "Move to joint positions [deg]");
     move->add_option("positions", positions, "J1..J6 [deg]")->required()->expected(6);
     move->add_option("--speed", speed, "Fraction of the joints' maximum speed")
@@ -139,7 +154,8 @@ int run(int argc, char** argv) {
         }
         recording.emplace(std::move(*writer));
     }
-    ec::RobotOptions options{.host = host, .command_port = command_port, .monitor_port = monitor_port};
+    ec::RobotOptions options{
+        .host = host, .command_port = command_port, .monitor_port = monitor_port, .log_port = log_port};
     if (recording) options.on_sample = [&recording](const ec::feedback::Sample& s) { recording->write(s); };
 
     int code = cli::kFailed;
@@ -173,7 +189,11 @@ int run(int argc, char** argv) {
             code = cli::kOk;
         } else if (bring_up->parsed()) {
             code = !yes ? dry_run("clear alarm, synchronise and switch the servos on, as needed")
-                        : report(robot->bring_up(), "bring-up");
+                        : report(ec::bring_up(*robot));
+        } else if (recover->parsed()) {
+            code = !yes ? dry_run("read the last alarms and log errors, then bring up") : report(ec::recover(*robot));
+        } else if (shut_down->parsed()) {
+            code = !yes ? dry_run("stop, wait for rest, switch the servos off") : report(ec::shut_down(*robot));
         } else if (move->parsed() || nudge->parsed()) {
             ec::Joints target = here;
             if (move->parsed()) {
