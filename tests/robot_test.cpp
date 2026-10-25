@@ -130,7 +130,7 @@ TEST(Robot, StopWithNothingOpenSendsStop) {
     auto robot = ec::Robot::connect(controller.options());
     ASSERT_TRUE(robot);
     controller.forget();
-    robot->stop();
+    robot->motion().stop();
     EXPECT_EQ(controller.methods(), std::vector<std::string>{"stop"});
 }
 

@@ -30,6 +30,7 @@
 #include "ec/joint.hpp"
 #include "ec/model.hpp"
 #include "ec/monitor.hpp"
+#include "ec/motion/controller.hpp"
 #include "ec/programs.hpp"
 #include "ec/safety.hpp"
 #include "ec/sdk/request.hpp"
@@ -60,8 +61,10 @@ struct RobotOptions {
     std::function<void(const State&)> on_state{};
 };
 
-/// See the file comment. Move-only. Its member functions may be called from any
-/// thread; calls wait for each other.
+/// See the file comment. Move-only; it owns the session. Destroying it (or
+/// assigning another to it) stops a motion still open, as motion().stop(), and
+/// closes the connections; it does not switch the servos off (shut_down does).
+/// Its member functions may be called from any thread; calls wait for each other.
 class Robot {
 public:
     /// Connects the command port and, with the monitor, the monitoring port,
@@ -105,17 +108,18 @@ public:
     /// servos report on (3 s at most).
     [[nodiscard]] std::expected<void, Error> bring_up();
 
-    /// Stops: the open motion's own stop, then `stop`. From any thread; it waits
-    /// for a call in flight to be answered first. The open motion's waits end
-    /// with Stopped. Not a safety function: the E-stop is.
-    void stop() noexcept;
+    /// The motion controller: the state, the wait for rest, the stop (from any
+    /// thread), the speed slider, hand guiding. Its kinds of motion are the
+    /// families in ec/motion/, each made on this robot (ec::motion::Move m(robot)).
+    [[nodiscard]] motion::Controller motion() const noexcept { return motion::Controller(c_); }
 
-    /// For the motion families: the connection they share with this robot.
-    [[nodiscard]] std::shared_ptr<detail::Connection> share() const noexcept { return c_; }
+    /// For the motion families: this robot's session, without keeping it.
+    [[nodiscard]] std::weak_ptr<detail::Connection> session() const noexcept { return c_; }
 
 private:
     explicit Robot(std::shared_ptr<detail::Connection> c) : c_(std::move(c)) {}
     [[nodiscard]] std::expected<sdk::Json, Error> call_json(const sdk::Request& request, sdk::Kind kind);
+    void end() noexcept;  // the session ends: an open motion is stopped
 
     std::shared_ptr<detail::Connection> c_;
 };

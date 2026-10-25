@@ -55,22 +55,30 @@ struct Connection {
         return std::move(*reply);
     }
 
-    /// Registers a motion being opened, with its stop (sent by Robot::stop()),
-    /// and clears an earlier stop request; Busy while another motion is open.
+    /// Registers a motion being opened, with its stop (sent by stop()), and
+    /// clears an earlier stop request; Busy while another motion is open.
     [[nodiscard]] std::expected<std::uint64_t, Error> open(std::function<void()> stop);
     /// Unregisters it; nothing if `id` is not the open motion.
     void close(std::uint64_t id) noexcept;
     [[nodiscard]] bool motion_open() const;
 
-    /// Waits up to `timeout` for the arm to have moved and stopped, asking
-    /// getRobotState every 10 ms, as the manual's wait_stop. `started` is when
-    /// the motion was started, `ran` whether it was seen running (kept by the
-    /// caller across calls): until it is, a stop counts only a second after the
-    /// start, since a motion just started may not show yet. nullopt: still
-    /// running when `timeout` ran out; Stopped once Robot::stop() was called;
-    /// Fault on an emergency stop, an alarm or a collision.
+    /// The motion controller's stop, from any thread: marks the stop (the open
+    /// motion's waits end with Stopped), sends the open motion's own stop, then
+    /// `stop` [S 2.2.3.9]. Each waits for a call in flight to be answered.
+    void stop() noexcept;
+
+    /// Waits up to `timeout` for the arm to have moved and stopped. It reads the
+    /// monitoring path while it streams (a state at most 100 ms old), and
+    /// otherwise asks getRobotState every 10 ms, as the manual's wait_stop.
+    /// `started` is when the motion was started, `ran` whether it was seen
+    /// running (kept by the caller across calls): until it is, a stop counts
+    /// only a second after the start, since a motion just started may not show
+    /// yet. nullopt: still running when `timeout` ran out; Stopped once stop()
+    /// was called, if `stop_ends_wait`; Fault on an emergency stop, an alarm or
+    /// a collision.
     [[nodiscard]] std::optional<std::expected<void, Error>> wait_stopped(Clock::time_point started, bool& ran,
-                                                                         std::chrono::nanoseconds timeout);
+                                                                         std::chrono::nanoseconds timeout,
+                                                                         bool stop_ends_wait = true);
 
     std::mutex calls;
     sdk::Client client;
@@ -85,6 +93,13 @@ struct Connection {
 
     std::unique_ptr<Monitor> monitor = std::make_unique<Monitor>();  // last: stopped first; never null
 };
+
+/// The session behind a part's or a motion's handle; Disconnected once its robot is gone.
+[[nodiscard]] inline std::expected<std::shared_ptr<Connection>, Error> reach(const std::weak_ptr<Connection>& session,
+                                                                             std::string_view what) {
+    if (auto connection = session.lock()) return connection;
+    return std::unexpected(Error{Error::Kind::Disconnected, std::format("{}: the robot is gone", what)});
+}
 
 /// What a part holds: its robot's session, without keeping it. The typed call
 /// through it (Connection::send_checked); Disconnected once the robot is gone.

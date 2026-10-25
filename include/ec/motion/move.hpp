@@ -48,8 +48,9 @@ struct PathMoveOptions {
 };
 
 /// Moves, one at a time. From a move's call until a wait has seen it end, it is
-/// the robot's open motion. Move-only; a move goes on if the object is
-/// destroyed (stop() ends it).
+/// the robot's open motion. Move-only. Destroying it while its move is open
+/// stops the arm (stop): a move does not outlive the code that waits for it.
+/// Once its Robot is gone, every call fails with Disconnected.
 class Move {
 public:
     /// Sends nothing.
@@ -68,10 +69,11 @@ public:
     /// moveByRotate to the orientation of `target` [rad]. As joint().
     [[nodiscard]] std::expected<void, Error> rotate(const Joints& target, const PathMoveOptions& options = {});
 
-    /// Waits up to `timeout` for the move to end, asking getRobotState every 10
-    /// ms (the manual's wait_stop): nullopt while the arm still moves; nothing
-    /// once it is at rest; Fault on an emergency stop, an alarm or a collision;
-    /// Stopped after Robot::stop(). Invalid without a move to wait for.
+    /// Waits up to `timeout` for the move to end: nullopt while the arm still
+    /// moves; nothing once it is at rest; Fault on an emergency stop, an alarm
+    /// or a collision; Stopped after robot.motion().stop(). It reads the
+    /// monitoring path while it streams, else asks getRobotState every 10 ms
+    /// (the manual's wait_stop). Invalid without a move to wait for.
     [[nodiscard]] std::optional<std::expected<void, Error>> wait_for(std::chrono::nanoseconds timeout);
     /// Waits until the move has ended, and says how.
     [[nodiscard]] std::expected<void, Error> wait();
@@ -89,7 +91,9 @@ private:
     template <class C>
     [[nodiscard]] std::expected<void, Error> start(const C& command);
 
-    std::shared_ptr<detail::Connection> c_;
+    void end() noexcept;  // an open move is stopped and unregistered
+
+    std::weak_ptr<detail::Connection> session_;
     std::uint64_t id_ = 0;  // the move's registration as the open motion; 0: none
     Clock::time_point started_{};
     bool ran_ = false;

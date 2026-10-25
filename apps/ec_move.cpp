@@ -168,7 +168,7 @@ int run(int argc, char** argv) {
                 cli::out("before a motion: {}: {}\n", blocker, ec::remedy(blocker));
             code = cli::kOk;
         } else if (stop->parsed()) {
-            robot->stop();
+            robot->motion().stop();
             cli::out("stop sent\n");
             code = cli::kOk;
         } else if (bring_up->parsed()) {

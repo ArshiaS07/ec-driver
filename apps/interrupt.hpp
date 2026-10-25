@@ -1,6 +1,6 @@
 #pragma once
 // Ctrl+C for the tools that move the arm: while a StopOnInterrupt lives,
-// Ctrl+C (or SIGTERM) calls Robot::stop(). A signal handler may only set a
+// Ctrl+C (or SIGTERM) calls robot.motion().stop(). A signal handler may only set a
 // flag; a thread of the guard's own looks at it every 10 ms and stops the
 // robot from there.
 
@@ -28,7 +28,7 @@ public:
                   if (detail::interrupted != 0) {
                       detail::interrupted = 0;
                       hit_.store(true);
-                      robot.stop();
+                      robot.motion().stop();
                   }
                   std::this_thread::sleep_for(std::chrono::milliseconds{10});
               }

@@ -37,8 +37,21 @@ std::expected<Robot, Error> Robot::connect(RobotOptions o) {
 }
 
 Robot::Robot(Robot&&) noexcept = default;
-Robot& Robot::operator=(Robot&&) noexcept = default;
-Robot::~Robot() = default;
+
+Robot& Robot::operator=(Robot&& other) noexcept {
+    if (this != &other) {
+        end();
+        c_ = std::move(other.c_);
+    }
+    return *this;
+}
+
+Robot::~Robot() { end(); }
+
+void Robot::end() noexcept {
+    // A motion should not outlive the code that can supervise it.
+    if (c_ && c_->motion_open()) c_->stop();
+}
 
 std::expected<sdk::Json, Error> Robot::call_json(const sdk::Request& request, sdk::Kind kind) {
     return c_->call_checked(request, kind);
@@ -77,21 +90,6 @@ std::expected<void, Error> Robot::bring_up() {
         return std::unexpected(Error{Error::Kind::Timeout, "the servos did not come on within 3 s"});
     }
     return {};
-}
-
-void Robot::stop() noexcept {
-    try {
-        c_->stop_requested.store(true);
-        std::function<void()> stop_open;
-        {
-            const std::lock_guard lock(c_->motions);
-            stop_open = c_->stop_open;
-        }
-        if (stop_open) stop_open();
-        const auto stopped = c_->send(sdk::Stop{});
-        static_cast<void>(stopped);  // nothing more to do if it fails
-    } catch (...) {                  // NOLINT(bugprone-empty-catch): noexcept; a failed stop has no one to tell
-    }
 }
 
 }  // namespace ec

@@ -1,6 +1,6 @@
 // The motion families against a scripted controller: each sends its
 // SDK calls as the manual, in the controller's units, every call answered; one
-// motion is open at a time; waits read getRobotState; Robot::stop() sends the
+// motion is open at a time; waits read getRobotState; motion().stop() sends the
 // open motion's stop, then stop.
 
 #include <gtest/gtest.h>
@@ -181,7 +181,7 @@ TEST(Move, StopFromAnotherThreadEndsTheWait) {
     ASSERT_TRUE(move.joint(kHere));
     std::jthread stopper([&robot] {
         std::this_thread::sleep_for(100ms);
-        robot.stop();
+        robot.motion().stop();
     });
     const auto r = move.wait();
     ASSERT_FALSE(r);
@@ -279,7 +279,7 @@ TEST(Timestamped, StopWhileItRunsSendsStopTrajectoryThenStop) {
     ASSERT_TRUE(run.start());
     std::jthread stopper([&robot] {
         std::this_thread::sleep_for(100ms);
-        robot.stop();
+        robot.motion().stop();
     });
     const auto r = run.wait();
     ASSERT_FALSE(r);
@@ -338,6 +338,148 @@ TEST(ServoStream, DestroyedOpenItClosesAndTheRobotIsFree) {
     }
     EXPECT_EQ(controller.count("tt_clear_servo_joint_buf"), 1u);  // as close()
     EXPECT_TRUE(robot.call(ec::sdk::SetSpeed{.value_pct = 50.0}));
+}
+
+// ------------------------------------------------------------------- lifetimes
+
+TEST(Lifetimes, DestroyingAnOpenMoveStopsTheArm) {
+    MiniController controller;
+    auto robot = connect(controller);
+    controller.states({}, kRunning);
+    {
+        ec::motion::Move move(robot);
+        ASSERT_TRUE(move.joint(kHere));
+    }
+    EXPECT_EQ(controller.count("stop"), 1u);
+    EXPECT_TRUE(robot.call(ec::sdk::SetSpeed{.value_pct = 50.0}));  // nothing open any more
+}
+
+TEST(Lifetimes, AMoveSeenToEndSendsNothingMore) {
+    MiniController controller;
+    auto robot = connect(controller);
+    controller.states({kRunning, kStop});
+    {
+        ec::motion::Move move(robot);
+        ASSERT_TRUE(move.joint(kHere));
+        EXPECT_TRUE(move.wait());
+    }
+    EXPECT_EQ(controller.count("stop"), 0u);
+}
+
+TEST(Lifetimes, DestroyingARunningTrajectoryStopsItAnUploadedOneSendsNothing) {
+    MiniController controller;
+    auto robot = connect(controller);
+    {
+        ec::motion::Timestamped uploaded(robot, there_and_back());
+        ASSERT_TRUE(uploaded.upload());
+    }
+    EXPECT_EQ(controller.count("stop_trajectory"), 0u);
+    controller.states({}, kRunning);
+    {
+        ec::motion::Timestamped running(robot, there_and_back());
+        ASSERT_TRUE(running.upload());
+        ASSERT_TRUE(running.start());
+    }
+    EXPECT_EQ(controller.count("stop_trajectory"), 1u);
+}
+
+TEST(Lifetimes, DestroyingTheRobotStopsItsOpenMotionAndOutlivedFamiliesSaySo) {
+    MiniController controller;
+    std::optional<ec::motion::Move> move;
+    {
+        auto robot = connect(controller);
+        controller.states({}, kRunning);
+        move.emplace(robot);
+        ASSERT_TRUE(move->joint(kHere));
+    }
+    EXPECT_EQ(controller.count("stop"), 2u);  // the move's own stop, then stop
+    const auto waited = move->wait();
+    ASSERT_FALSE(waited);
+    EXPECT_EQ(waited.error().kind, Error::Kind::Disconnected);
+    EXPECT_EQ(move->joint(kHere).error().kind, Error::Kind::Disconnected);
+}
+
+// ------------------------------------------------------- waits on the stream
+
+ec::Robot connect_monitoring(MiniController& controller) {
+    auto robot = ec::Robot::connect(controller.options());
+    if (!robot) throw std::runtime_error(describe(robot.error()));
+    controller.forget();
+    return std::move(*robot);
+}
+
+TEST(Waits, ReadTheMonitoringPathWhileItStreams) {
+    MiniController controller;
+    auto robot = connect_monitoring(controller);
+    ec::test::FrameFields running;
+    running.robot_state = kRunning;
+    controller.frames(running);
+    ec::motion::Move move(robot);
+    ASSERT_TRUE(move.joint(kHere));
+    std::jthread arrives([&controller] {
+        std::this_thread::sleep_for(150ms);
+        controller.frames(ec::test::FrameFields{});  // at rest
+    });
+    EXPECT_TRUE(move.wait());
+    EXPECT_EQ(controller.count("getRobotState"), 0u);  // nothing asked on the command connection
+}
+
+TEST(Waits, AnEmergencyStopOnTheStreamIsAFault) {
+    MiniController controller;
+    auto robot = connect_monitoring(controller);
+    ec::test::FrameFields pressed;
+    pressed.estop = true;
+    ec::motion::Move move(robot);
+    ASSERT_TRUE(move.joint(kHere));
+    controller.frames(pressed);
+    const auto r = move.wait();
+    ASSERT_FALSE(r);
+    EXPECT_EQ(r.error().kind, Error::Kind::Fault);
+    EXPECT_EQ(r.error().message, "emergency stop");
+}
+
+// ------------------------------------------------------------------ Controller
+
+TEST(Controller, StateSpeedSliderHandGuidingAndTheWaitForRest) {
+    MiniController controller;
+    auto robot = connect(controller);
+    const auto motion = robot.motion();
+    controller.answer("getSpeed", "50.0");
+    controller.answer("get_drag_state", "false");
+    controller.states({kRunning, kRunning, kStop});
+
+    EXPECT_EQ(motion.state(), ec::RobotState::Running);
+    const auto rest = motion.wait_until_stopped(5s);
+    ASSERT_TRUE(rest);
+    EXPECT_TRUE(*rest);
+    EXPECT_DOUBLE_EQ(motion.speed_scale().value(), 0.5);
+    EXPECT_TRUE(motion.set_speed_scale(0.3));
+    EXPECT_DOUBLE_EQ(controller.last("setSpeed")["value"].get<double>(), 30.0);
+    EXPECT_EQ(motion.set_speed_scale(0.0001).error().kind, Error::Kind::Invalid);
+    EXPECT_EQ(motion.set_speed_scale(1.5).error().kind, Error::Kind::Invalid);
+    EXPECT_EQ(motion.hand_guiding(), false);
+    EXPECT_TRUE(motion.set_hand_guiding(true));
+    EXPECT_EQ(controller.last("drag_teach_switch")["switch"], 1);
+}
+
+TEST(Controller, TheWaitForRestIsNotEndedByAStop) {
+    MiniController controller;
+    auto robot = connect(controller);
+    controller.states({kRunning, kRunning, kStop});
+    robot.motion().stop();
+    const auto rest = robot.motion().wait_until_stopped(5s);  // the arm braking to rest
+    ASSERT_TRUE(rest);
+    EXPECT_TRUE(*rest);
+    EXPECT_EQ(controller.count("getRobotState"), 3u);
+}
+
+TEST(Timestamped, ASpeedAboveThePlannedOneIsInvalid) {
+    MiniController controller;
+    auto robot = connect(controller);
+    ec::motion::Timestamped run(robot, there_and_back());
+    ASSERT_TRUE(run.upload());
+    EXPECT_EQ(run.start(1.5).error().kind, Error::Kind::Invalid);
+    EXPECT_EQ(controller.count("start_trajectory"), 0u);
 }
 
 }  // namespace

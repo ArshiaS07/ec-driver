@@ -18,7 +18,7 @@ struct Error {
         Busy,          ///< refused: another motion is open
         Command,       ///< the controller refused or failed a call, or the arm did not do what it was told
         Fault,         ///< the controller stopped the arm: emergency stop, alarm, collision
-        Stopped,       ///< ended by Robot::stop()
+        Stopped,       ///< ended by robot.motion().stop()
         Timeout,       ///< no answer in time
         Disconnected,  ///< the connection is lost
     };

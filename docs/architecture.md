@@ -255,7 +255,7 @@ compose the parts themselves.
 - **Threads**: one, the monitor's (8056), which builds each `State` and hands
   it to the latest-value store and to the hooks (recordings, `on_state`). Commands run on
   the caller's thread, one at a time on 8055 (a mutex), each answered before
-  the next. `robot.stop()` works from any thread; it waits at most for the
+  the next. `robot.motion().stop()` works from any thread; it waits at most for the
   call in flight. If a second 8055 client proves allowed (§R.8), a separate
   stop channel can be added inside the session without changing the API.
 - **Errors**: `std::expected<T, ec::Error>` everywhere. On a refusal or a

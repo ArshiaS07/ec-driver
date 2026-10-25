@@ -71,6 +71,11 @@ public:
         const std::lock_guard lock(mutex_);
         joints_ = q;
     }
+    // What the frames report from the next one on (default: remote, servos on, synchronised, stop).
+    void frames(const FrameFields& fields) {
+        const std::lock_guard lock(mutex_);
+        frame_ = fields;
+    }
 
     // What the log port answers: these lines, each ended by "\n".
     void log_lines(std::vector<std::string> lines) {
@@ -154,11 +159,15 @@ private:
     void send_frames(const std::stop_token& stop) {
         while (auto connection = accept_or_quit(frames_, stop)) {
             Peer& peer = *connection;
-            const auto frame = make_frame(FrameFields{});
-            const std::string bytes(reinterpret_cast<const char*>(frame.data()), frame.size());
             try {
                 while (!stop.stop_requested() && !stop_.load()) {
-                    peer.send(bytes);
+                    FrameFields fields;
+                    {
+                        const std::lock_guard lock(mutex_);
+                        fields = frame_;
+                    }
+                    const auto frame = make_frame(fields);
+                    peer.send(std::string(reinterpret_cast<const char*>(frame.data()), frame.size()));
                     std::this_thread::sleep_for(std::chrono::milliseconds{8});
                 }
             } catch (const std::runtime_error&) {
@@ -212,6 +221,7 @@ private:
     std::array<double, 6> joints_{0.0, -90.0, 90.0, -90.0, -90.0, 0.0};
     std::vector<std::string> log_lines_;
     std::vector<std::string> log_requests_;
+    FrameFields frame_{};
     std::atomic<bool> stop_{false};
     std::jthread commands_thread_;
     std::jthread frames_thread_;

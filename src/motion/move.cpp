@@ -65,7 +65,7 @@ std::expected<Profile, Error> profile(const PathMoveOptions& o) {
 
 }  // namespace
 
-Move::Move(Robot& robot) : c_(robot.share()) {}
+Move::Move(Robot& robot) : session_(robot.session()) {}
 
 std::expected<void, Error> Move::joint(const Joints& target, const JointMoveOptions& o) {
     if (auto ok = check_target("target", target); !ok) return ok;
@@ -122,14 +122,15 @@ std::expected<void, Error> Move::rotate(const Joints& target, const PathMoveOpti
 
 template <class C>
 std::expected<void, Error> Move::start(const C& command) {
-    if (!c_) return invalid("a moved-from Move");
-    const auto id = c_->open([raw = c_.get()] {
+    const auto c = detail::reach(session_, C::method);
+    if (!c) return std::unexpected(c.error());
+    const auto id = (*c)->open([raw = c->get()] {
         const auto stopped = raw->send(sdk::Stop{});
         static_cast<void>(stopped);
     });
     if (!id) return std::unexpected(id.error());
-    if (auto ok = c_->send(command); !ok) {
-        c_->close(*id);  // not taken: nothing is moving
+    if (auto ok = (*c)->send(command); !ok) {
+        (*c)->close(*id);  // not taken: nothing is moving
         return std::unexpected(ok.error());
     }
     id_ = *id;
@@ -140,9 +141,14 @@ std::expected<void, Error> Move::start(const C& command) {
 
 std::optional<std::expected<void, Error>> Move::wait_for(std::chrono::nanoseconds timeout) {
     if (id_ == 0) return std::expected<void, Error>(invalid("no move to wait for"));
-    auto ended = c_->wait_stopped(started_, ran_, timeout);
+    const auto c = detail::reach(session_, "wait");
+    if (!c) {
+        id_ = 0;
+        return std::expected<void, Error>(std::unexpected(c.error()));
+    }
+    auto ended = (*c)->wait_stopped(started_, ran_, timeout);
     if (!ended) return std::nullopt;
-    c_->close(std::exchange(id_, 0));  // ended: no longer the open motion
+    (*c)->close(std::exchange(id_, 0));  // ended: no longer the open motion
     return ended;
 }
 
@@ -153,20 +159,31 @@ std::expected<void, Error> Move::wait() {
 
 void Move::stop() noexcept {
     try {
-        if (!c_) return;
-        const auto stopped = c_->send(sdk::Stop{});
-        static_cast<void>(stopped);
+        if (const auto c = session_.lock()) {
+            const auto stopped = c->send(sdk::Stop{});
+            static_cast<void>(stopped);
+        }
     } catch (...) {  // NOLINT(bugprone-empty-catch): noexcept; a failed stop has no one to tell
     }
 }
 
+void Move::end() noexcept {
+    if (id_ == 0) return;
+    stop();
+    if (const auto c = session_.lock()) c->close(id_);
+    id_ = 0;
+}
+
 Move::Move(Move&& other) noexcept
-    : c_(std::move(other.c_)), id_(std::exchange(other.id_, 0)), started_(other.started_), ran_(other.ran_) {}
+    : session_(std::move(other.session_)),
+      id_(std::exchange(other.id_, 0)),
+      started_(other.started_),
+      ran_(other.ran_) {}
 
 Move& Move::operator=(Move&& other) noexcept {
     if (this != &other) {
-        if (id_ != 0) c_->close(id_);
-        c_ = std::move(other.c_);
+        end();
+        session_ = std::move(other.session_);
         id_ = std::exchange(other.id_, 0);
         started_ = other.started_;
         ran_ = other.ran_;
@@ -174,8 +191,6 @@ Move& Move::operator=(Move&& other) noexcept {
     return *this;
 }
 
-Move::~Move() {
-    if (id_ != 0) c_->close(id_);
-}
+Move::~Move() { end(); }
 
 }  // namespace ec::motion

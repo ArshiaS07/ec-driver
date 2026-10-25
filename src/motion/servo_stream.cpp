@@ -19,11 +19,10 @@ std::unexpected<Error> invalid(std::string message) {
 
 }  // namespace
 
-ServoStream::ServoStream(Robot& robot, const ServoOptions& options) : c_(robot.share()), options_(options) {}
+ServoStream::ServoStream(Robot& robot, const ServoOptions& options) : session_(robot.session()), options_(options) {}
 
 std::expected<void, Error> ServoStream::open() {
     using namespace std::chrono_literals;
-    if (!c_) return invalid("a moved-from ServoStream");
     const auto lookahead = options_.lookahead.count();
     const auto period = options_.period.count();
     if (lookahead < 10 || lookahead > 1000)
@@ -32,26 +31,29 @@ std::expected<void, Error> ServoStream::open() {
     if (!(options_.smoothness >= 0.0 && options_.smoothness <= 1.0))
         return invalid(std::format("smoothness must be in [0, 1], not {}", options_.smoothness));
 
-    const auto id = c_->open([raw = c_.get()] {
+    const auto reached = detail::reach(session_, "open");
+    if (!reached) return std::unexpected(reached.error());
+    detail::Connection& c = **reached;
+    const auto id = c.open([raw = &c] {
         const auto cleared = raw->send(sdk::TtClearServoJointBuf{});
         static_cast<void>(cleared);
     });
     if (!id) return std::unexpected(id.error());
     // Until it is open, a failure gives the registration back; nothing is sent to clean up.
-    const auto fail = [this, &id](Error e) {
-        c_->close(*id);
+    const auto fail = [&c, &id](Error e) {
+        c.close(*id);
         return std::unexpected(std::move(e));
     };
-    const auto state = c_->send(sdk::GetTransparentTransmissionState{});
+    const auto state = c.send(sdk::GetTransparentTransmissionState{});
     if (!state) return fail(state.error());
     if (*state == sdk::Flag::On) {  // left open: cleared first, as the manual's example
-        if (auto ok = c_->send(sdk::TtClearServoJointBuf{}); !ok) return fail(ok.error());
+        if (auto ok = c.send(sdk::TtClearServoJointBuf{}); !ok) return fail(ok.error());
         std::this_thread::sleep_for(500ms);
     }
-    if (auto ok = c_->send(sdk::TransparentTransmissionInit{.lookahead_ms = static_cast<int>(lookahead),
-                                                            .period_ms = static_cast<int>(period),
-                                                            .smoothness = options_.smoothness,
-                                                            .replies = true});
+    if (auto ok = c.send(sdk::TransparentTransmissionInit{.lookahead_ms = static_cast<int>(lookahead),
+                                                          .period_ms = static_cast<int>(period),
+                                                          .smoothness = options_.smoothness,
+                                                          .replies = true});
         !ok)
         return fail(ok.error());
     id_ = *id;
@@ -63,33 +65,41 @@ std::expected<void, Error> ServoStream::add_point(const Joints& q) {
     for (std::size_t j = 0; j < kJointCount; ++j)
         if (!(std::abs(q[j]) <= kEc66JointLimit))
             return invalid(std::format("joint {} at {} rad is outside [-360, 360] deg", j + 1, q[j]));
-    return c_->send(sdk::TtPutServoJointToBuf{.target = rad_to_deg(q)}).transform([](auto&&) {});
+    const auto c = detail::reach(session_, "tt_put_servo_joint_to_buf");
+    if (!c) return std::unexpected(c.error());
+    return (*c)->send(sdk::TtPutServoJointToBuf{.target = rad_to_deg(q)}).transform([](auto&&) {});
 }
 
 std::expected<void, Error> ServoStream::close() {
     if (id_ == 0) return invalid("close: the stream is not open");
-    auto ok = c_->send(sdk::TtClearServoJointBuf{});
-    c_->close(std::exchange(id_, 0));
+    const auto c = detail::reach(session_, "tt_clear_servo_joint_buf");
+    if (!c) {
+        id_ = 0;
+        return std::unexpected(c.error());
+    }
+    auto ok = (*c)->send(sdk::TtClearServoJointBuf{});
+    (*c)->close(std::exchange(id_, 0));
     if (!ok) return std::unexpected(ok.error());
     return {};
 }
 
 void ServoStream::stop() noexcept {
     try {
-        if (!c_) return;
-        const auto cleared = c_->send(sdk::TtClearServoJointBuf{});
-        static_cast<void>(cleared);
+        if (const auto c = session_.lock()) {
+            const auto cleared = c->send(sdk::TtClearServoJointBuf{});
+            static_cast<void>(cleared);
+        }
     } catch (...) {  // NOLINT(bugprone-empty-catch): noexcept; a failed stop has no one to tell
     }
 }
 
 ServoStream::ServoStream(ServoStream&& other) noexcept
-    : c_(std::move(other.c_)), options_(other.options_), id_(std::exchange(other.id_, 0)) {}
+    : session_(std::move(other.session_)), options_(other.options_), id_(std::exchange(other.id_, 0)) {}
 
 ServoStream& ServoStream::operator=(ServoStream&& other) noexcept {
     if (this != &other) {
         close_quietly();
-        c_ = std::move(other.c_);
+        session_ = std::move(other.session_);
         options_ = other.options_;
         id_ = std::exchange(other.id_, 0);
     }
@@ -104,7 +114,8 @@ void ServoStream::close_quietly() noexcept {
         const auto closed = close();
         static_cast<void>(closed);  // nothing more to do if it fails
     } catch (...) {                 // NOLINT(bugprone-empty-catch): noexcept; a failed close has no one to tell
-        if (id_ != 0) c_->close(std::exchange(id_, 0));
+        if (const auto c = session_.lock(); c && id_ != 0) c->close(id_);
+        id_ = 0;
     }
 }
 

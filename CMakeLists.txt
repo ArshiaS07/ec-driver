@@ -26,6 +26,7 @@ add_library(ec_driver
     src/record/raw.cpp
     src/detail/connection.cpp
     src/log/reader.cpp
+    src/motion/controller.cpp
     src/motion/move.cpp
     src/motion/servo_stream.cpp
     src/motion/timestamped.cpp

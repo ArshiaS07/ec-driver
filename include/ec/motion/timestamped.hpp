@@ -25,8 +25,9 @@
 namespace ec::motion {
 
 /// One trajectory. It is the robot's open motion from its upload until a wait
-/// has seen its run end. Move-only; a run goes on if the object is destroyed
-/// (stop() ends it).
+/// has seen its run end. Move-only. Destroying it while it runs stops the run
+/// (stop_trajectory): a run does not outlive the code that waits for it. Once
+/// its Robot is gone, every call fails with Disconnected.
 class Timestamped {
 public:
     /// Sends nothing.
@@ -35,19 +36,22 @@ public:
     /// Uploads the trajectory; nothing moves. Invalid for fewer than 3 points,
     /// or stamps not from 0 increasing (the manual's ranges); Busy while a
     /// motion is open; Command if the controller refuses a call or finds the
-    /// upload invalid; Stopped if Robot::stop() came during it.
+    /// upload invalid; Stopped if robot.motion().stop() came during it.
     [[nodiscard]] std::expected<void, Error> upload();
 
     /// start_trajectory: the arm moves, at `speed` times the trajectory's own
-    /// (speed_percent / 100, at least 0.001). Invalid before an upload.
+    /// pace (speed_percent / 100). Invalid before an upload, and for a speed
+    /// outside [0.001, 1]: the manual's floor, and the driver's ceiling, since
+    /// above 1 the arm would move faster than the trajectory was planned for.
     [[nodiscard]] std::expected<void, Error> start(double speed = 1.0);
     [[nodiscard]] std::expected<void, Error> pause();   ///< pause_trajectory
     [[nodiscard]] std::expected<void, Error> resume();  ///< resume_trajectory
 
-    /// Waits up to `timeout` for the run to end, asking getRobotState every 10
-    /// ms (the manual's wait_stop): nullopt while the arm still moves; nothing
-    /// once it is at rest; Fault on an emergency stop, an alarm or a collision;
-    /// Stopped after Robot::stop(). Invalid before start().
+    /// Waits up to `timeout` for the run to end: nullopt while the arm still
+    /// moves; nothing once it is at rest; Fault on an emergency stop, an alarm
+    /// or a collision; Stopped after robot.motion().stop(). It reads the
+    /// monitoring path while it streams, else asks getRobotState every 10 ms
+    /// (the manual's wait_stop). Invalid before start().
     [[nodiscard]] std::optional<std::expected<void, Error>> wait_for(std::chrono::nanoseconds timeout);
     /// Waits until the run has ended, and says how.
     [[nodiscard]] std::expected<void, Error> wait();
@@ -61,7 +65,9 @@ public:
     ~Timestamped();
 
 private:
-    std::shared_ptr<detail::Connection> c_;
+    void end() noexcept;  // a running trajectory is stopped; the registration given back
+
+    std::weak_ptr<detail::Connection> session_;
     JointTrajectory trajectory_;
     std::uint64_t id_ = 0;  // the registration as the open motion, from the upload; 0: none
     bool started_ = false;
