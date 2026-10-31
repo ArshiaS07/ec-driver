@@ -1,0 +1,15 @@
+# A 60 mm square in the base frame's XY plane, 2 s a side, with a half-second
+# pause at each corner, the tool pointing down (rx 180, ry 0, rz 90 deg), as
+# the pendant shows poses: x y z in mm, rx ry rz in deg.
+# Written for tools/fake_robot.py, whose TCP is at -496 -122 424.431 mm at the
+# joints 0 -90 90 -90 -90 0: check every point against your cell (and set the
+# corner from the pendant) before running it on a robot with --yes.
+t,x,y,z,rx,ry,rz
+0.0,-496,-122,424.431,180,0,90
+2.0,-436,-122,424.431,180,0,90
+2.5,-436,-122,424.431,180,0,90
+4.5,-436,-62,424.431,180,0,90
+5.0,-436,-62,424.431,180,0,90
+7.0,-496,-62,424.431,180,0,90
+7.5,-496,-62,424.431,180,0,90
+9.5,-496,-122,424.431,180,0,90

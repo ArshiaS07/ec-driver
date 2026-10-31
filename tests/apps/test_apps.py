@@ -541,6 +541,112 @@ class EcInfo(unittest.TestCase):
         self.assertEqual(r.returncode, 1)
 
 
+class EcLog(unittest.TestCase):
+    """ec_log against the moving fake's log port."""
+
+    def test_prints_the_lines_of_a_level(self):
+        fake = FakeRobot("--ready")
+        self.addCleanup(fake.stop)
+        fake.control("alarm")
+        r = run(PATHS.ec_log, LOCAL, "--port", str(fake.log), "--level", "Error", "--lines", "5")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("Error: alarm (injected)", r.stdout)
+        r = run(PATHS.ec_log, LOCAL, "--port", str(fake.log), "--level", "nonsense")
+        self.assertEqual(r.returncode, 2)
+
+    def test_no_port_is_a_failure(self):
+        r = run(PATHS.ec_log, LOCAL, "--port", str(closed_port()))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("log port", r.stderr)
+
+
+class EcPlay(unittest.TestCase):
+    """ec_play against the moving fake: a CSV of joint positions or TCP poses,
+    planned, then run in a session that ends with the servos off, however it
+    ends."""
+
+    READY = "joints 0 -90 90 -90 -90 0"  # where the examples start
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(dir=PATHS.ec_play.parent)  # in the build tree, next to the tool
+        self.dir = Path(self.tmp.name)
+        self.examples = PATHS.tools.parent / "examples"
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def robot(self, *options: str) -> FakeRobot:
+        fake = FakeRobot(*options)
+        self.addCleanup(fake.stop)
+        self.assertEqual(fake.control(self.READY), "ok")
+        return fake
+
+    def play(self, fake: FakeRobot, *args: str, timeout: float = 90.0) -> subprocess.CompletedProcess:
+        return run(PATHS.ec_play, *args, "--host", LOCAL, "--command-port", str(fake.command), "--monitor-port",
+                   str(fake.monitor), timeout=timeout)
+
+    def test_a_dry_run_plans_and_moves_nothing(self):
+        fake = self.robot()
+        before = fake.state()
+        r = self.play(fake, str(self.examples / "joints_wave.csv"))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertRegex(r.stdout, r"3 joint positions over 4.00 s, planned into \d+ points")
+        self.assertIn("nothing moved", r.stdout)
+        after = fake.state()
+        self.assertEqual((before["q"], before["servo"]), (after["q"], after["servo"]))
+
+    def test_joint_positions_run_in_a_session_that_ends_with_the_servos_off(self):
+        fake = self.robot()  # servos off, not synchronised: brought up first
+        r = self.play(fake, str(self.examples / "joints_wave.csv"), "--yes")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("bring-up:", r.stdout)
+        self.assertIn("run: done", r.stdout)
+        self.assertIn("the servos report off", r.stdout)
+        state = fake.state()
+        self.assertFalse(state["servo"])
+        for got, want in zip(state["q"], [0, -90, 90, -90, -90, 0]):
+            self.assertAlmostEqual(got, want, places=3)
+
+    def test_tcp_poses_are_solved_and_run(self):
+        fake = self.robot("--ready")
+        x, y, z, rx, ry, rz = fake.state()["pose"]  # mm, rad: the fake's TCP at READY
+        rot = " ,".join(f"{math.degrees(a):.6f}" for a in (rx, ry, rz)).replace(" ,", ",")
+        csv = self.dir / "line.csv"
+        csv.write_text("t,x,y,z,rx,ry,rz\n"
+                       f"0,{x:.6f},{y:.6f},{z:.6f},{rot}\n"
+                       f"1.5,{x + 30:.6f},{y:.6f},{z:.6f},{rot}\n", encoding="utf-8")
+        r = self.play(fake, str(csv), "--yes")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("2 TCP poses over 1.50 s", r.stdout)
+        self.assertIn("run: done", r.stdout)
+        self.assertAlmostEqual(fake.state()["pose"][0], x + 30, places=1)
+        self.assertFalse(fake.state()["servo"])
+
+    def test_a_bad_file_names_its_line(self):
+        fake = self.robot()
+        bad_header = self.dir / "header.csv"
+        bad_header.write_text("# a comment\ntime,a,b\n", encoding="utf-8")
+        r = self.play(fake, str(bad_header))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("header.csv:2: the header must be", r.stderr)
+        bad_number = self.dir / "number.csv"
+        bad_number.write_text("t,j1,j2,j3,j4,j5,j6\n0,0,-90,90,-90,-90,0\n1,x,-90,90,-90,-90,0\n", encoding="utf-8")
+        r = self.play(fake, str(bad_number))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn('number.csv:3: column 2: "x" is not a number', r.stderr)
+
+    def test_an_emergency_stop_during_the_run_still_ends_the_session(self):
+        fake = self.robot("--ready")
+        timer = threading.Timer(4.0, lambda: fake.control("estop on"))
+        timer.start()
+        self.addCleanup(timer.cancel)
+        r = self.play(fake, str(self.examples / "joints_wave.csv"), "--yes")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("fault: emergency stop", r.stderr)
+        self.assertIn("shut-down:", r.stdout)
+        self.assertFalse(fake.state()["servo"])
+
+
 class SbxTrajectory(unittest.TestCase):
     """The sandbox against the moving fake, whatever circle circle() holds (the
     user sets it for the robot): brought up with slow answers, verified,
@@ -607,6 +713,8 @@ def main() -> None:
     p.add_argument("--ec-move", type=Path, required=True)
     p.add_argument("--sbx-trajectory", type=Path, required=True)
     p.add_argument("--ec-info", type=Path, required=True)
+    p.add_argument("--ec-log", type=Path, required=True)
+    p.add_argument("--ec-play", type=Path, required=True)
     p.add_argument("--tools", type=Path, required=True)
     args, rest = p.parse_known_args()
     vars(PATHS).update(vars(args))

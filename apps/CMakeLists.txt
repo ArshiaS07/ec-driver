@@ -28,3 +28,12 @@ ec_set_warnings(sbx_trajectory)
 add_executable(ec_info ec_info.cpp)
 target_link_libraries(ec_info PRIVATE ec::driver CLI11::CLI11)
 ec_set_warnings(ec_info)
+
+add_executable(ec_log ec_log.cpp)
+target_link_libraries(ec_log PRIVATE ec::driver CLI11::CLI11)
+ec_set_warnings(ec_log)
+
+# Runs a trajectory from a CSV file, with the sandbox's planning (apps/planning.hpp).
+add_executable(ec_play ec_play.cpp)
+target_link_libraries(ec_play PRIVATE ec::driver CLI11::CLI11)
+ec_set_warnings(ec_play)
