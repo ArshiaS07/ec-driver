@@ -5,7 +5,8 @@ reading notes in `docs/notes/`) and nothing else: earlier decisions and the
 archived ADRs do not apply. It answers four questions: what the robot is made
 of, how the driver should be built around that, which workflow each task
 takes, and how to get there in a few weeks. Agreed in outline the same day
-(§12 records the user's answers); details may still change as it is built.
+(§12 records the user's answers); built by 2026-10-31 (§10), to be refined as
+applications use it (trajectories first; closed-loop control later).
 
 ## 1. The short answer
 
@@ -182,8 +183,9 @@ prints it, and the start-up workflow will follow it.
 
 ## 5. The parts
 
-`Drives`, `Model` and `System` are built (days 4–5: `include/ec/drives.hpp`,
-`model.hpp`, `system.hpp`). Each part is a small handle onto the robot's
+All the parts below are built (`include/ec/joint.hpp`, `drives.hpp`,
+`model.hpp`, `safety.hpp`, `io.hpp`, `programs.hpp`, `system.hpp`,
+`motion/controller.hpp`). Each part is a small handle onto the robot's
 session: cheap to copy, usable from any thread (calls wait for each other).
 It holds the session without keeping it alive (a `std::weak_ptr`), so a part
 that outlives its robot fails with Disconnected instead of reaching freed
@@ -209,13 +211,13 @@ auto log = robot.system().log({.level = ec::log::Level::Error, .lines = 20}).val
 Waiting for an effect (the servo on, the encoders synchronised) is not a
 part's: it is one read of the monitoring path, or a workflow's step.
 
-| `Joint` (`robot.joint(i)`, i = 1..6) | read only, over 8055: `position()`, `motor_position()`, `velocity()`, `torque()`, `motor_torque()`, `temperature()`, `brake_released()`, `firmware()` | §R.3.2 |
+| `Joint` (`robot.joint(i)`, i = 1..6; built) | read only, over 8055: `position()`, `velocity()`, `torque()`, `torque_of_rated()`, `temperature()`, `brake_released()`, `firmware()`. Not yet: the motor-side position (`get_motor_pos` gives no unit, §R.8) | §R.3.2 |
 | `Drives` (built) | `servo_on()`, `switch_servo(bool)`, `synced()`, `synchronise()`, `precise()`, `servo_alarm()`, `clear_alarm()`, `reset()`, `brakes_released()`, `backdrive()`, `enter_backdrive()`, `exit_backdrive()`. Not yet: calibrating the encoders, until what `calibrate_encoder_zero_position` does is known (§R.8); the arm's power, which is not in the 3.11.2 SDK | §R.5.2 |
-| `Motion` | `state()`, `wait_until_stopped()`, `stop()`, `speed_scale()`, `set_speed_scale()`, `hand_guiding(bool)`; the families `Move`, `Path`, `Jog`, `SpeedStream`, `ServoStream`, `Timestamped` | §R.5.5, §R.5.7 |
-| `Model` (built) | `ik`, `fk`, `to_user`, `from_user`; `active_tool()`, `select_tool(n)` (the REMOTE and PLAY tool; TEACH has its own), `tool(n)`, `set_tool(n, T_flange_tcp)`, `payload(n)`, `set_payload(n, payload)`; `active_user_frame()`, `select_user_frame(n)`, `user_frame(n)`, `set_user_frame(n, T_base_user)`. Not yet: `ik_all` (its reply's shape is unclear in the manual, §R.8), `dh` (its unit is not stated), `interpolate` | §R.5.6 |
-| `Safety` | `collision()`, `reset_collision()`, `collision_detection()`, `limits()` (normal and reduced); setters later (they need the remote password) | §R.5.8 |
-| `Io` | `input(i)`, `output(i)`, `set_output(i, on)`, `analog_input(i)`, `analog_output(i)`, `set_analog_output(i, v)`, `virtual_bit(i)`, `set_virtual_bit(i, on)`, `flange_button(b)` | §R.4.3 |
-| `Programs` | `exists(name)`, `run(name)`, `state()`, `line()`, `pause()`, `resume()`, `stop()`, `cycle_mode()`, variables `b/i/d/p/v(n)` and setters, `save_variables()` | §R.4.2 |
+| `Motion` (`robot.motion()`, an `ec::motion::Controller`; built) | `state()`, `wait_until_stopped()`, `stop()` (any thread), `speed_scale()`, `set_speed_scale()`, `hand_guiding()`, `set_hand_guiding(bool)`; the families in `ec::motion`: `Move`, `Path`, `Jog`, `SpeedStream`, `ServoStream`, `Timestamped` | §R.5.5, §R.5.7 |
+| `Model` (built) | `ik`, `fk`, `to_user`, `from_user`; `active_tool()`, `select_tool(n)` (the REMOTE and PLAY tool; TEACH has its own), `tool(n)`, `set_tool(n, T_flange_tcp)`, `payload(n)`, `set_payload(n, payload)`; `active_user_frame()`, `select_user_frame(n)`, `user_frame(n)`, `set_user_frame(n, T_base_user)`. `dh(index)` (as sent: the manual gives no unit or table; `ec_info` prints all twelve beside the user manual's), `robot_type()`, `robot_subtype()`. Not yet: `ik_all` (its reply's shape is unclear in the manual, §R.8), `interpolate` | §R.5.6 |
+| `Safety` (built) | `emergency_stop()`, `collision()`, `reset_collision()`, `collision_detection()`, `collision_sensitivity()`, `limits_enabled()`, the power, momentum, tool force, elbow force and speed limits (normal and reduced); setters later (they need the remote password) | §R.5.8 |
+| `Io` (built) | `input(i)`, `output(i)`, `set_output(i, on)`, `analog_input(i)`, `analog_output(i)`, `set_analog_output(i, v)`, `virtual_input(i)`, `virtual_output(i)`, `set_virtual_output(i, on)`, `flange_button(b)`; fieldbus registers stay typed calls | §R.4.3 |
+| `Programs` (built) | `exists(name)`, `run(name)`, `state()`, `line()`, `pause()`, `resume()` (a program is stopped by `motion().stop()`), `cycle_mode()`, `set_cycle_mode()`, variables `b/i/d/p/v(n)` and setters, `p_enabled(n)`, `save_variables()` | §R.4.2 |
 | `System` (built) | `mode()`, `version()`, `alarms()` (the last five), `log(request)` (port 8058, `ec::log::read`: one connection per read, beside 8055), `set_clock(t)`. The joints' firmware goes to `Joint` | §R.5.1, §R.5.9 |
 
 The motion families keep their present shape (the constructor takes the
@@ -229,6 +231,19 @@ A workflow is a free function over the parts that carries out one task as
 the manuals describe it, and returns a report: each step, what it did or why
 it stopped, and what the operator must do. Applications may use them or
 compose the parts themselves.
+
+Built (`include/ec/workflows.hpp`): `bring_up` (reads the conditions over
+8055, `read_conditions`, and takes the first missing step in `readiness()`'s
+order until none is missing; it stops, naming the step, where only the
+operator can help), `shut_down` (stop, rest, servos off until reported off)
+and `recover` (the last alarms and the log's error lines, then bring-up),
+each returning a `Report`. `ec::Session` ties the first two to a scope:
+started by a bring-up, ended by a shut-down however the scope is left, so a
+powered arm does not outlive the program supervising it (it did: the pendant
+logged our disconnects with the servos on). The tools that run a motion from
+start to end (`ec_play`, the sandbox) run in a session; `ec_move`, a tool of
+single steps, leaves the servos as its command left them, and its
+`shut-down` ends a session.
 
 | Task | Steps | Ends when | Source |
 |---|---|---|---|
@@ -258,13 +273,15 @@ compose the parts themselves.
   the next. `robot.motion().stop()` works from any thread; it waits at most for the
   call in flight. If a second 8055 client proves allowed (§R.8), a separate
   stop channel can be added inside the session without changing the API.
-- **Errors**: `std::expected<T, ec::Error>` everywhere. On a refusal or a
-  fault the error carries the controller's own message, its last alarm
-  numbers and the state at that moment: the driver explains with the
-  controller's reasons, never with extra calls before every command.
+- **Errors**: `std::expected<T, ec::Error>` everywhere. A refusal carries
+  the call and the controller's own message; a fault seen by a wait says
+  which (emergency stop, alarm, collision). The driver explains with the
+  controller's reasons, never with extra calls before every command;
+  `recover` adds the last alarms and the log's error lines, and the call log
+  (`RobotOptions::on_call`) keeps every exchange.
 - **The driver's own guards** are few and named as ours: never two calls in
   flight or unconfirmed bursts (learned on the robot, §R.6.2); a timestamped
-  trajectory's speed factor at most 1 unless lifted. Postponed (the user,
+  trajectory's speed factor at most 1 (faster than it was planned for). Postponed (the user,
   2026-10-21): checking that the arm is at a trajectory's first point before
   it starts, or moving it there. What the controller does when it is not is an
   open question (§R.8 #7); it may handle it itself.
@@ -277,8 +294,10 @@ compose the parts themselves.
   to stop when it goes out of scope. The cost: a move meant to run on must
   keep its object, which shows in the code. If the process dies, nothing on
   the PC runs; the controller finishes or drains what was running (§R.5.7).
-  The parts already hold the session without keeping it (§5); the motion
-  families, which still keep it, follow when they move under `Motion`.
+  Built so: every family stops its motion when destroyed open, the `Robot`'s
+  destructor stops an open motion, parts and families hold the session
+  without keeping it (Disconnected once the robot is gone), and
+  `ec::Session` switches the servos off at the end of a session (§6).
 
 ## 8. How we build it
 
@@ -308,7 +327,7 @@ format, clang-tidy and the app tests.
 
 | Keep as it is | Reshape | New | Archive |
 |---|---|---|---|
-| `net/`, the 184 typed calls and the client (`sdk/`), the 8056 decoder, reader and receiver, the recorders (`record/`), `Latest`, units, poses, status enums, the fakes and their tests, `apps/planning.hpp` (the sandbox's) | `feedback::State` → `ec::State` made of parts, the HDF5 recording on it (done); `Robot` → the composition root; `detail::Connection` → the session; the motion families under the motion part, with waits on the stream; `bring_up` → a workflow; `ec_move` on the workflows | the parts (`Drives`, `Model`, `System` done); `Monitor` and `readiness` (done); the workflows; the 8058 log reader (done); `Path`, `Jog`, `SpeedStream`; `ec_log` | done 2026-10-21: `docs/motion.md`, the old architecture and design, the ADRs (local) moved to `docs/archive/` |
+| `net/`, the 184 typed calls and the client (`sdk/`), the 8056 decoder, reader and receiver, the recorders (`record/`), `Latest`, units, poses, status enums, the fakes and their tests, `apps/planning.hpp` (the tools') | all done: `feedback::State` → `ec::State` made of parts, the HDF5 recording on it; `Robot` → the composition root; `detail::Connection` → the session; the motion families under the motion part, with waits on the stream; `bring_up` → a workflow; `ec_move` on the workflows | all done: the parts; `Monitor` and `readiness`; the workflows and `Session`; the 8058 log reader; `Path`, `Jog`, `SpeedStream`; the call log; `ec_info`, `ec_log`, `ec_play` | done 2026-10-21: `docs/motion.md`, the old architecture and design, the ADRs (local) moved to `docs/archive/` |
 
 Also done on day 1: `ec::log` (our recordings) is now `ec::record`, so that
 "log" means the controller's log; ADR citations in the code now point to
@@ -326,12 +345,12 @@ About two and a half weeks; each block is tested before the next.
 | 1 | Done 2026-10-21: clean-up (§9), README, the VS Code files (local) |
 | 2–3 | Done 2026-10-21: `State` and `state_from`, `readiness`, the `Monitor` (the 8056 path) in `Robot`; unit tests |
 | 4–5 | Done 2026-10-25: `Drives`, `System` (with the 8058 reader), `Model`: thin, against the scripted controller |
-| 6–7 | `Motion` with the existing families moved in, waits on the stream, the guards; `Io` |
-| 8 | Workflows: start, end, recover, with reports; `ec_move` on them |
-| 9 | End to end against the fake (taught the flags it lacks: precise, power, alarms) |
-| 10 | Hardware session: the read-only checks (§R.8), start, one move, the circle, end |
-| 11–13 | `Path`, `Jog`, `SpeedStream`, `Programs`, `Safety` (reading); the call log; a second hardware session |
-| after | The first real application on top; fix what it finds awkward |
+| 6–7 | Done 2026-10-25: `Motion` with the families under it, waits on the stream, the lifetimes, the guards; `Joint`, `Io`, `Safety`, `Programs` |
+| 8 | Done 2026-10-25: workflows (start, end, recover) with reports; `ec_move` on them; `ec::Session` (2026-10-31) |
+| 9 | Done 2026-10-25: end to end against the fake (taught precise, the alarms, a log port, its own model) |
+| 10 | The user's: a hardware session, the commands in `docs/ec66.md` §8 (read-only first, then start, one move, a CSV trajectory, end) |
+| 11–13 | Done 2026-10-31: `Path`, `Jog`, `SpeedStream`; the call log; `ec_info`, `ec_log`, `ec_play` (a trajectory from a CSV file). A second hardware session: the user's |
+| after | The first real application on top (trajectories; then closed-loop control): refine what it finds awkward |
 
 ## 11. Where I push back
 
@@ -368,3 +387,10 @@ About two and a half weeks; each block is tested before the next.
    on the same robot (the user, not sure it is right): it is `robot.monitor()`
    (§4). The existing stream code works, so change little. Where there is a
    choice, take the safer, more idiomatic one.
+8. 2026-10-31, to wrap up: the work ahead is trajectories, so the stack need
+   not be perfect now; refine it when it is used in other ways (closed-loop
+   control). Best practice and the correct workflow, for example the servos
+   off before a disconnect (missed before); a few tools like the monitor;
+   a demo that runs a trajectory from a simple CSV file. (Asked for, earlier
+   the same week: `getDH` and the like, to verify the parameters: `ec_info`.)
+

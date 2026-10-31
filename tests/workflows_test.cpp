@@ -24,8 +24,11 @@ using ec::Blocker;
 using ec::Error;
 using ec::test::MiniController;
 
-const std::vector<std::string> kConditions{"getRobotMode",  "get_estop_status", "getCollisionState",
-                                           "getRobotState", "getMotorStatus",   "getServoStatus"};
+// The calls read_conditions makes, in order.
+std::vector<std::string> conditions() {
+    return {"getRobotMode",  "get_estop_status", "getCollisionState",
+            "getRobotState", "getMotorStatus",   "getServoStatus"};
+}
 
 ec::Robot connect(MiniController& controller) {
     auto robot = ec::Robot::connect(controller.options(/*monitor=*/false));
@@ -45,7 +48,7 @@ TEST(BringUp, ReadyAlreadyItOnlyReads) {
     auto robot = connect(controller);
     const auto r = ec::bring_up(robot);
     EXPECT_TRUE(r.ok()) << describe(r);
-    EXPECT_EQ(controller.methods(), concat({kConditions, {"getSpeed"}}));
+    EXPECT_EQ(controller.methods(), concat({conditions(), {"getSpeed"}}));
     EXPECT_EQ(r.steps.back().outcome, "100 %");  // the speed slider
 }
 
@@ -70,13 +73,13 @@ TEST(BringUp, ClearsSynchronisesAndSwitchesOnAsTheConditionsCallFor) {
 
     const auto r = ec::bring_up(robot);
     ASSERT_TRUE(r.ok()) << describe(r);
-    EXPECT_EQ(controller.methods(), concat({kConditions,
+    EXPECT_EQ(controller.methods(), concat({conditions(),
                                             {"clearAlarm"},
-                                            kConditions,
+                                            conditions(),
                                             {"syncMotorStatus"},
-                                            kConditions,
+                                            conditions(),
                                             {"set_servo_status", "getServoStatus"},
-                                            kConditions,
+                                            conditions(),
                                             {"getSpeed"}}));
     EXPECT_EQ(controller.last("set_servo_status")["status"], 1);
 }
@@ -94,7 +97,7 @@ TEST(BringUp, ACollisionIsResetThenItsAlarmCleared) {
     const auto r = ec::bring_up(robot);
     ASSERT_TRUE(r.ok()) << describe(r);
     EXPECT_EQ(controller.methods(),
-              concat({kConditions, {"resetCollisionState", "clearAlarm"}, kConditions, {"getSpeed"}}));
+              concat({conditions(), {"resetCollisionState", "clearAlarm"}, conditions(), {"getSpeed"}}));
 }
 
 TEST(BringUp, StopsWhereOnlyTheOperatorCanHelpAndSendsNothing) {
@@ -106,7 +109,7 @@ TEST(BringUp, StopsWhereOnlyTheOperatorCanHelpAndSendsNothing) {
     EXPECT_EQ(r.blocker, Blocker::NotRemote);
     EXPECT_TRUE(r.operator_needed());
     EXPECT_EQ(r.error->kind, Error::Kind::Command);
-    EXPECT_EQ(controller.methods(), kConditions);  // read only
+    EXPECT_EQ(controller.methods(), conditions());  // read only
 
     controller.forget();
     controller.answer("getRobotMode", "2");
@@ -114,7 +117,7 @@ TEST(BringUp, StopsWhereOnlyTheOperatorCanHelpAndSendsNothing) {
     r = ec::bring_up(robot);
     EXPECT_EQ(r.blocker, Blocker::EmergencyStop);
     EXPECT_EQ(r.error->kind, Error::Kind::Fault);
-    EXPECT_EQ(controller.methods(), kConditions);
+    EXPECT_EQ(controller.methods(), conditions());
 }
 
 TEST(BringUp, AStepThatDoesNotTakeIsNamed) {
@@ -223,7 +226,7 @@ TEST(Session, AFailedStartLeavesWhatItDidNotChange) {
     const auto teach = ec::Session::start(robot);
     ASSERT_FALSE(teach);
     EXPECT_EQ(teach.error().blocker, Blocker::NotRemote);
-    EXPECT_EQ(controller.methods(), kConditions);
+    EXPECT_EQ(controller.methods(), conditions());
 
     controller.forget();
     controller.answer("getRobotMode", "2");
