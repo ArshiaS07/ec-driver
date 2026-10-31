@@ -1,5 +1,6 @@
 #include "ec/workflows.hpp"
 
+#include <algorithm>
 #include <format>
 #include <thread>
 #include <utility>
@@ -212,6 +213,53 @@ Report recover(Robot& robot, const BringUpOptions& o) {
     r.error = std::move(up.error);
     r.blocker = up.blocker;
     return r;
+}
+
+std::expected<Session, Report> Session::start(Robot& robot, const BringUpOptions& up, const ShutDownOptions& down) {
+    Report r = bring_up(robot, up);
+    if (r.ok()) return Session(robot, std::move(r), down);
+    // Only what this bring-up did is undone: the servos, if it switched them on.
+    const bool switched_on =
+        std::ranges::any_of(r.steps, [](const Step& s) { return s.what == "set_servo_status 1" && s.ok; });
+    if (switched_on) {
+        const auto off = robot.drives().switch_servo(false);
+        r.steps.push_back(
+            {.what = "set_servo_status 0",
+             .outcome = off ? "the servos switched off again: the session did not start" : describe(off.error()),
+             .ok = off.has_value()});
+    }
+    return std::unexpected(std::move(r));
+}
+
+Report Session::end() {
+    if (robot_ == nullptr) return {};
+    Robot& robot = *std::exchange(robot_, nullptr);
+    return shut_down(robot, down_);
+}
+
+Session::Session(Session&& other) noexcept
+    : robot_(std::exchange(other.robot_, nullptr)), started_(std::move(other.started_)), down_(other.down_) {}
+
+Session& Session::operator=(Session&& other) noexcept {
+    if (this != &other) {
+        try {
+            const auto ended = end();
+            static_cast<void>(ended);
+        } catch (...) {  // NOLINT(bugprone-empty-catch): noexcept; the next session takes over
+        }
+        robot_ = std::exchange(other.robot_, nullptr);
+        started_ = std::move(other.started_);
+        down_ = other.down_;
+    }
+    return *this;
+}
+
+Session::~Session() {
+    try {
+        const auto ended = end();
+        static_cast<void>(ended);
+    } catch (...) {  // NOLINT(bugprone-empty-catch): a destructor has no one to tell
+    }
 }
 
 }  // namespace ec

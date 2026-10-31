@@ -94,8 +94,10 @@ int run(int argc, char** argv) {
     const cli::StopOnInterrupt ctrl_c(*robot);
 
     // 1. Bring up: clear an alarm, synchronise the encoders, servos on; only what is needed.
-    if (const auto up = ec::bring_up(*robot); !up.ok()) {
-        cli::err("{}", describe(up));
+    // The session switches the servos off again however this function returns.
+    auto session = ec::Session::start(*robot);
+    if (!session) {
+        cli::err("{}", describe(session.error()));
         return cli::kFailed;
     }
 
@@ -118,6 +120,12 @@ int run(int argc, char** argv) {
     if (auto ok = circle_motion.start(); !ok) return fail("circle", ok.error());
     if (auto done = circle_motion.wait(); !done) return fail("circle", done.error());
     cli::out("done\n");
+
+    // 5. The end of the session: stopped, at rest, servos off.
+    if (const auto down = session->end(); !down.ok()) {
+        cli::err("{}", describe(down));
+        return cli::kFailed;
+    }
     return cli::kOk;
 }
 

@@ -1,15 +1,16 @@
 #pragma once
-// Planning for the sandbox (application code, not part of the driver): a motion
+// Planning for the tools (application code, not part of the driver): a motion
 // of the TCP, poses stamped with their time, solved by the controller's inverse
 // kinematics into a checked joint trajectory, which ec::motion::Timestamped
-// runs (its reasoning: docs/archive/motion-2026-10-18.md §5.11). Temporary, until the application's own planning
-// replaces it.
+// runs; or stamped joint positions, made into one. Temporary, until the
+// application's own planning replaces it.
 //
 // plan() fills in the poses (3 mm, 1 deg apart), solves each near the one
 // before, checks every solution (no jump, no singularity, within the limits),
 // interpolates the joints over time (at rest at the ends and at pauses) and
 // samples them every 20 ms; the trajectory is checked against the joints'
-// speed and acceleration limits.
+// speed and acceleration limits. plan_joints() does the last two for joint
+// positions given as they are.
 
 #include <Eigen/Geometry>
 #include <algorithm>
@@ -26,7 +27,6 @@
 #include "ec/error.hpp"
 #include "ec/pose.hpp"
 #include "ec/robot.hpp"
-#include "ec/sdk/kinematics.hpp"
 #include "ec/sdk/param.hpp"
 #include "ec/stamped.hpp"
 #include "ec/trajectory.hpp"
@@ -281,6 +281,27 @@ inline std::expected<void, std::string> check_limits(const ec::JointTrajectory& 
     return {};
 }
 
+// The joints at `times` [s] (from 0, increasing) interpolated over time
+// (JointSpline), sampled every period with the last point at `end` exactly,
+// and checked against the limits.
+inline std::expected<ec::JointTrajectory, Error> sample(std::vector<double> times, std::vector<Joints> knots,
+                                                        Clock::duration end, const PlanOptions& o) {
+    const double last = times.back();
+    const JointSpline spline(std::move(times), std::move(knots));
+    const double period = std::min(o.period, last / 2.0);  // at least 3 points
+    const auto steps = static_cast<std::size_t>(std::floor(last / period));
+    ec::JointTrajectory trajectory;
+    trajectory.reserve(steps + 2);
+    for (std::size_t k = 0; k <= steps; ++k) {
+        const double t = period * static_cast<double>(k);
+        if (k > 0 && last - t < period / 2.0) break;  // the end comes next, not this close behind
+        trajectory.push_back({stamp(t), spline.position(t)});
+    }
+    trajectory.push_back({end, spline.position(last)});
+    if (auto ok = check_limits(trajectory, o); !ok) return invalid(ok.error());
+    return trajectory;
+}
+
 }  // namespace detail
 
 /// Turns a motion of the TCP into a joint trajectory, starting from the joints
@@ -314,15 +335,14 @@ inline std::expected<ec::JointTrajectory, Error> plan(ec::Robot& robot, const Po
             solutions.push_back(reference);
             continue;
         }
-        auto q = robot.call(
-            ec::sdk::InverseKinematic{.target = ec::to_mm_rad(p.pose), .reference = ec::rad_to_deg(reference)});
+        auto q = robot.model().ik(p.pose, reference);
         if (!q) {  // no solution, or no answer: the message says which
             Error e = std::move(q.error());
             e.message = std::format("inverse kinematics failed for the pose {}: {}", where(p), e.message);
             return std::unexpected(std::move(e));
         }
         // Each joint taken by whole turns to the value nearest the one before.
-        const Joints solution = ec::nearest_turn(ec::deg_to_rad(*q), reference, o.joint_limit);
+        const Joints solution = ec::nearest_turn(*q, reference, o.joint_limit);
         // The first point is checked where it is: the arm is moved there before
         // the trajectory runs (the manual's workflow, 2.2.9.10).
         if (auto ok = k == 0 ? check_point(solution, o) : check_step(reference, solution, o); !ok)
@@ -332,21 +352,36 @@ inline std::expected<ec::JointTrajectory, Error> plan(ec::Robot& robot, const Po
         solutions.push_back(solution);
     }
 
-    // Interpolate over time, and sample: the last point exactly at the end.
-    const double end = times.back();
-    const JointSpline spline(std::move(times), std::move(solutions));
-    const double period = std::min(o.period, end / 2.0);  // at least 3 points
-    const auto steps = static_cast<std::size_t>(std::floor(end / period));
-    ec::JointTrajectory trajectory;
-    trajectory.reserve(steps + 2);
-    for (std::size_t k = 0; k <= steps; ++k) {
-        const double t = period * static_cast<double>(k);
-        if (k > 0 && end - t < period / 2.0) break;  // the end comes next, not this close behind
-        trajectory.push_back({stamp(t), spline.position(t)});
+    return sample(std::move(times), std::move(solutions), motion.back().stamp, o);
+}
+
+/// Turns joint positions [rad], each stamped with its time since the start
+/// (the first at 0, then increasing; the same positions at neighbouring stamps
+/// are a pause), into a trajectory as plan() makes one: through every position
+/// at its time, at rest at the ends and pauses, sampled every period. No call
+/// to the controller. Invalid, naming the point, for fewer than 2 points,
+/// stamps that do not increase, a position beyond the joint limit, or a
+/// trajectory too fast for the joints.
+inline std::expected<ec::JointTrajectory, Error> plan_joints(const ec::JointTrajectory& knots,
+                                                             const PlanOptions& o = {}) {
+    using namespace detail;
+    if (knots.size() < 2) return invalid(std::format("{} points; a motion needs at least 2", knots.size()));
+    if (knots.front().stamp != Clock::duration::zero())
+        return invalid(std::format("it starts at {} s, not 0", seconds(knots.front().stamp)));
+    if (!(o.period > 0.0)) return invalid("period must be positive");
+    std::vector<double> times;
+    std::vector<Joints> positions;
+    for (std::size_t k = 0; k < knots.size(); ++k) {
+        if (k > 0 && !(knots[k].stamp > knots[k - 1].stamp))
+            return invalid(std::format("point {}: its stamp, {} s, does not increase", k, seconds(knots[k].stamp)));
+        for (std::size_t j = 0; j < kJointCount; ++j)
+            if (!(std::abs(knots[k].value[j]) <= o.joint_limit))
+                return invalid(std::format("point {}: joint {} at {:.1f} deg is beyond the joint limit", k, j + 1,
+                                           ec::rad_to_deg(knots[k].value[j])));
+        times.push_back(seconds(knots[k].stamp));
+        positions.push_back(knots[k].value);
     }
-    trajectory.push_back({motion.back().stamp, spline.position(end)});
-    if (auto ok = check_limits(trajectory, o); !ok) return invalid(ok.error());
-    return trajectory;
+    return sample(std::move(times), std::move(positions), knots.back().stamp, o);
 }
 
 }  // namespace planning

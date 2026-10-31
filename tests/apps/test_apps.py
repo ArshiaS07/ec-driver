@@ -570,7 +570,7 @@ class SbxTrajectory(unittest.TestCase):
         self.assertRegex(r.stdout, r"verified: \d+ points over [\d.]+ s")
         self.assertIn("done", r.stdout)
         state = fake.state()
-        self.assertTrue(state["servo"])
+        self.assertFalse(state["servo"])  # the session ended: servos off before the disconnect
         self.assertEqual(state["qd"], [0.0] * 6)  # at rest
 
     def test_a_failed_inverse_kinematics_is_reported_before_anything_moves(self):

@@ -92,4 +92,44 @@ struct ShutDownOptions {
 /// that cannot be read is reported and the recovery goes on.
 [[nodiscard]] Report recover(Robot& robot, const BringUpOptions& options = {});
 
+/// A session with the servos on: brought up when it starts, shut down when it
+/// ends, whichever way its scope is left (the end, an error, an exception,
+/// Ctrl+C), so that a powered arm does not outlive the program supervising
+/// it. The robot must outlive the session: declare the session after it.
+///
+///     auto session = ec::Session::start(robot);
+///     if (!session) return fail(describe(session.error()));
+///     ...                                         // motions
+///     std::print("{}", describe(session->end())); // or leave it to the destructor
+class Session {
+public:
+    /// bring_up. On failure, the report of it, and the servos are left as
+    /// found, unless the bring-up switched them on before it failed: then they
+    /// are switched off again (its report says so).
+    [[nodiscard]] static std::expected<Session, Report> start(Robot& robot, const BringUpOptions& up = {},
+                                                              const ShutDownOptions& down = {});
+
+    /// shut_down, once: the stop, the arm at rest, the servos off. Later calls
+    /// send nothing and return an empty report.
+    Report end();
+    /// The bring-up's report.
+    [[nodiscard]] const Report& started() const noexcept { return started_; }
+    [[nodiscard]] bool active() const noexcept { return robot_ != nullptr; }
+
+    Session(Session&& other) noexcept;
+    Session& operator=(Session&& other) noexcept;
+    Session(const Session&) = delete;
+    Session& operator=(const Session&) = delete;
+    /// end(), if it is still active; its report is lost (call end() to see it).
+    ~Session();
+
+private:
+    Session(Robot& robot, Report started, const ShutDownOptions& down) noexcept
+        : robot_(&robot), started_(std::move(started)), down_(down) {}
+
+    Robot* robot_;  // null once ended (or moved from)
+    Report started_;
+    ShutDownOptions down_;
+};
+
 }  // namespace ec

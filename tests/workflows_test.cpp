@@ -184,4 +184,63 @@ TEST(Recover, ExplainsWithTheAlarmsAndTheLogThenBringsUp) {
     EXPECT_NE(text.find("done"), std::string::npos);
 }
 
+TEST(Session, StartsUpAndEndsWithTheServosOffWhicheverWayItEnds) {
+    MiniController controller;
+    auto robot = connect(controller);
+    std::atomic<bool> on{true};
+    controller.answer("set_servo_status", [&on](const ec::sdk::Json& p) {
+        on = p["status"] == 1;
+        return std::optional<std::string>("true");
+    });
+    controller.answer("getServoStatus",
+                      [&on](const auto&) { return std::optional<std::string>(on ? "true" : "false"); });
+    {
+        auto session = ec::Session::start(robot);
+        ASSERT_TRUE(session) << describe(session.error());
+        EXPECT_TRUE(session->active());
+        EXPECT_TRUE(session->started().ok());
+        controller.forget();
+    }  // left without end(): the destructor shuts down
+    EXPECT_EQ(controller.methods(), (std::vector<std::string>{"stop", "getRobotState", "getServoStatus",
+                                                              "set_servo_status", "getServoStatus"}));
+    EXPECT_FALSE(on.load());
+
+    on = true;
+    auto session = ec::Session::start(robot);
+    ASSERT_TRUE(session);
+    const auto ended = session->end();
+    EXPECT_TRUE(ended.ok()) << describe(ended);
+    EXPECT_FALSE(session->active());
+    controller.forget();
+    EXPECT_TRUE(session->end().steps.empty());  // once only
+    EXPECT_TRUE(controller.calls().empty());
+}
+
+TEST(Session, AFailedStartLeavesWhatItDidNotChange) {
+    MiniController controller;
+    auto robot = connect(controller);
+    controller.answer("getRobotMode", "0");  // teach: nothing is sent
+    const auto teach = ec::Session::start(robot);
+    ASSERT_FALSE(teach);
+    EXPECT_EQ(teach.error().blocker, Blocker::NotRemote);
+    EXPECT_EQ(controller.methods(), kConditions);
+
+    controller.forget();
+    controller.answer("getRobotMode", "2");
+    controller.answer("get_servo_precise_position_status", "0");
+    std::atomic<bool> on{false};
+    controller.answer("set_servo_status", [&on](const ec::sdk::Json& p) {
+        on = p["status"] == 1;
+        return std::optional<std::string>("true");
+    });
+    controller.answer("getServoStatus",
+                      [&on](const auto&) { return std::optional<std::string>(on ? "true" : "false"); });
+    const auto imprecise = ec::Session::start(robot, {.require_precise = true});  // servos on, then not precise
+    ASSERT_FALSE(imprecise);
+    EXPECT_EQ(imprecise.error().blocker, Blocker::NotPrecise);
+    EXPECT_FALSE(on.load());  // switched off again
+    EXPECT_EQ(controller.count("set_servo_status"), 2u);
+    EXPECT_EQ(controller.count("stop"), 0u);  // nothing of the session moved
+}
+
 }  // namespace
