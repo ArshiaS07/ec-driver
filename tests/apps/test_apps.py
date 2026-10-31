@@ -10,6 +10,7 @@ parses by mistake can reach the robot's default address. Standard library only.
 """
 
 import argparse
+import importlib.util
 import json
 import math
 import re
@@ -645,6 +646,38 @@ class EcPlay(unittest.TestCase):
         self.assertIn("fault: emergency stop", r.stderr)
         self.assertIn("shut-down:", r.stdout)
         self.assertFalse(fake.state()["servo"])
+
+
+class Examples(unittest.TestCase):
+    """The trajectories in examples/: shapes.py writes what is committed, and
+    every file plans on the fake arm (ec_play without --yes: nothing moves)."""
+
+    def setUp(self):
+        self.examples = PATHS.tools.parent / "examples"
+
+    def test_the_generator_writes_the_committed_files(self):
+        spec = importlib.util.spec_from_file_location("shapes", self.examples / "shapes.py")
+        shapes = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(shapes)
+        with tempfile.TemporaryDirectory(dir=PATHS.ec_play.parent) as tmp:
+            for path in shapes.write(Path(tmp)):
+                committed = self.examples / path.name
+                self.assertTrue(committed.exists(), f"{path.name} is not committed")
+                self.assertEqual(path.read_text(encoding="utf-8"), committed.read_text(encoding="utf-8"),
+                                 f"{path.name}: run python3 examples/shapes.py")
+
+    def test_every_file_plans_on_the_fake_arm(self):
+        fake = FakeRobot()
+        self.addCleanup(fake.stop)
+        self.assertEqual(fake.control("joints 0 -90 90 -90 -90 0"), "ok")
+        files = sorted(self.examples.glob("*.csv"))
+        self.assertGreaterEqual(len(files), 7)
+        for csv in files:
+            with self.subTest(csv.name):
+                r = run(PATHS.ec_play, str(csv), "--host", LOCAL, "--command-port", str(fake.command),
+                        "--monitor-port", str(fake.monitor), timeout=120.0)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertIn("nothing moved", r.stdout)
 
 
 class SbxTrajectory(unittest.TestCase):

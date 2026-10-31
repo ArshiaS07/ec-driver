@@ -77,6 +77,13 @@ stops the arm.
     ./build/linux-release/apps/ec_play path.csv --yes               # bring-up, to the start, run, servos off
     ./build/linux-release/apps/ec_play path.csv --yes --speed 0.5 --record run.ecraw
 
+Ready-made shapes are in `examples/` (star, square, circle, figure eight,
+helix, and a cone: the tool tilting about a fixed tip, to check a TCP), all
+about 60 mm, smoothly timed, written by `examples/shapes.py` around the fake
+arm's pose. For your cell, set `CENTRE` and `TOOL` at the top of that file
+from the pendant and run `python3 examples/shapes.py`; then `ec_play` each
+file without `--yes` first.
+
 Poses are solved by the controller's inverse kinematics near the joints now,
 filled in every 3 mm and 1 deg, checked (no jump, no singularity, the limits),
 and the joints follow a smooth spline through every point, at rest at both
