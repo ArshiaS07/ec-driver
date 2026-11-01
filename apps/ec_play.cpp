@@ -4,6 +4,11 @@
 //
 //   ec_play FILE.csv [--host H] [--command-port N] [--monitor-port N] [--speed F] [--record FILE] [--yes]
 //
+// --speed F (0.1..5, default 1) runs the file F times faster: its times are
+// divided by F before planning, so the speed and acceleration checks apply to
+// the run as it will be (too fast for the joints is refused, naming the
+// joint, before anything moves).
+//
 // The file: a header row naming the columns, then one row per point; blank
 // lines and lines starting with # are skipped. t starts at 0 and increases;
 // the same point at two neighbouring times is a pause, held.
@@ -23,7 +28,7 @@
 // controller's inverse kinematics, a computation) and prints the plan. With
 // --yes, in one session (bring-up first; servos off at the end, however it
 // ends): a joint move to the first point at 10 % of the joints' speed, the
-// upload, the run at --speed times the file's pace, the wait. Ctrl+C stops the
+// upload, the run, the wait. Ctrl+C stops the
 // arm. --record FILE writes the monitoring stream meanwhile (raw, as
 // ec_record --raw; ec_record --replay makes it HDF5).
 //
@@ -156,8 +161,19 @@ int fail(std::string_view step, const ec::Error& e) {
     return cli::kFailed;
 }
 
+// The file at `speed` times its pace: every time divided by `speed`.
+void pace(Motion& motion, double speed) {
+    std::visit(
+        [speed](auto& points) {
+            for (auto& p : points)
+                p.stamp = std::chrono::duration_cast<ec::Clock::duration>(
+                    std::chrono::duration<double>(seconds_of(p.stamp) / speed));
+        },
+        motion);
+}
+
 // The motions, inside the session: each ends (stopped, if still open) before it does.
-int play(ec::Robot& robot, ec::JointTrajectory plan, double speed) {
+int play(ec::Robot& robot, ec::JointTrajectory plan) {
     ec::motion::Move to_start(robot);
     cli::out("to the start: {} at 10 % of the joints' speed\n", degrees(plan.front().value));
     if (auto ok = to_start.joint(plan.front().value, {.speed = 0.1}); !ok) return fail("to the start", ok.error());
@@ -166,8 +182,8 @@ int play(ec::Robot& robot, ec::JointTrajectory plan, double speed) {
     ec::motion::Timestamped run(robot, std::move(plan));
     cli::out("upload\n");
     if (auto ok = run.upload(); !ok) return fail("upload", ok.error());
-    cli::out("run at {:g} times the file's pace\n", speed);
-    if (auto ok = run.start(speed); !ok) return fail("run", ok.error());
+    cli::out("run\n");
+    if (auto ok = run.start(); !ok) return fail("run", ok.error());  // at the planned pace
     if (auto ok = run.wait(); !ok) return fail("run", ok.error());
     cli::out("run: done\n");
     return cli::kOk;
@@ -189,9 +205,9 @@ int run(int argc, char** argv) {
     app.add_option("--monitor-port", monitor_port, "Monitoring port")
         ->capture_default_str()
         ->check(CLI::Range(1, 65535));
-    app.add_option("--speed", speed, "Times the file's pace, 0.001..1")
+    app.add_option("--speed", speed, "Times the file's pace, 0.1..5: planned and checked at that pace")
         ->capture_default_str()
-        ->check(CLI::Range(0.001, 1.0));
+        ->check(CLI::Range(0.1, 5.0));
     app.add_option("--record", record, "Write the monitoring stream to this raw recording meanwhile");
     app.add_flag("--yes", yes, "Really move the arm; without it, only the plan is printed");
     if (const auto code = cli::parse(app, argc, argv)) return *code;
@@ -217,15 +233,16 @@ int run(int argc, char** argv) {
     auto robot = ec::Robot::connect(std::move(options));
     if (!robot) return fail("connect", robot.error());
 
-    // Planned and checked before anything moves.
+    // Planned and checked, at the pace it will run, before anything moves.
+    pace(*motion, speed);
     const bool poses = std::holds_alternative<planning::PoseTrajectory>(*motion);
     auto plan = poses ? planning::plan(*robot, std::get<planning::PoseTrajectory>(*motion))
                       : planning::plan_joints(std::get<ec::JointTrajectory>(*motion));
     if (!plan) return fail("plan", plan.error());
     const std::size_t points =
         poses ? std::get<planning::PoseTrajectory>(*motion).size() : std::get<ec::JointTrajectory>(*motion).size();
-    cli::out("{}: {} {} over {:.2f} s, planned into {} points\n", file, points, poses ? "TCP poses" : "joint positions",
-             seconds_of(plan->back().stamp), plan->size());
+    cli::out("{}: {} {} over {:.2f} s (at {:g} times the file's pace), planned into {} points\n", file, points,
+             poses ? "TCP poses" : "joint positions", seconds_of(plan->back().stamp), speed, plan->size());
     cli::out("starts at {}, ends at {}\n", degrees(plan->front().value), degrees(plan->back().value));
     if (const auto now = robot->monitor().latest()) {
         double furthest = 0.0;
@@ -246,7 +263,7 @@ int run(int argc, char** argv) {
         return cli::kFailed;
     }
     cli::out("{}", describe(session->started()));
-    const int code = play(*robot, std::move(*plan), speed);
+    const int code = play(*robot, std::move(*plan));
     cli::out("shut-down:\n");
     const auto down = session->end();  // stopped, at rest, servos off
     cli::out("{}", describe(down));

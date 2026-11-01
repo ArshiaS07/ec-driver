@@ -591,10 +591,25 @@ class EcPlay(unittest.TestCase):
         before = fake.state()
         r = self.play(fake, str(self.examples / "joints_wave.csv"))
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertRegex(r.stdout, r"3 joint positions over 4.00 s, planned into \d+ points")
+        self.assertRegex(r.stdout, r"3 joint positions over 4.00 s \(at 1 times the file's pace\), planned into \d+ points")
         self.assertIn("nothing moved", r.stdout)
         after = fake.state()
         self.assertEqual((before["q"], before["servo"]), (after["q"], after["servo"]))
+
+    def test_speed_runs_the_file_faster_and_is_checked_at_that_pace(self):
+        fake = self.robot()
+        r = self.play(fake, str(self.examples / "joints_wave.csv"), "--speed", "2")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("over 2.00 s (at 2 times the file's pace)", r.stdout)
+        fast = self.dir / "fast.csv"
+        fast.write_text("t,j1,j2,j3,j4,j5,j6\n0,0,-90,90,-90,-90,0\n1,90,-90,90,-90,-90,0\n", encoding="utf-8")
+        r = self.play(fake, str(fast), "--speed", "5", "--yes")  # J1 90 deg in 0.2 s: too fast for it
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("plan: invalid: point", r.stderr)
+        self.assertIn("joint 1 would move at", r.stderr)
+        self.assertAlmostEqual(fake.state()["q"][0], 0.0)  # refused before anything moved
+        r = self.play(fake, str(fast), "--speed", "6")
+        self.assertEqual(r.returncode, 2)  # beyond the option's range
 
     def test_joint_positions_run_in_a_session_that_ends_with_the_servos_off(self):
         fake = self.robot()  # servos off, not synchronised: brought up first
