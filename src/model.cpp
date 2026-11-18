@@ -26,9 +26,10 @@ std::expected<Eigen::Isometry3d, Error> pose(const std::expected<sdk::PoseMmRad,
 
 }  // namespace
 
-std::expected<Joints, Error> Model::ik(const Eigen::Isometry3d& T_base_tcp, const std::optional<Joints>& near) const {
+std::expected<Joints, Error> Model::ik(const Eigen::Isometry3d& T_base_tcp,
+                                       const std::optional<Joints>& reference) const {
     sdk::InverseKinematic call{.target = to_mm_rad(T_base_tcp)};
-    if (near) call.reference = rad_to_deg(*near);
+    if (reference) call.reference = rad_to_deg(*reference);
     const auto q = detail::send(session_, call);
     if (!q) return std::unexpected(q.error());
     return deg_to_rad(*q);

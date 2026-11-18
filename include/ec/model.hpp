@@ -40,10 +40,10 @@ struct Payload {
 class Model {
 public:
     /// inverseKinematic [S 2.2.4.1]: joint positions [rad] that put the TCP of
-    /// the current tool at T_base_tcp; the solution nearest `near`, if given.
+    /// the current tool at T_base_tcp; the solution nearest `reference`, if given.
     /// One solution, the controller's; none is a Command error.
     [[nodiscard]] std::expected<Joints, Error> ik(const Eigen::Isometry3d& T_base_tcp,
-                                                  const std::optional<Joints>& near = std::nullopt) const;
+                                                  const std::optional<Joints>& reference = std::nullopt) const;
     /// positiveKinematic [S 2.2.4.2]: T_base_tcp at joint positions [rad].
     [[nodiscard]] std::expected<Eigen::Isometry3d, Error> fk(const Joints& q) const;
     /// convertPoseFromCartToUser [S 2.2.4.3]: T_base_x as T_user_x, in user frame `user`.

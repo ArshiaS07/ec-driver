@@ -132,18 +132,18 @@ TEST(Move, ArgumentsOutsideTheManualsRangesAreInvalidAndSendNothing) {
     MiniController controller;
     auto robot = connect(controller);
     ec::motion::Move move(robot);
-    Joints far = kHere;
-    far[0] = ec::deg_to_rad(400.0);
+    Joints too_far = kHere;
+    too_far[0] = ec::deg_to_rad(400.0);
     const auto kind = [](const std::expected<void, Error>& r) {
         return r ? std::optional<Error::Kind>{} : r.error().kind;
     };
-    EXPECT_EQ(kind(move.joint(far)), Error::Kind::Invalid);
+    EXPECT_EQ(kind(move.joint(too_far)), Error::Kind::Invalid);
     EXPECT_EQ(kind(move.joint(kHere, {.speed = 0.0})), Error::Kind::Invalid);
     EXPECT_EQ(kind(move.joint(kHere, {.speed = 0.5, .acceleration = 2.0})), Error::Kind::Invalid);
     EXPECT_EQ(kind(move.line(kHere, {.speed = 5.0})), Error::Kind::Invalid);  // above 3000 mm/s
     EXPECT_EQ(kind(move.rotate(kHere, {.speed_type = ec::sdk::SpeedType::Rotational, .speed = ec::deg_to_rad(400.0)})),
               Error::Kind::Invalid);
-    EXPECT_EQ(kind(move.arc(far, kHere)), Error::Kind::Invalid);
+    EXPECT_EQ(kind(move.arc(too_far, kHere)), Error::Kind::Invalid);
     EXPECT_EQ(kind(move.wait()), Error::Kind::Invalid);  // no move to wait for
     EXPECT_TRUE(controller.calls().empty());
 }
@@ -311,9 +311,9 @@ TEST(ServoStream, OpensAsTheManualTakesPointsAndCloses) {
     EXPECT_NEAR(init["smoothness"].get<double>(), 0.2, 1e-12);
     ASSERT_TRUE(stream.add_point(kHere));
     EXPECT_NEAR(controller.last("tt_put_servo_joint_to_buf")["targetPos"][2].get<double>(), 90.0, 1e-9);
-    Joints far = kHere;
-    far[2] = 7.0;
-    EXPECT_EQ(stream.add_point(far).error().kind, Error::Kind::Invalid);
+    Joints too_far = kHere;
+    too_far[2] = 7.0;
+    EXPECT_EQ(stream.add_point(too_far).error().kind, Error::Kind::Invalid);
     ASSERT_TRUE(stream.close());
     EXPECT_EQ(controller.count("tt_clear_servo_joint_buf"), 2u);
     ec::motion::Move move(robot);
@@ -484,9 +484,9 @@ TEST(Path, ClearsAddsEachWaypointRunsAndWaits) {
     controller.answer("moveByPath", "2");
     controller.answer("getPathPointIndex", "1");
     controller.states({kRunning, kRunning, kStop});
-    Joints far = kHere;
-    far[0] = ec::deg_to_rad(10.0);
-    ec::motion::Path path(robot, {{.target = far, .speed = 0.2, .blend_radius = 0.02},
+    Joints there = kHere;
+    there[0] = ec::deg_to_rad(10.0);
+    ec::motion::Path path(robot, {{.target = there, .speed = 0.2, .blend_radius = 0.02},
                                   {.target = kHere, .move = ec::sdk::PathMoveType::Line, .speed = 0.1}});
     EXPECT_TRUE(controller.calls().empty());  // constructed: nothing sent
     ASSERT_TRUE(path.run());

@@ -96,18 +96,18 @@ TEST(Model, KinematicsInSiOnBothSides) {
     MiniController controller;
     const auto robot = connect(controller);
     const auto model = robot.model();
-    const ec::Joints near{0.0, -std::numbers::pi / 2, std::numbers::pi / 2, 0.0, 0.0, 0.0};
+    const ec::Joints reference{0.0, -std::numbers::pi / 2, std::numbers::pi / 2, 0.0, 0.0, 0.0};
     const Eigen::Isometry3d target = ec::from_mm_rad({400.0, -50.0, 300.0, 3.0, 0.1, -0.2});
 
-    const auto q = model.ik(target, near);  // the scripted controller answers the reference
+    const auto q = model.ik(target, reference);  // the scripted controller answers the reference
     ASSERT_TRUE(q) << describe(q.error());
-    for (std::size_t i = 0; i < 6; ++i) EXPECT_NEAR((*q)[i], near[i], 1e-12);
+    for (std::size_t i = 0; i < 6; ++i) EXPECT_NEAR((*q)[i], reference[i], 1e-12);
     const auto sent = controller.last("inverseKinematic");
     EXPECT_NEAR(sent["targetPose"][0].get<double>(), 400.0, 1e-9);    // mm
     EXPECT_NEAR(sent["referencePos"][1].get<double>(), -90.0, 1e-9);  // deg
     EXPECT_EQ(sent["unit_type"], 1);
 
-    const auto T = model.fk(near);
+    const auto T = model.fk(reference);
     ASSERT_TRUE(T) << describe(T.error());
     EXPECT_TRUE(T->isApprox(target, 1e-12));
     EXPECT_NEAR(controller.last("positiveKinematic")["targetPos"][2].get<double>(), 90.0, 1e-9);
@@ -160,17 +160,17 @@ TEST(Model, OutOfTheManualsRangesNothingIsSent) {
     const auto robot = connect(controller);
     const auto model = robot.model();
     controller.forget();
-    Eigen::Isometry3d far = Eigen::Isometry3d::Identity();
-    far.translation() = Eigen::Vector3d(0.0, 0.0, 0.6);
+    Eigen::Isometry3d too_far = Eigen::Isometry3d::Identity();
+    too_far.translation() = Eigen::Vector3d(0.0, 0.0, 0.6);
     const auto kind = [](const auto& r) { return r ? std::optional<Error::Kind>{} : r.error().kind; };
     EXPECT_EQ(kind(model.tool(8)), Error::Kind::Invalid);
     EXPECT_EQ(kind(model.select_tool(-1)), Error::Kind::Invalid);
-    EXPECT_EQ(kind(model.set_tool(0, far)), Error::Kind::Invalid);
+    EXPECT_EQ(kind(model.set_tool(0, too_far)), Error::Kind::Invalid);
     EXPECT_EQ(kind(model.set_payload(0, {.mass = 7.5})), Error::Kind::Invalid);
     EXPECT_EQ(kind(model.set_payload(0, {.mass = 1.0, .centre_of_mass = Eigen::Vector3d(6.0, 0.0, 0.0)})),
               Error::Kind::Invalid);
     EXPECT_EQ(kind(model.user_frame(9)), Error::Kind::Invalid);
-    EXPECT_EQ(kind(model.to_user(far, 8)), Error::Kind::Invalid);
+    EXPECT_EQ(kind(model.to_user(too_far, 8)), Error::Kind::Invalid);
     EXPECT_TRUE(controller.calls().empty());
 }
 
