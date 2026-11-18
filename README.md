@@ -219,3 +219,13 @@ New API shapes (a facade, Python bindings, a ROS 2 wrapper) go in their own
 top-level directory with their own CMake target, depending on `ec::driver`.
 Other cross targets: add a toolchain file in `cmake/toolchains/` and a preset
 that pairs it with the matching vcpkg triplet.
+
+## Licence and the use of an AI assistant
+
+MIT (`LICENSE`). The Elite Robots SDK manuals the documentation cites
+(Socket SDK manual, version 3.11.2, English and Chinese) are the maker's and
+are not included; they come with the controller's SDK.
+
+Parts of this repository are written with Claude Code under the author's
+direction and review; the design decisions are the author's and are recorded
+in `docs/`.

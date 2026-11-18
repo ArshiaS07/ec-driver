@@ -48,3 +48,6 @@ desktop.ini
 /.claude/
 /docs/adr/
 /docs/archive/adr/
+
+# The arm maker's SDK manuals: their copyright, kept locally for reference, not redistributed
+/docs/*.pdf
