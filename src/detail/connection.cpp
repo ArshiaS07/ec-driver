@@ -59,11 +59,14 @@ bool Connection::motion_open() const {
 
 void Connection::stop() noexcept {
     try {
-        stop_requested.store(true);
+        // The open motion's stop is taken before the request is raised, under the lock close() takes: a
+        // wait that sees the request ends, and its motion closes, only after its stop is in hand. The
+        // stops reach the session alone, never the motion, so they may run after it has closed.
         std::function<void()> stop_motion;
         {
             const std::lock_guard lock(motions);
             stop_motion = stop_open;
+            stop_requested.store(true);
         }
         if (stop_motion) stop_motion();
         const auto stopped = send(sdk::Stop{});

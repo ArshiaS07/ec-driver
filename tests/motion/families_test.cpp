@@ -189,6 +189,8 @@ TEST(Move, StopFromAnotherThreadEndsTheWait) {
     const auto r = move.wait();
     ASSERT_FALSE(r);
     EXPECT_EQ(r.error().kind, Error::Kind::Stopped);
+    // The wait ends when it sees the request; stop() sends its calls after that, on its own thread.
+    stopper.join();
     EXPECT_EQ(controller.count("stop"), 2u);  // the move's own stop, then stop
 }
 
@@ -287,6 +289,7 @@ TEST(Timestamped, StopWhileItRunsSendsStopTrajectoryThenStop) {
     const auto r = run.wait();
     ASSERT_FALSE(r);
     EXPECT_EQ(r.error().kind, Error::Kind::Stopped);
+    stopper.join();  // as in Move.StopFromAnotherThreadEndsTheWait: the calls come after the wait ends
     const auto m = controller.methods();
     const auto at = std::find(m.begin(), m.end(), "stop_trajectory");
     ASSERT_NE(at, m.end());
